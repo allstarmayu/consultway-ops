@@ -1,0 +1,107 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "consultway-ops",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  "placement": {
+    "mode": "smart"
+  },
+
+  // ── D1 (SQLite) ─────────────────────────────────────
+  // Create with: wrangler d1 create consultway-prod
+  // Then replace database_id with the UUID that command prints.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "consultway-prod",
+      "database_id": "REPLACE_WITH_D1_UUID",
+      "migrations_dir": "drizzle"
+    }
+  ],
+
+  // ── R2 (object storage) ─────────────────────────────
+  // Create with: wrangler r2 bucket create consultway-docs
+  "r2_buckets": [
+    {
+      "binding": "DOCS",
+      "bucket_name": "consultway-docs"
+    }
+  ],
+
+  // ── KV (sessions, rate limiting) ────────────────────
+  // Create with: wrangler kv namespace create SESSIONS
+  "kv_namespaces": [
+    {
+      "binding": "SESSIONS",
+      "id": "REPLACE_WITH_KV_UUID"
+    },
+    {
+      "binding": "RATE_LIMITS",
+      "id": "REPLACE_WITH_KV_UUID"
+    }
+  ],
+
+  // ── Scheduled triggers (cron) ───────────────────────
+  "triggers": {
+    "crons": [
+      "0 2 * * *" // 2 AM UTC daily — document expiry sweep
+    ]
+  },
+
+  // ── Public vars (non-secret) ────────────────────────
+  "vars": {
+    "NODE_ENV": "production",
+    "NEXT_PUBLIC_APP_NAME": "Consultway Ops",
+    "LOG_LEVEL": "info",
+    "R2_MAX_UPLOAD_BYTES": "20971520",
+    "R2_PRESIGN_EXPIRY": "900",
+    "RATE_LIMIT_PUBLIC_RPM": "20",
+    "RATE_LIMIT_AUTH_RPM": "120"
+  },
+
+  // ── Environments ────────────────────────────────────
+  // Secrets (PAYLOAD_SECRET, JWT_SECRET, RESEND_API_KEY, etc.) are set via:
+  //   wrangler secret put <NAME> --env staging
+  //   wrangler secret put <NAME> --env production
+  "env": {
+    "staging": {
+      "name": "consultway-ops-staging",
+      "vars": {
+        "NEXT_PUBLIC_APP_URL": "https://staging.ops.consultway.info"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "consultway-staging",
+          "database_id": "REPLACE_WITH_STAGING_D1_UUID",
+          "migrations_dir": "drizzle"
+        }
+      ],
+      "r2_buckets": [
+        { "binding": "DOCS", "bucket_name": "consultway-docs-staging" }
+      ]
+    },
+    "production": {
+      "name": "consultway-ops",
+      "route": {
+        "pattern": "ops.consultway.info/*",
+        "zone_name": "consultway.info"
+      },
+      "vars": {
+        "NEXT_PUBLIC_APP_URL": "https://ops.consultway.info"
+      }
+    }
+  }
+}
