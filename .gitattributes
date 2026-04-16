@@ -1,0 +1,70 @@
+# ───────────────────────────────────────────────────────────────────
+# Line-ending normalization
+#
+# Git stores everything with LF in the repo. On Windows checkouts,
+# files are checked out with CRLF (what Windows tools expect). On
+# commit, git silently converts CRLF → LF before storing.
+#
+# Without this file, git warns on every commit about the conversion,
+# even though it's working correctly. With this file, the behavior is
+# explicit and the warnings go away.
+#
+# Rule of thumb for additions:
+#   - source code + config → text (let git normalize)
+#   - binary formats (images, fonts, PDFs, DBs) → binary (never touch)
+#   - shell scripts that run on *nix → text eol=lf (force LF always)
+#   - batch files that run on Windows → text eol=crlf (force CRLF always)
+# ───────────────────────────────────────────────────────────────────
+
+# Default — all text files use LF in the repo, native on checkout
+* text=auto
+
+# ── Source code ────────────────────────────────────────────────────
+*.ts      text
+*.tsx     text
+*.js      text
+*.jsx     text
+*.mjs     text
+*.cjs     text
+*.json    text
+*.jsonc   text
+*.css     text
+*.scss    text
+*.html    text
+*.md      text
+*.mdx     text
+*.yml     text
+*.yaml    text
+*.toml    text
+*.sql     text
+
+# ── Config / lockfiles ─────────────────────────────────────────────
+*.env     text
+.gitignore       text
+.gitattributes   text
+.editorconfig    text
+.npmrc           text
+pnpm-lock.yaml   text -diff
+package-lock.json text -diff
+
+# ── Scripts ────────────────────────────────────────────────────────
+# PowerShell runs on Windows — keep CRLF
+*.ps1     text eol=crlf
+# Bash / shell scripts must be LF even on Windows checkouts
+*.sh      text eol=lf
+
+# ── Binary formats — never normalize ───────────────────────────────
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.webp    binary
+*.ico     binary
+*.pdf     binary
+*.woff    binary
+*.woff2   binary
+*.ttf     binary
+*.eot     binary
+*.sqlite  binary
+*.db      binary
+*.zip     binary
