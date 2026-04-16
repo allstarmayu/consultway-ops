@@ -7,6 +7,22 @@ more utility, less marketing polish.
 
 ---
 
+## Reference designs
+
+The original Figma mockups for each screen are in `docs/design/figma-screenshots/`:
+
+- `01-dashboard.png` — main dashboard with stat cards, tender status, payment status, monthly trend
+- `02-companies-list.png` — companies roster with filters
+- `03-tenders-list.png` — tender board with status columns
+- `04-projects-list.png` — project tracking with sub-projects
+- `05-transactions.png` — transaction management with summary cards
+- `06-reports.png` — reports placeholder ("To Be Discussed")
+- `07-settings.png` — profile and organization settings
+
+The portal logo is in `docs/design/logo/consultway-logo.png`. Brand color reference is `docs/design/logo/brand-colors.png`.
+
+These are **reference material only** — the live UI should match the spirit of the designs but may evolve based on implementation constraints and user feedback.
+
 ## Brand Tokens
 
 ### Colors
