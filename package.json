@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "snapshot": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/snapshot.ps1",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
