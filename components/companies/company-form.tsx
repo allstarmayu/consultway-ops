@@ -1,9 +1,25 @@
 /**
- * Company create form.
+ * Company form — shared between Create and Edit.
  *
- * Client Component because it owns form state via react-hook-form. The
- * server-side `createCompany` action validates the same Zod schema —
- * client validation is for UX, server validation is authoritative.
+ * Client Component. Owns form state via react-hook-form. Validation runs
+ * both client-side (for UX) and server-side (authoritative) using the
+ * same Zod schemas from lib/companies/schemas.ts.
+ *
+ * Mode is driven by the presence of `initialValues`:
+ *
+ *   - `initialValues` undefined  → create mode
+ *       - calls createCompany() Server Action
+ *       - validates against createCompanySchema (all required fields enforced)
+ *       - redirects to /dashboard/companies on success
+ *       - button reads "Save company"
+ *
+ *   - `initialValues` defined    → edit mode
+ *       - calls updateCompany() Server Action (passing id from initialValues)
+ *       - validates against the same schema shape — server uses
+ *         updateCompanySchema which accepts partial input
+ *       - redirects to /dashboard/companies/{id} on success
+ *       - button reads "Save changes"
+ *       - form starts pre-populated with the existing row's values
  *
  * Architecture:
  *   - One form, one submit. Six visually-sectioned blocks via
@@ -16,12 +32,8 @@
  *   - Sticky action bar at the bottom so Cancel / Save stay reachable
  *     while scrolling.
  *   - Unsaved-changes guard prompts before tab close / refresh.
- *   - On successful submit: navigate to the companies list (detail
- *     page comes in Chunk 6). Uses `router.replace` so the form page
- *     does NOT end up in the browser history — there's no useful "back"
- *     destination from a successfully submitted form.
  *
- * @module app/dashboard/companies/new/_components/company-form
+ * @module components/companies/company-form
  */
 "use client";
 
@@ -29,11 +41,12 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useForm, Controller } from "react-hook-form";
 import { AlertCircle, Save, X } from "lucide-react";
-import { createCompany } from "@/lib/companies/actions";
+import { createCompany, updateCompany } from "@/lib/companies/actions";
 import {
   createCompanySchema,
   type CreateCompanyInput,
 } from "@/lib/companies/schemas";
+import type { Company } from "@/lib/db/schema";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -43,7 +56,7 @@ import { FormSection } from "@/components/forms/form-section";
 import { FormField } from "@/components/forms/form-field";
 import { StickyActionBar } from "@/components/forms/sticky-action-bar";
 import { useUnsavedChangesGuard } from "@/components/forms/use-unsaved-changes-guard";
-import { PartnerPicker } from "./partner-picker";
+import { PartnerPicker } from "@/app/dashboard/companies/new/_components/partner-picker";
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -51,19 +64,32 @@ export interface CompanyFormProps {
   /**
    * Existing companies for the JV partner picker typeahead. id+name
    * only — fetched server-side in the parent page.
+   *
+   * In edit mode, the current company is filtered out of this list so
+   * a company can't list itself as its own JV partner. The parent page
+   * handles this filtering before passing the list down.
    */
   existingCompanies: Array<{ id: string; name: string }>;
+
+  /**
+   * When present, the form is in EDIT mode and pre-populated with these
+   * values. When absent, the form is in CREATE mode.
+   *
+   * We accept the full Company row (not just the form-shape input)
+   * because the parent fetches the row anyway, and reusing the type
+   * keeps the call site clean.
+   */
+  initialValues?: Company;
 }
 
 // ── Default values ──────────────────────────────────────────────────────────
 
 /**
- * Hard-coded form defaults so re-renders don't cause uncontrolled→
- * controlled warnings. All optional fields default to empty string so
- * the inputs are controlled from the start; the Zod transform layer
- * converts empty strings to null/undefined before validation.
+ * Defaults for CREATE mode. All optional fields default to empty string
+ * (controlled inputs from the start, no controlled-vs-uncontrolled
+ * warnings) and get normalised back to null at submit time.
  */
-const DEFAULT_VALUES: CreateCompanyInput = {
+const CREATE_DEFAULTS: CreateCompanyInput = {
   name: "",
   sector: "",
   geography: "",
@@ -82,12 +108,48 @@ const DEFAULT_VALUES: CreateCompanyInput = {
   internalNotes: null,
 };
 
+/**
+ * Build EDIT-mode defaults from a Company row. Strips fields the form
+ * doesn't manage (id, complianceStatus, createdAt, updatedAt) and
+ * normalises empty strings to null.
+ *
+ * Note: complianceStatus is intentionally NOT exposed on this form.
+ * It's a staff-only field that should be changed deliberately on a
+ * separate workflow (not buried in a CRUD edit form). When that
+ * workflow ships, it'll have its own dedicated UI.
+ */
+function buildEditDefaults(company: Company): CreateCompanyInput {
+  return {
+    name: company.name,
+    sector: company.sector,
+    geography: company.geography,
+    gstNumber: company.gstNumber,
+    panNumber: company.panNumber,
+    isMsme: company.isMsme,
+    isJv: company.isJv,
+    parentCompanyIds: company.parentCompanyIds,
+    contactEmail: company.contactEmail,
+    contactPhone: company.contactPhone,
+    contactPersonName: company.contactPersonName,
+    addressLine: company.addressLine,
+    city: company.city,
+    state: company.state,
+    pincode: company.pincode,
+    internalNotes: company.internalNotes,
+  };
+}
+
 // ── Component ───────────────────────────────────────────────────────────────
 
-export function CompanyForm({ existingCompanies }: CompanyFormProps) {
+export function CompanyForm({
+  existingCompanies,
+  initialValues,
+}: CompanyFormProps) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  const isEditMode = initialValues !== undefined;
 
   const {
     register,
@@ -102,9 +164,10 @@ export function CompanyForm({ existingCompanies }: CompanyFormProps) {
      * structure as login: success → values + empty errors; failure →
      * empty values + field-keyed error map.
      *
-     * The form fields all have nullable types, but the inputs render
-     * empty strings. We pre-process the form values: empty string →
-     * null for optional fields, so Zod accepts the partial input.
+     * Both modes use `createCompanySchema` for client-side validation.
+     * The server uses updateCompanySchema for edit, which accepts
+     * partial input — but client-side we want to enforce "the row
+     * after edit must still be valid" which means full validation.
      */
     resolver: async (rawValues) => {
       // Normalise blanks: optional text fields where the input was
@@ -124,7 +187,9 @@ export function CompanyForm({ existingCompanies }: CompanyFormProps) {
       }
       return { values: {}, errors: errs };
     },
-    defaultValues: DEFAULT_VALUES,
+    defaultValues: isEditMode
+      ? buildEditDefaults(initialValues)
+      : CREATE_DEFAULTS,
     mode: "onBlur",
   });
 
@@ -132,30 +197,23 @@ export function CompanyForm({ existingCompanies }: CompanyFormProps) {
   // being submitted — we don't want the prompt during the redirect).
   useUnsavedChangesGuard(isDirty && !isSubmitting && !isPending);
 
-  // Watch isJv to conditionally show the partner picker. Watch-pattern
-  // here triggers a re-render when the toggle flips, which is what we
-  // want for revealing the section.
+  // Watch isJv to conditionally show the partner picker.
   const isJv = watch("isJv");
 
   // ── Submit handler ────────────────────────────────────────────────────────
   //
-  // The createCompany call runs inside startTransition so React knows
-  // the form is "busy" — this drives the disabled state on the buttons.
-  // The redirect is fire-and-forget at the end: router.replace returns
-  // void, so the transition function settles, isPending flips back to
-  // false, and the navigation happens in the background.
-  //
-  // Earlier version had `router.refresh()` after `router.push()` inside
-  // an `await`-chained block. That kept the transition pending until
-  // BOTH the RSC payload AND the refresh resolved, which in dev was
-  // long enough to leave the form visually stuck on "Saving..." even
-  // though the server had long since responded. router.replace alone
-  // is enough — the destination page re-fetches its own data on mount.
+  // Branches on mode. Both branches use startTransition for the action
+  // call (drives button disabled state) but fire-and-forget the
+  // navigation so the transition can settle without waiting on the
+  // destination's RSC payload.
 
   function onSubmit(data: CreateCompanyInput) {
     setServerError(null);
+
     startTransition(async () => {
-      const result = await createCompany(data);
+      const result = isEditMode
+        ? await updateCompany({ id: initialValues.id, ...data })
+        : await createCompany(data);
 
       if (!result.ok) {
         // Field-targeted error → highlight the offending input.
@@ -170,15 +228,21 @@ export function CompanyForm({ existingCompanies }: CompanyFormProps) {
         return;
       }
 
-      // Success. Detail page lands in a later chunk; for now go to the
-      // list. `replace` (not `push`) so the form page doesn't pollute
-      // browser history — there's no useful "back" after a successful
-      // submission.
-      router.replace("/dashboard/companies");
+      // Success. Destination differs by mode:
+      //   - Edit: back to the detail page (just-edited row visible)
+      //   - Create: companies list (new row appears at top)
+      router.replace(
+        isEditMode
+          ? `/dashboard/companies/${initialValues.id}`
+          : "/dashboard/companies",
+      );
     });
   }
 
   const submitDisabled = isSubmitting || isPending;
+  const cancelHref = isEditMode
+    ? `/dashboard/companies/${initialValues.id}`
+    : "/dashboard/companies";
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -188,7 +252,9 @@ export function CompanyForm({ existingCompanies }: CompanyFormProps) {
       {serverError && (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Could not save company</AlertTitle>
+          <AlertTitle>
+            {isEditMode ? "Could not save changes" : "Could not save company"}
+          </AlertTitle>
           <AlertDescription>{serverError}</AlertDescription>
         </Alert>
       )}
@@ -339,9 +405,7 @@ export function CompanyForm({ existingCompanies }: CompanyFormProps) {
           />
         </FormField>
 
-        {/* Partner picker only renders when isJv is on. Animating in
-            would be nicer but adds complexity; clean conditional is
-            fine for Phase 1. */}
+        {/* Partner picker only renders when isJv is on. */}
         {isJv && (
           <FormField
             name="parentCompanyIds"
@@ -441,11 +505,7 @@ export function CompanyForm({ existingCompanies }: CompanyFormProps) {
           />
         </FormField>
 
-        <FormField
-          name="city"
-          label="City"
-          error={errors.city?.message}
-        >
+        <FormField name="city" label="City" error={errors.city?.message}>
           <Input
             type="text"
             placeholder="Mumbai"
@@ -528,14 +588,18 @@ export function CompanyForm({ existingCompanies }: CompanyFormProps) {
           type="button"
           variant="outline"
           disabled={submitDisabled}
-          onClick={() => router.push("/dashboard/companies")}
+          onClick={() => router.push(cancelHref)}
         >
           <X className="h-4 w-4" aria-hidden />
           Cancel
         </Button>
         <Button type="submit" disabled={submitDisabled}>
           <Save className="h-4 w-4" aria-hidden />
-          {submitDisabled ? "Saving..." : "Save company"}
+          {submitDisabled
+            ? "Saving..."
+            : isEditMode
+              ? "Save changes"
+              : "Save company"}
         </Button>
       </StickyActionBar>
     </form>

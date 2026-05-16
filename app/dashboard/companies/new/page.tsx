@@ -14,7 +14,9 @@
  *
  * The form itself (validation, state, submission) lives in the
  * `<CompanyForm />` client component — Server Components can't host
- * react-hook-form.
+ * react-hook-form. The form is shared with the edit page so it lives
+ * under components/companies/ rather than inside this route's
+ * _components folder.
  *
  * @module app/dashboard/companies/new/page
  */
@@ -29,7 +31,7 @@ import { companies } from "@/lib/db/schema";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/dashboard/page-header";
-import { CompanyForm } from "./_components/company-form";
+import { CompanyForm } from "@/components/companies/company-form";
 
 export const metadata: Metadata = {
   title: "Add company",
