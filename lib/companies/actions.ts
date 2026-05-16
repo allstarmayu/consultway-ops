@@ -23,6 +23,13 @@
  * companies, only edit them. This matches Consultway's expectation that
  * removing a company from the roster is a high-risk action.
  *
+ * Audit logging: every mutation (create / update / delete) calls
+ * `recordAuditEvent` after the DB write succeeds. The audit logger is
+ * a stub today (logs to the structured logger); it'll persist to an
+ * `audit_log` table once that lands in a follow-up chunk. Read actions
+ * (getCompany, listCompanies) are intentionally NOT audited — would
+ * be too noisy and not legally useful.
+ *
  * @module lib/companies/actions
  */
 "use server";
@@ -33,6 +40,7 @@ import { companies, type Company } from "@/lib/db/schema";
 import { newId } from "@/lib/db/ids";
 import { readSession } from "@/lib/auth/session";
 import { logger } from "@/lib/logger";
+import { recordAuditEvent } from "@/lib/audit/log";
 import {
   createCompanySchema,
   updateCompanySchema,
@@ -242,6 +250,23 @@ export async function createCompany(
     throw err;
   }
 
+  // 4. Audit. Captures the identity-ish fields that matter for auditing
+  //    later — full row contents would be noise on the audit-log table.
+  await recordAuditEvent({
+    actorId: auth.session.userId,
+    actorRole: auth.session.role,
+    action: "created",
+    targetType: "company",
+    targetId: id,
+    after: {
+      name: input.name,
+      sector: input.sector,
+      geography: input.geography,
+      isJv: input.isJv,
+      complianceStatus: "pending",
+    },
+  });
+
   log.info("company created", {
     id,
     name: input.name,
@@ -382,10 +407,30 @@ export async function updateCompany(
     throw err;
   }
 
+  // 8. Audit. We capture before/after of only the fields the patch
+  //    touched, derived by walking the patch keys. Storing the full row
+  //    diff would inflate the audit log without much benefit — "what
+  //    changed" beats "what the row looked like" for forensic queries.
+  const touchedKeys = Object.keys(patch);
+  const beforeSnapshot = buildPatchSnapshot(existing, touchedKeys);
+  const afterSnapshot = buildPatchSnapshot(
+    { ...existing, ...patch } as Company,
+    touchedKeys,
+  );
+  await recordAuditEvent({
+    actorId: session.userId,
+    actorRole: session.role,
+    action: "updated",
+    targetType: "company",
+    targetId: input.id,
+    before: beforeSnapshot,
+    after: afterSnapshot,
+  });
+
   log.info("company updated", {
     id: input.id,
     actorId: session.userId,
-    fields: Object.keys(patch),
+    fields: touchedKeys,
   });
   return { ok: true };
 }
@@ -407,14 +452,49 @@ export async function deleteCompany(rawId: unknown): Promise<ActionResult> {
     return { ok: false, error: "Invalid company id" };
   }
 
+  // Use .returning() to get the deleted row back. That row IS the audit
+  // snapshot — once it's gone, we can't reconstruct it from anywhere
+  // else, so we capture the whole thing.
   const result = await db
     .delete(companies)
     .where(eq(companies.id, parsed.data.id))
-    .returning({ id: companies.id });
+    .returning();
 
   if (result.length === 0) {
     return { ok: false, error: "Company not found" };
   }
+
+  const deletedRow = result[0];
+
+  // Audit with the full pre-deletion row. Deletion is the one case
+  // where storing everything is justified — there's no canonical copy
+  // left to reference later.
+  await recordAuditEvent({
+    actorId: auth.session.userId,
+    actorRole: auth.session.role,
+    action: "deleted",
+    targetType: "company",
+    targetId: parsed.data.id,
+    before: {
+      name: deletedRow.name,
+      sector: deletedRow.sector,
+      geography: deletedRow.geography,
+      gstNumber: deletedRow.gstNumber,
+      panNumber: deletedRow.panNumber,
+      isJv: deletedRow.isJv,
+      complianceStatus: deletedRow.complianceStatus,
+      parentCompanyIds: deletedRow.parentCompanyIds,
+      contactEmail: deletedRow.contactEmail,
+      contactPhone: deletedRow.contactPhone,
+      contactPersonName: deletedRow.contactPersonName,
+      addressLine: deletedRow.addressLine,
+      city: deletedRow.city,
+      state: deletedRow.state,
+      pincode: deletedRow.pincode,
+      internalNotes: deletedRow.internalNotes,
+      createdAt: deletedRow.createdAt,
+    },
+  });
 
   log.info("company deleted", {
     id: parsed.data.id,
@@ -572,4 +652,26 @@ export async function listCompanies(
     page: query.page,
     perPage: query.perPage,
   };
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Build a partial snapshot of a company row, restricted to the named
+ * keys. Used to produce before/after audit payloads of only the fields
+ * that the patch actually touched.
+ *
+ * Accepts `string[]` (typically `Object.keys(patch)`) for ergonomics
+ * at the call site; the cast inside is safe because patch keys are
+ * derived from a typed `Partial<Insert>`.
+ */
+function buildPatchSnapshot(
+  row: Company,
+  keys: string[],
+): Record<string, unknown> {
+  const snapshot: Record<string, unknown> = {};
+  for (const key of keys) {
+    snapshot[key] = (row as unknown as Record<string, unknown>)[key];
+  }
+  return snapshot;
 }
