@@ -4,6 +4,13 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+  Theme bindings — wire CSS custom properties through Tailwind v4's
+  `--color-*` namespace so utilities like `bg-primary`, `text-muted-foreground`,
+  and `border-sidebar-border` resolve against the variables defined in :root
+  below. The list here mirrors shadcn's default; we override only the values,
+  not the names.
+*/
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -49,98 +56,107 @@
 }
 
 :root {
-  /* ──────────────────────────────────────────────────────
-     Consultway brand tokens
-     Navy #0D1B2A  →  oklch(0.211 0.034 253)
-     Red  #E04040  →  oklch(0.591 0.207 27.5)
-     Reference: docs/07-design-system.md
-     ────────────────────────────────────────────────────── */
+  /* ─────────────────────────────────────────────────────────────────────────
+     Consultway Ops — Warm Ambient palette (internal ops portal)
+     Source of truth: docs/design/palette/warm-ambient-palette.pdf
 
-  /* Surfaces */
-  --background: oklch(1 0 0);                       /* white */
-  --foreground: oklch(0.211 0.034 253);             /* navy — body text on light bg */
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.211 0.034 253);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.211 0.034 253);
+     Palette anchors (sRGB / hex → oklch):
+       Espresso     #2C1F0E  → oklch(0.235 0.024 60)   headings, body text, sidebar bg
+       Walnut       #7A6652  → oklch(0.494 0.029 60)   body copy, nav links
+       Driftwood    #A89880  → oklch(0.667 0.027 65)   sub-labels, placeholders
+       Terracotta   #B85C38  → oklch(0.578 0.131 38)   CTAs, active nav, accent bars
+       Blush tint   #FAE8DC  → oklch(0.939 0.025 50)   badge bg, tag pills, icon containers
+       Parchment    #FDFAF6  → oklch(0.987 0.005 80)   page background
+       Cream        #FDF7EF  → oklch(0.979 0.011 80)   highlights, hero surfaces
+       Sand         #F5EFE6  → oklch(0.952 0.015 80)   alternating sections
+       Linen        #EDE5D8  → oklch(0.917 0.017 75)   dividers, borders, hover states
+       White        #FFFFFF  → oklch(1     0    0)     card bg, form inputs
 
-  /* Primary — navy (main brand) */
-  --primary: oklch(0.211 0.034 253);                /* #0D1B2A */
-  --primary-foreground: oklch(0.985 0 0);           /* near-white */
+     Public marketing site (consultway.info) intentionally uses a different
+     palette (navy + red, per Consultway_Website_Requirements.pdf). That's
+     by design — marketing aesthetics and ops-portal aesthetics serve
+     different goals.
+     ───────────────────────────────────────────────────────────────────── */
 
-  /* Secondary — deep blue (hover states, surfaces) */
-  --secondary: oklch(0.297 0.045 253);              /* #1A3A5C */
-  --secondary-foreground: oklch(0.985 0 0);
+  /* Surfaces — light and editorial. Page sits on Parchment, cards on white. */
+  --background: oklch(0.987 0.005 80);              /* Parchment #FDFAF6 */
+  --foreground: oklch(0.235 0.024 60);              /* Espresso #2C1F0E — primary text on light bg */
+  --card: oklch(1 0 0);                             /* White — card bg */
+  --card-foreground: oklch(0.235 0.024 60);         /* Espresso */
+  --popover: oklch(1 0 0);                          /* White */
+  --popover-foreground: oklch(0.235 0.024 60);      /* Espresso */
 
-  /* Muted — light grey backgrounds, subtle surfaces */
-  --muted: oklch(0.968 0 0);                        /* #F5F5F5 */
-  --muted-foreground: oklch(0.556 0 0);             /* #888 — secondary text */
+  /* Primary — Espresso. Used as default solid-button bg, dense surfaces. */
+  --primary: oklch(0.235 0.024 60);                 /* Espresso */
+  --primary-foreground: oklch(0.987 0.005 80);      /* Parchment */
 
-  /* Accent — brand red (CTAs, active indicators) */
-  --accent: oklch(0.591 0.207 27.5);                /* #E04040 */
-  --accent-foreground: oklch(0.985 0 0);
+  /* Secondary — Walnut. Slightly softer than primary, used for hover and
+     subtler emphases. */
+  --secondary: oklch(0.494 0.029 60);               /* Walnut #7A6652 */
+  --secondary-foreground: oklch(0.987 0.005 80);    /* Parchment */
 
-  /* Destructive — same red, semantically different */
-  --destructive: oklch(0.591 0.207 27.5);
+  /* Muted — Sand backgrounds and Walnut secondary text. The palette guide
+     says Sand goes on alternating sections; in app UI that maps to muted
+     surfaces (table header rows, inactive panels). Driftwood is the
+     placeholder/sub-label color — assigned to muted-foreground. */
+  --muted: oklch(0.952 0.015 80);                   /* Sand #F5EFE6 */
+  --muted-foreground: oklch(0.667 0.027 65);        /* Driftwood #A89880 */
 
-  /* Borders, inputs, focus rings */
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.591 0.207 27.5);                  /* red focus ring */
+  /* Accent — Terracotta. Reserved for CTAs, active states, focus rings,
+     step numbers, accent bars. Use sparingly per the palette doc. */
+  --accent: oklch(0.578 0.131 38);                  /* Terracotta #B85C38 */
+  --accent-foreground: oklch(1 0 0);                /* White on terracotta */
 
-  /* Chart palette — navy shades + accent red */
-  --chart-1: oklch(0.211 0.034 253);                /* navy */
-  --chart-2: oklch(0.297 0.045 253);                /* deep blue */
-  --chart-3: oklch(0.591 0.207 27.5);               /* accent red */
-  --chart-4: oklch(0.556 0 0);                      /* grey */
-  --chart-5: oklch(0.708 0 0);                      /* light grey */
+  /* Destructive — a deeper, redder shade of terracotta so destructive
+     actions don't look identical to primary CTAs. Same hue family,
+     pulled toward red and darker so it reads "danger" without breaking
+     palette discipline. */
+  --destructive: oklch(0.510 0.165 28);             /* deep terracotta-red */
+
+  /* Borders, inputs, focus rings — Linen for borders, terracotta for focus
+     so the brand colour appears on every active interaction. */
+  --border: oklch(0.917 0.017 75);                  /* Linen #EDE5D8 */
+  --input: oklch(0.917 0.017 75);                   /* Linen */
+  --ring: oklch(0.578 0.131 38);                    /* Terracotta focus ring */
+
+  /* Chart palette — five colors that read as a coherent set on Parchment.
+     Built around the brand anchors so charts feel native to the app. */
+  --chart-1: oklch(0.578 0.131 38);                 /* Terracotta — primary metric */
+  --chart-2: oklch(0.494 0.029 60);                 /* Walnut */
+  --chart-3: oklch(0.667 0.027 65);                 /* Driftwood */
+  --chart-4: oklch(0.235 0.024 60);                 /* Espresso */
+  --chart-5: oklch(0.917 0.017 75);                 /* Linen (lightest, often used for "rest" / inactive slice) */
 
   --radius: 0.5rem;
 
-  /* Sidebar — dark navy with red active state */
-  --sidebar: oklch(0.211 0.034 253);                /* navy bg */
-  --sidebar-foreground: oklch(0.985 0 0);           /* white text */
-  --sidebar-primary: oklch(0.591 0.207 27.5);       /* red for active item */
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.297 0.045 253);         /* blue hover */
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.297 0.045 253);
-  --sidebar-ring: oklch(0.591 0.207 27.5);
+  /* Sidebar — Espresso (dark warm brown, not navy). The figma uses dark
+     navy; we use Espresso so the sidebar stays in palette. Terracotta is
+     the active-item highlight, matching how the public site uses
+     terracotta for active nav. */
+  --sidebar: oklch(0.235 0.024 60);                 /* Espresso bg */
+  --sidebar-foreground: oklch(0.987 0.005 80);      /* Parchment text */
+  --sidebar-primary: oklch(0.578 0.131 38);         /* Terracotta — active item */
+  --sidebar-primary-foreground: oklch(1 0 0);       /* White on terracotta */
+  --sidebar-accent: oklch(0.310 0.027 60);          /* Slightly-lifted espresso — hover state */
+  --sidebar-accent-foreground: oklch(0.987 0.005 80);
+  --sidebar-border: oklch(0.310 0.027 60);          /* Same lift as hover — invisible-but-present dividers */
+  --sidebar-ring: oklch(0.578 0.131 38);            /* Terracotta focus ring */
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-}
+/*
+  Dark mode — intentionally not yet defined for production use.
+
+  Day 1 set up a navy-based dark mode that no longer matches the Warm
+  Ambient palette. Rather than half-build a dark variant now and ship
+  something that mixes palettes, we keep the dark block empty for now.
+  When dark mode comes back as a real requirement, we'll design it
+  deliberately (probably an inverted-espresso surface with terracotta
+  accents preserved, NOT a navy/grey shadcn default).
+
+  Tailwind only consults `.dark` when the class is present on an
+  ancestor, so omitting the block has zero effect today — the app is
+  light-mode-only and renders fine.
+*/
 
 @layer base {
   * {
