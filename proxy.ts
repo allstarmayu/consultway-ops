@@ -1,25 +1,35 @@
 /**
- * Next.js middleware — runs on every request that matches the `matcher`.
+ * Next.js proxy — runs on every request that matches the `matcher`.
+ *
+ * Previously named `middleware.ts` in Next.js 15 and earlier. As of
+ * Next.js 16 the file convention is `proxy.ts` with an exported `proxy()`
+ * function. The rename clarifies that this file sits at the network
+ * boundary (not as request-pipeline middleware in the Express sense),
+ * and the framework now runs it on the Node.js runtime instead of Edge.
+ *
+ * Migration notes (in case we ever roll back or want Edge again):
+ *   - Function: was `export async function middleware(req)`, now `proxy(req)`
+ *   - Runtime: was Edge, now Node.js (not configurable on proxy.ts)
+ *   - Behaviour: identical — same redirects, same matcher, same JWT check
  *
  * Responsibilities:
  *   - Protect `/dashboard/*` from unauthenticated users (→ /login)
  *   - Redirect already-logged-in users away from `/login` (→ /dashboard)
  *   - Pass through everything else untouched
  *
- * Runs in the Edge runtime, so:
- *   - No Node APIs (no `fs`, no DB)
- *   - No `next/headers` — read cookies from `request.cookies` directly
- *   - Use `jose` (which works in both Node and Edge)
+ * The Next.js team advises keeping proxy.ts lightweight — the "thin
+ * proxy" pattern. Avoid heavy DB lookups here; route them through
+ * Server Components and Server Actions instead. Our current usage
+ * (cookie read + JWT verify + redirect) already fits the lightweight
+ * profile, so no refactor needed.
  *
- * Authorization checks beyond "is there a valid session" (e.g., role checks
- * on /admin/*) can be added here by inspecting the verified payload.
- *
- * @module middleware
+ * @module proxy
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/session";
 
-// ── Config ──────────────────────────────────────────────────────────
+// ── Config ──────────────────────────────────────────────────────────────────
+
 /** Paths that require an authenticated session. Prefix match. */
 const PROTECTED_PREFIXES = ["/dashboard"];
 
@@ -32,8 +42,9 @@ const LOGIN_PATH = "/login";
 /** Where to send authenticated users hitting an auth page. */
 const DEFAULT_AUTHED_PATH = "/dashboard";
 
-// ── Middleware ──────────────────────────────────────────────────────
-export async function middleware(request: NextRequest): Promise<NextResponse> {
+// ── Proxy ───────────────────────────────────────────────────────────────────
+
+export async function proxy(request: NextRequest): Promise<NextResponse> {
   const { pathname, search } = request.nextUrl;
 
   const isProtected = PROTECTED_PREFIXES.some(
@@ -46,7 +57,9 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     return NextResponse.next();
   }
 
-  // Verify session from the cookie. jose.verify works in Edge runtime.
+  // Verify session from the cookie. jose.verify works in both Node and
+  // Edge runtimes; we're on Node now (proxy.ts default) but the call
+  // itself is runtime-agnostic.
   const token = request.cookies.get(SESSION_COOKIE)?.value;
   const session = await verifySession(token);
 
@@ -72,11 +85,15 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   return NextResponse.next();
 }
 
-// ── Matcher ─────────────────────────────────────────────────────────
+// ── Matcher ─────────────────────────────────────────────────────────────────
+
 /**
- * Only run this middleware on paths that could possibly need auth logic.
+ * Only run this proxy on paths that could possibly need auth logic.
  * Exclude Next internals, static assets, and common public files — there's
  * no reason to verify a JWT for /favicon.ico or /_next/static/*.css.
+ *
+ * The matcher syntax is identical between middleware.ts and proxy.ts —
+ * no migration needed here.
  */
 export const config = {
   matcher: [
