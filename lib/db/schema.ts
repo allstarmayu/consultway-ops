@@ -32,9 +32,8 @@ export type UserRole = "admin" | "staff" | "company";
  *   - `company` — Employee of a registered client company. Linked via `companyId`.
  *
  * For `admin` / `staff`, `companyId` is NULL. For `company`, it points to
- * the `companies` table (which doesn't exist yet — added in a later chunk).
- * The FK constraint will be retrofitted then. For now the column is just
- * a nullable TEXT with an index for lookup performance.
+ * `companies.id` with an `ON DELETE SET NULL` foreign key — see the
+ * `companyId` column below for full rationale.
  */
 export const users = sqliteTable(
   "users",
@@ -51,8 +50,27 @@ export const users = sqliteTable(
     /** See `UserRole`. Validated app-side with Zod. */
     role: text("role").notNull().$type<UserRole>(),
 
-    /** FK to companies.id — nullable for admin/staff. Constraint added later. */
-    companyId: text("company_id"),
+    /**
+     * FK to `companies.id`. NULL for admin/staff (who don't belong to any
+     * company). `ON DELETE SET NULL` semantics: if a company row is deleted,
+     * its linked users survive as orphaned rows for admin review rather
+     * than getting cascade-deleted — losing user history because a company
+     * record was cleaned up would be bad.
+     *
+     * The FK uses a forward-reference function `() => companies.id` because
+     * the `companies` table is defined later in this file. Drizzle resolves
+     * the reference lazily at query-build time, so the textual ordering of
+     * declarations doesn't matter — only that everything is exported from
+     * the same module.
+     *
+     * Note: SQLite enforces FKs only when `PRAGMA foreign_keys = ON`. We
+     * set that pragma in `lib/db/index.ts` for the dev driver, and D1
+     * enforces FKs by default in production.
+     */
+    companyId: text("company_id").references(() => companies.id, {
+      onDelete: "set null",
+      onUpdate: "no action",
+    }),
 
     /** Display name. */
     name: text("name").notNull(),

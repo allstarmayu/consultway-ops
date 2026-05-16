@@ -15,6 +15,13 @@
       "when": 1776386017894,
       "tag": "0001_loving_serpent_society",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1778900389961,
+      "tag": "0002_peaceful_blizzard",
+      "breakpoints": true
     }
   ]
 }
