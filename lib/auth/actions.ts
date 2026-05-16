@@ -29,7 +29,7 @@ import { logger } from "@/lib/logger";
 
 const log = logger.child({ module: "auth-actions" });
 
-// ── Result types ────────────────────────────────────────────────────
+// ── Result types ────────────────────────────────────────────────────────────
 /**
  * Server Action result. The UI pattern is:
  *   const result = await login(input);
@@ -40,7 +40,7 @@ export type ActionResult =
   | { ok: true }
   | { ok: false; error: string; field?: "email" | "password" | "form" };
 
-// ── Private: timing-safe dummy hash ─────────────────────────────────
+// ── Private: timing-safe dummy hash ─────────────────────────────────────────
 /**
  * Lazy-computed dummy bcrypt hash. We compare against this when the
  * email doesn't exist in the DB, so the response time matches the
@@ -57,7 +57,7 @@ async function getDummyHash(): Promise<string> {
   return dummyHashCache;
 }
 
-// ── Public: login ───────────────────────────────────────────────────
+// ── Public: login ───────────────────────────────────────────────────────────
 /**
  * Verify credentials, create a session, redirect to /dashboard.
  *
@@ -110,11 +110,14 @@ export async function login(rawInput: unknown): Promise<ActionResult> {
     };
   }
 
-  // 6. Issue the session cookie.
+  // 6. Issue the session cookie. `companyId` is carried into the JWT
+  //    so row-scoped reads (companies, documents, tenders) can authorise
+  //    without an extra users-table lookup on every request.
   await createSession({
     userId: user.id,
     email: user.email,
     role: user.role,
+    companyId: user.companyId,
   });
 
   // 7. Stamp last_login_at. Non-critical — failure doesn't break login.
@@ -134,7 +137,7 @@ export async function login(rawInput: unknown): Promise<ActionResult> {
   redirect("/dashboard");
 }
 
-// ── Public: logout ──────────────────────────────────────────────────
+// ── Public: logout ──────────────────────────────────────────────────────────
 /**
  * Clear the session cookie and redirect to /login.
  *

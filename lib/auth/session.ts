@@ -7,7 +7,7 @@
  * Design:
  *   - Session state lives in a signed JWT inside an httpOnly cookie
  *   - Cookie is scoped to the whole app, SameSite=Lax, Secure in prod
- *   - Payload holds only non-secret identifiers (userId, email, role)
+ *   - Payload holds only non-secret identifiers (userId, email, role, companyId)
  *   - 7-day expiry; user must re-authenticate after that
  *
  * Callers:
@@ -26,7 +26,7 @@ import type { UserRole } from "@/lib/db/schema";
 
 const log = logger.child({ module: "session" });
 
-// ── Constants ────────────────────────────────────────────────────────
+// ── Constants ───────────────────────────────────────────────────────────────
 /** Cookie name. Scoped to this project to avoid collisions on shared domains. */
 const SESSION_COOKIE = "cw_session";
 
@@ -42,7 +42,7 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
  */
 const signingKey = new TextEncoder().encode(env.JWT_SECRET);
 
-// ── Types ────────────────────────────────────────────────────────────
+// ── Types ───────────────────────────────────────────────────────────────────
 /**
  * What we store in the JWT payload. Keep this minimal — JWTs aren't
  * encrypted, only signed. Anything here is readable by whoever has
@@ -55,9 +55,17 @@ export interface SessionPayload extends JWTPayload {
   email: string;
   /** Role for quick permission checks without a DB roundtrip. */
   role: UserRole;
+  /**
+   * Linked company UUID for `company`-role users. NULL for `admin` /
+   * `staff`. Cached in the JWT so row-scoped reads (e.g. "my company")
+   * don't need a users-table lookup on every request. If the user's
+   * company link changes server-side, they'll keep their old scope
+   * until the next login — acceptable for our threat model.
+   */
+  companyId: string | null;
 }
 
-// ── Public API ──────────────────────────────────────────────────────
+// ── Public API ──────────────────────────────────────────────────────────────
 
 /**
  * Sign a session payload into a JWT string. Does NOT set the cookie.
@@ -142,7 +150,7 @@ export async function destroySession(): Promise<void> {
   log.info("session destroyed");
 }
 
-// ── Exports for edge runtime (middleware) ───────────────────────────
+// ── Exports for edge runtime (middleware) ───────────────────────────────────
 /**
  * Cookie name — re-exported so middleware.ts can read the raw cookie
  * without pulling in the Server-only `next/headers` import.
