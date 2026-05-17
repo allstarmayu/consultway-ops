@@ -169,3 +169,37 @@
     @apply font-sans;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Dashboard text-selection policy
+
+   The internal ops portal feels closer to a desktop app than a content
+   website. By default we DISABLE text-selection on the dashboard — clicking
+   a tender title or company name shouldn't drop a blinking text caret into
+   the middle of read-only display surfaces.
+
+   Selection is RE-ENABLED on:
+     - form inputs and textareas (paste-into needs to work)
+     - any element with `contenteditable`
+     - any element explicitly marked with the Tailwind `select-text` utility
+       — handy escape hatch when a specific cell needs to be copy-able
+       (we apply it to description text, internal notes, cover notes,
+       and any monospace identifier like GST/PAN/reference numbers)
+
+   The scope is gated by the `data-dashboard-root` attribute on the
+   dashboard layout's outer div. The login page and any future marketing
+   route stay outside this scope, so their text remains selectable by
+   default the way users expect on a web page.
+   ───────────────────────────────────────────────────────────────────── */
+[data-dashboard-root] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+[data-dashboard-root] input,
+[data-dashboard-root] textarea,
+[data-dashboard-root] [contenteditable="true"],
+[data-dashboard-root] .select-text {
+  user-select: text;
+  -webkit-user-select: text;
+}

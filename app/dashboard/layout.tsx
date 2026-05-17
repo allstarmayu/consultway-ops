@@ -15,6 +15,13 @@
  * figma puts the page title flush against the top of the content area
  * (no separate header strip between sidebar and content).
  *
+ * The outer wrapper carries `data-dashboard-root` so the global CSS can
+ * scope its text-selection policy to the dashboard only (see
+ * `app/globals.css` — the dashboard disables user-select by default on
+ * read-only display text so clicks on titles / labels don't drop a text
+ * caret. The login page and any future public route stay outside this
+ * scope and keep their default selectable text.)
+ *
  * @module app/dashboard/layout
  */
 import { redirect } from "next/navigation";
@@ -28,7 +35,10 @@ export default async function DashboardLayout({
   if (!session) redirect("/login");
 
   return (
-    <div className="flex min-h-screen bg-background">
+    <div
+      data-dashboard-root
+      className="flex min-h-screen bg-background"
+    >
       {/* Sidebar — fixed width, Espresso bg, full-height. Client Component
           for usePathname() active-state. Props are plain serializable
           values passed from the server. */}
