@@ -1,27 +1,24 @@
 /**
- * Database seed script.
+ * Seed script — populates the local SQLite DB with a baseline dataset
+ * for development and demos.
  *
- * Creates baseline data every Consultway environment needs:
+ * What gets seeded:
+ *   1. The two default users (admin@consultway.local, staff@consultway.local).
+ *   2. The Consultway Infotech sentinel company — used as the publisher FK
+ *      target for internal tenders (i.e. tenders Consultway itself runs,
+ *      as opposed to subcontract tenders run by a registered company).
+ *   3. Five standalone client companies covering the three primary
+ *      compliance states.
+ *   4. Two joint ventures wired up by partner-name lookup.
  *
- *   Users:
- *     - admin@consultway.local (role: admin, password: ChangeMe123!)
- *     - staff@consultway.local (role: staff, password: ChangeMe123!)
+ * Every step is idempotent — running `pnpm db:seed` against an already-
+ * seeded DB skips existing rows and logs them as "skipped." Safe to re-run
+ * after a `db:push` that didn't reset the DB.
  *
- *   Companies:
- *     - Three standalone companies covering different sectors / geographies
- *       / compliance states.
- *     - Two joint ventures whose `parentCompanyIds` reference two of the
- *       standalones above. JVs are inserted AFTER their parents exist so
- *       the UUIDs can be looked up.
- *
- * Idempotent: running twice won't crash or create duplicates — it checks
- * for existing rows by email (users) or name (companies) and skips
- * seeding if found. Safe to run after a `db:migrate` or fresh clone.
- *
- * Usage:  pnpm db:seed
- *
- * Node-only. Connects to the local SQLite file directly via lib/db —
- * never run this against production.
+ * Cloudflare D1 note: this script targets the local better-sqlite3 driver
+ * (see lib/db/index.ts). It is not designed to run against a remote D1
+ * database — for that we'd use `wrangler d1 execute --remote` against a
+ * dedicated production seed SQL file.
  *
  * @module scripts/seed
  */
@@ -31,128 +28,129 @@ import { db } from "@/lib/db";
 import {
   users,
   companies,
-  type NewUser,
-  type NewCompany,
   type ComplianceStatus,
+  type NewCompany,
+  type UserRole,
 } from "@/lib/db/schema";
-import { hashPassword } from "@/lib/auth/password";
 import { newId } from "@/lib/db/ids";
+import { hashPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
 
 const log = logger.child({ module: "seed" });
 
-// ── User seeds ──────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────
 
 /**
- * Baseline users. Passwords match across both so dev can log in with
- * the obvious credential. Production MUST change these.
+ * Name of the Consultway Infotech sentinel company row. Used as the
+ * publisher FK target for internal tenders. Kept as a constant so the
+ * tenders module can import it without hard-coding the string in two
+ * places. (When the tenders seed lands, we'll re-export this from a
+ * shared module and have both files reference one source of truth.)
  */
-const SEED_USERS: Array<
-  Omit<NewUser, "id" | "passwordHash"> & { plaintextPassword: string }
-> = [
+export const CONSULTWAY_PUBLISHER_NAME = "Consultway Infotech";
+
+// ── Seed data: users ──────────────────────────────────────────────────────
+
+interface UserSeed {
+  email: string;
+  plaintextPassword: string;
+  role: UserRole;
+  name: string;
+  companyId: string | null;
+  isActive: boolean;
+  emailVerifiedAt: string | null;
+}
+
+const SEED_USERS: UserSeed[] = [
   {
     email: "admin@consultway.local",
-    name: "Consultway Admin",
+    plaintextPassword: "ChangeMe123!",
     role: "admin",
+    name: "Consultway Admin",
     companyId: null,
     isActive: true,
     emailVerifiedAt: new Date().toISOString(),
-    plaintextPassword: "ChangeMe123!",
   },
   {
     email: "staff@consultway.local",
-    name: "Consultway Staff",
+    plaintextPassword: "ChangeMe123!",
     role: "staff",
+    name: "Consultway Staff",
     companyId: null,
     isActive: true,
     emailVerifiedAt: new Date().toISOString(),
-    plaintextPassword: "ChangeMe123!",
   },
 ];
 
-// ── Company seeds ───────────────────────────────────────────────────────────
+// ── Seed data: standalone companies ───────────────────────────────────────
 
 /**
- * Shape for a standalone company seed — no parent linkage needed.
- * The `id` is generated at insert time; everything else is declared.
- *
- * Why a separate type from `NewCompany`: NewCompany requires `id` and
- * also lets you pass `parentCompanyIds`. For standalone companies we
- * want neither — id is generated, partners are always null. This type
- * makes that contract explicit.
+ * Shape used for the standalone (non-JV) company seeds below. Mirrors
+ * `NewCompany` minus the columns the seed script sets itself (`id`,
+ * `isJv`, `parentCompanyIds`).
  */
-type StandaloneSeed = Omit<
-  NewCompany,
-  "id" | "isJv" | "parentCompanyIds" | "complianceStatus"
-> & {
+type StandaloneSeed = Omit<NewCompany, "id" | "isJv" | "parentCompanyIds"> & {
   complianceStatus: ComplianceStatus;
 };
 
-/**
- * Three standalone companies. Different sectors, different geographies,
- * different compliance states — so the figma's filter UI can be tried
- * end-to-end against real(ish) data.
- *
- * GST/PAN values follow the official Indian formats (15 chars GST, 10
- * chars PAN, with PAN embedded in GST positions 3-12) and pass the Zod
- * regex in lib/companies/schemas.ts. They're not real registered values.
- */
 const STANDALONE_COMPANIES: StandaloneSeed[] = [
   {
     name: "Acme Construction Pvt Ltd",
     sector: "Infrastructure",
-    geography: "Pan India",
-    gstNumber: "27ABCDE1234F1Z5",
-    panNumber: "ABCDE1234F",
-    isMsme: true,
+    geography: "Maharashtra",
+    gstNumber: "27AAACA1234A1Z5",
+    panNumber: "AAACA1234A",
+    isMsme: false,
     complianceStatus: "compliant",
-    contactEmail: "info@acmeconstruction.example",
+    contactEmail: "contact@acme-construction.example",
     contactPhone: "+91 22 5550 1100",
-    contactPersonName: "Rohan Mehta",
-    addressLine: "Plot 14, MIDC Industrial Area",
+    contactPersonName: "Rajesh Patel",
+    addressLine: "Plot 12, Andheri Industrial Estate",
     city: "Mumbai",
     state: "Maharashtra",
     pincode: "400093",
     internalNotes:
-      "Long-standing partner. Strong execution on highway and metro projects.",
+      "Strong track record on metro rail projects. Verified financials Q1 2026.",
   },
   {
     name: "BuildRight Engineers",
     sector: "Civil Works",
-    geography: "North India",
-    gstNumber: "07XYZAB5678P1Z3",
-    panNumber: "XYZAB5678P",
-    isMsme: false,
+    geography: "Karnataka",
+    gstNumber: "29AABCB5678B2Z6",
+    panNumber: "AABCB5678B",
+    isMsme: true,
     complianceStatus: "compliant",
-    contactEmail: "contact@buildrighteng.example",
-    contactPhone: "+91 11 4022 3300",
-    contactPersonName: "Priya Sharma",
-    addressLine: "Tower B, DLF Cyber City",
-    city: "Gurugram",
-    state: "Haryana",
-    pincode: "122002",
+    contactEmail: "hello@buildright.example",
+    contactPhone: "+91 80 4040 2200",
+    contactPersonName: "Priya Iyer",
+    addressLine: "Brigade Tech Park, Whitefield",
+    city: "Bengaluru",
+    state: "Karnataka",
+    pincode: "560066",
     internalNotes:
-      "Specialises in bridges and elevated corridors. Documents up to date as of last audit.",
+      "MSME-certified, qualifies for reserved tenders. Strong on water infrastructure.",
   },
   {
     name: "GreenTech Solutions",
-    sector: "IT Services",
-    geography: "Karnataka",
-    gstNumber: "29PQRST9012M1Z7",
-    panNumber: "PQRST9012M",
-    isMsme: true,
+    sector: "Solar EPC",
+    geography: "Tamil Nadu",
+    gstNumber: "33AACCG9012C1Z3",
+    panNumber: "AACCG9012C",
+    isMsme: false,
     complianceStatus: "pending",
-    contactEmail: "hello@greentechsol.example",
-    contactPhone: "+91 80 4150 8800",
-    contactPersonName: "Arjun Iyer",
-    addressLine: "WeWork Galaxy, Residency Road",
-    city: "Bengaluru",
-    state: "Karnataka",
-    pincode: "560025",
+    contactEmail: "ops@greentech.example",
+    contactPhone: "+91 44 4040 3300",
+    contactPersonName: "Karthik Subramaniam",
+    addressLine: "OMR Tech Boulevard, Sholinganallur",
+    city: "Chennai",
+    state: "Tamil Nadu",
+    pincode: "600119",
     internalNotes:
-      "New registration. Awaiting GST verification document upload.",
+      "Onboarding paperwork in review. Awaiting GST verification callback.",
   },
 ];
+
+// ── Seed data: joint ventures ─────────────────────────────────────────────
 
 /**
  * Joint ventures reference parent companies by NAME at seed time, then
@@ -211,7 +209,7 @@ const JV_COMPANIES: JvSeed[] = [
   },
 ];
 
-// ── Seeding helpers ─────────────────────────────────────────────────────────
+// ── Seeding helpers ───────────────────────────────────────────────────────
 
 /**
  * Seed one user. Returns whether it was created or skipped.
@@ -244,6 +242,65 @@ async function seedUser(
   });
 
   log.info("seeded user", { email: spec.email, role: spec.role });
+  return "created";
+}
+
+/**
+ * Seed the Consultway Infotech sentinel company row.
+ *
+ * This row is the publisher FK target for internal tenders (tenders that
+ * Consultway itself runs, as opposed to subcontract tenders published by
+ * a real client company). Keeping it as a regular `companies` row means
+ * the tenders schema only needs a single `publisherCompanyId` FK — no
+ * special "is_internal" branch in queries.
+ *
+ * Idempotent by name. The row is marked compliant and as a non-MSME,
+ * non-JV with placeholder identifiers — it's not a real registered
+ * business but rather an internal sentinel, and the UI won't typically
+ * show it in the public company roster (we'll add a filter exclusion in
+ * the companies list when the tender-publish flow lands).
+ */
+async function seedConsultwayPublisher(): Promise<"created" | "skipped"> {
+  const existing = await db
+    .select({ id: companies.id })
+    .from(companies)
+    .where(eq(companies.name, CONSULTWAY_PUBLISHER_NAME))
+    .limit(1);
+
+  if (existing.length > 0) {
+    log.info("Consultway publisher already exists, skipping", {
+      name: CONSULTWAY_PUBLISHER_NAME,
+    });
+    return "skipped";
+  }
+
+  await db.insert(companies).values({
+    id: newId(),
+    name: CONSULTWAY_PUBLISHER_NAME,
+    sector: "Consulting",
+    geography: "Pan India",
+    // No GST/PAN — this is an internal sentinel, not a registered org row.
+    // Leaving these NULL avoids colliding with real company unique constraints.
+    gstNumber: null,
+    panNumber: null,
+    isMsme: false,
+    isJv: false,
+    complianceStatus: "compliant",
+    parentCompanyIds: null,
+    contactEmail: "ops@consultway.local",
+    contactPhone: null,
+    contactPersonName: "Consultway Operations",
+    addressLine: null,
+    city: null,
+    state: null,
+    pincode: null,
+    internalNotes:
+      "Internal sentinel company. Used as the publisher of Consultway-run tenders. Do not delete.",
+  });
+
+  log.info("seeded Consultway publisher company", {
+    name: CONSULTWAY_PUBLISHER_NAME,
+  });
   return "created";
 }
 
@@ -360,7 +417,7 @@ async function seedJvCompany(
   return "created";
 }
 
-// ── Main ────────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   log.info("starting seed");
@@ -375,18 +432,27 @@ async function main(): Promise<void> {
     bump(await seedUser(spec));
   }
 
-  // 2. Standalone companies — must exist before JVs that reference them.
+  // 2. Consultway publisher sentinel — must exist before any tender seed
+  //    runs (when those land) since `tenders.publisherCompanyId` is NOT
+  //    NULL. Ordered before client companies so the publisher row reliably
+  //    has the lowest createdAt timestamp.
+  bump(await seedConsultwayPublisher());
+
+  // 3. Standalone companies — must exist before JVs that reference them.
   for (const spec of STANDALONE_COMPANIES) {
     bump(await seedStandaloneCompany(spec));
   }
 
-  // 3. JVs last — they look up their partners by name.
+  // 4. JVs last — they look up their partners by name.
   for (const spec of JV_COMPANIES) {
     bump(await seedJvCompany(spec));
   }
 
   const total =
-    SEED_USERS.length + STANDALONE_COMPANIES.length + JV_COMPANIES.length;
+    SEED_USERS.length +
+    1 + // Consultway publisher
+    STANDALONE_COMPANIES.length +
+    JV_COMPANIES.length;
 
   log.info("seed complete", {
     created: stats.created,
