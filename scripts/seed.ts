@@ -3,13 +3,18 @@
  * for development and demos.
  *
  * What gets seeded:
- *   1. The two default users (admin@consultway.local, staff@consultway.local).
- *   2. The Consultway Infotech sentinel company — used as the publisher FK
- *      target for internal tenders (i.e. tenders Consultway itself runs,
- *      as opposed to subcontract tenders run by a registered company).
+ *   1. The two default Consultway users (admin@consultway.local,
+ *      staff@consultway.local). Both have `companyId: null` since
+ *      Consultway staff don't belong to any client company.
+ *   2. The Consultway Infotech sentinel company — used as the publisher
+ *      FK target for internal tenders.
  *   3. Five standalone client companies covering the three primary
  *      compliance states.
  *   4. Two joint ventures wired up by partner-name lookup.
+ *   5. A company-role test user (acme@example.local) linked to
+ *      "Acme Construction Pvt Ltd" — used for testing the apply-to-
+ *      tender flow end-to-end. Seeded AFTER companies because we need
+ *      Acme's UUID to populate the user's companyId.
  *
  * Every step is idempotent — running `pnpm db:seed` against an already-
  * seeded DB skips existing rows and logs them as "skipped." Safe to re-run
@@ -49,25 +54,23 @@ const log = logger.child({ module: "seed" });
  */
 export const CONSULTWAY_PUBLISHER_NAME = "Consultway Infotech";
 
-// ── Seed data: users ──────────────────────────────────────────────────────
+// ── Seed data: Consultway staff users (no company link) ───────────────────
 
-interface UserSeed {
+interface StaffUserSeed {
   email: string;
   plaintextPassword: string;
   role: UserRole;
   name: string;
-  companyId: string | null;
   isActive: boolean;
   emailVerifiedAt: string | null;
 }
 
-const SEED_USERS: UserSeed[] = [
+const SEED_STAFF_USERS: StaffUserSeed[] = [
   {
     email: "admin@consultway.local",
     plaintextPassword: "ChangeMe123!",
     role: "admin",
     name: "Consultway Admin",
-    companyId: null,
     isActive: true,
     emailVerifiedAt: new Date().toISOString(),
   },
@@ -76,7 +79,38 @@ const SEED_USERS: UserSeed[] = [
     plaintextPassword: "ChangeMe123!",
     role: "staff",
     name: "Consultway Staff",
-    companyId: null,
+    isActive: true,
+    emailVerifiedAt: new Date().toISOString(),
+  },
+];
+
+// ── Seed data: company-role test users (linked to a client company) ───────
+
+/**
+ * Company-role users are seeded AFTER companies — we need the target
+ * company's UUID to populate `companyId`. The seed resolves the company
+ * by name at seed time, same way JV partner refs work.
+ *
+ * Each entry below specifies the company NAME, not the UUID. The
+ * seeder looks it up. Fails loudly if the named company doesn't exist
+ * (would mean the standalones didn't seed, which is itself a bug).
+ */
+interface CompanyUserSeed {
+  email: string;
+  plaintextPassword: string;
+  name: string;
+  /** Name of the company this user belongs to. Resolved to UUID. */
+  companyName: string;
+  isActive: boolean;
+  emailVerifiedAt: string | null;
+}
+
+const SEED_COMPANY_USERS: CompanyUserSeed[] = [
+  {
+    email: "acme@example.local",
+    plaintextPassword: "ChangeMe123!",
+    name: "Rajesh Patel (Acme)",
+    companyName: "Acme Construction Pvt Ltd",
     isActive: true,
     emailVerifiedAt: new Date().toISOString(),
   },
@@ -212,10 +246,11 @@ const JV_COMPANIES: JvSeed[] = [
 // ── Seeding helpers ───────────────────────────────────────────────────────
 
 /**
- * Seed one user. Returns whether it was created or skipped.
+ * Seed one Consultway staff user (admin or staff role, no company link).
+ * Returns whether it was created or skipped.
  */
-async function seedUser(
-  spec: (typeof SEED_USERS)[number],
+async function seedStaffUser(
+  spec: StaffUserSeed,
 ): Promise<"created" | "skipped"> {
   const existing = await db
     .select({ id: users.id })
@@ -235,13 +270,66 @@ async function seedUser(
     email: spec.email,
     passwordHash,
     role: spec.role,
-    companyId: spec.companyId,
+    companyId: null,
     name: spec.name,
     isActive: spec.isActive,
     emailVerifiedAt: spec.emailVerifiedAt,
   });
 
   log.info("seeded user", { email: spec.email, role: spec.role });
+  return "created";
+}
+
+/**
+ * Seed one company-role user. Looks up the named company at insert
+ * time so the user's `companyId` FK is real. Throws if the named
+ * company doesn't exist — that would mean the standalone-companies
+ * step didn't run first, which is a bug worth surfacing loudly.
+ */
+async function seedCompanyUser(
+  spec: CompanyUserSeed,
+): Promise<"created" | "skipped"> {
+  const existing = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, spec.email))
+    .limit(1);
+
+  if (existing.length > 0) {
+    log.info("company user already exists, skipping", { email: spec.email });
+    return "skipped";
+  }
+
+  const company = await db
+    .select({ id: companies.id })
+    .from(companies)
+    .where(eq(companies.name, spec.companyName))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!company) {
+    throw new Error(
+      `Company-role user "${spec.email}" references company "${spec.companyName}" but no such company exists. Did the standalone seeds run first?`,
+    );
+  }
+
+  const passwordHash = await hashPassword(spec.plaintextPassword);
+
+  await db.insert(users).values({
+    id: newId(),
+    email: spec.email,
+    passwordHash,
+    role: "company",
+    companyId: company.id,
+    name: spec.name,
+    isActive: spec.isActive,
+    emailVerifiedAt: spec.emailVerifiedAt,
+  });
+
+  log.info("seeded company user", {
+    email: spec.email,
+    companyName: spec.companyName,
+  });
   return "created";
 }
 
@@ -427,9 +515,9 @@ async function main(): Promise<void> {
     stats[r]++;
   };
 
-  // 1. Users first — independent of companies.
-  for (const spec of SEED_USERS) {
-    bump(await seedUser(spec));
+  // 1. Consultway staff users first — independent of companies.
+  for (const spec of SEED_STAFF_USERS) {
+    bump(await seedStaffUser(spec));
   }
 
   // 2. Consultway publisher sentinel — must exist before any tender seed
@@ -443,16 +531,23 @@ async function main(): Promise<void> {
     bump(await seedStandaloneCompany(spec));
   }
 
-  // 4. JVs last — they look up their partners by name.
+  // 4. JVs — they look up their partners by name.
   for (const spec of JV_COMPANIES) {
     bump(await seedJvCompany(spec));
   }
 
+  // 5. Company-role users LAST — they reference a client company by
+  //    name, so the named companies must exist by this point.
+  for (const spec of SEED_COMPANY_USERS) {
+    bump(await seedCompanyUser(spec));
+  }
+
   const total =
-    SEED_USERS.length +
+    SEED_STAFF_USERS.length +
     1 + // Consultway publisher
     STANDALONE_COMPANIES.length +
-    JV_COMPANIES.length;
+    JV_COMPANIES.length +
+    SEED_COMPANY_USERS.length;
 
   log.info("seed complete", {
     created: stats.created,
