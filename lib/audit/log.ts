@@ -1,25 +1,24 @@
 /**
- * Audit log — stub implementation.
+ * Audit logging — record who did what, to which entity, with optional
+ * before / after snapshots and free-form metadata.
  *
- * Records "who did what to which entity, when" for every state-changing
- * action in the app. The real production implementation persists each
- * event to an `audit_log` table (added in a later chunk). This stub
- * just emits a structured log line — the call signature is final, only
- * the body changes when the table arrives.
+ * Today this writes a structured log line at `info` level. Tomorrow the
+ * same call sites will also insert a row into a persistent `audit_log`
+ * table — only this module's body changes, callers stay identical. That
+ * "callers don't change" promise is why every mutation in the codebase
+ * routes through `recordAuditEvent` instead of writing its own log lines.
  *
- * Why this exists as a stub now: retrofitting audit calls into every
- * Server Action across the codebase later is painful — easy to miss
- * spots, easy to introduce inconsistency. Establishing the call sites
- * now means the audit table chunk is just a body swap, not a migration
- * of every action.
+ * Day 5 note: the `AuditAction` union now includes four reversal verbs
+ * (`tender_reopened`, `tender_award_retracted`, `application_reinstated`,
+ * `application_recalled`). Reversals get dedicated verbs rather than
+ * being folded into `updated` so:
+ *   - "show me all reversals last month" is a one-clause grep instead
+ *     of "find updated events where metadata.kind === 'reversal'"
+ *   - the eventual audit-log UI can render reversals with their own
+ *     iconography / colour without sniffing metadata
  *
- * Call sites should appear in every mutation: createCompany,
- * updateCompany, deleteCompany, and (later) the tender/project/document
- * counterparts. Read actions don't audit — would be far too noisy and
- * not legally useful.
- *
- * Designed for the question "what changed and who did it?" — most
- * useful in dispute resolution, staff hand-offs, compliance audits.
+ * Same precedent as `tender_published` / `tender_applied`: when a status
+ * change is interesting enough to filter on, it earns its own verb.
  *
  * @module lib/audit/log
  */
@@ -27,7 +26,7 @@ import { logger } from "@/lib/logger";
 
 const log = logger.child({ module: "audit" });
 
-// ── Types ───────────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────
 
 /**
  * The kinds of entities we audit. Keep this union closed — adding a new
@@ -47,6 +46,26 @@ export type AuditTargetType =
  * covers most cases; specific status changes (e.g. compliance_status
  * flipped to "expired") get their own action verbs for clearer log
  * filtering.
+ *
+ * Reversal verbs (Day 5):
+ *   - `tender_reopened`           — admin moved a closed tender back to
+ *                                   published. Optional reason in
+ *                                   `metadata.reason`.
+ *   - `tender_award_retracted`    — admin moved an awarded tender back
+ *                                   to closed. REQUIRED reason in
+ *                                   `metadata.reason`.
+ *   - `application_reinstated`    — admin/staff moved a shortlisted /
+ *                                   rejected application back to
+ *                                   submitted. `decidedAt` is cleared
+ *                                   to NULL on the row; the audit event
+ *                                   preserves the original decision time
+ *                                   under `metadata.previousDecidedAt`.
+ *   - `application_recalled`      — company moved their own withdrawn
+ *                                   application back to submitted within
+ *                                   the recall window (see
+ *                                   `state-machine.ts::RECALL_WINDOW_DAYS`).
+ *                                   `metadata.daysSinceWithdrawal` is
+ *                                   captured for forensic context.
  */
 export type AuditAction =
   | "created"
@@ -56,7 +75,12 @@ export type AuditAction =
   | "document_uploaded"
   | "document_expired"
   | "tender_published"
-  | "tender_applied";
+  | "tender_applied"
+  // ── Reversal verbs (Day 5) ─────────────────────────────────────────
+  | "tender_reopened"
+  | "tender_award_retracted"
+  | "application_reinstated"
+  | "application_recalled";
 
 /**
  * Single audit event. Stored as one row when the audit table lands.
@@ -70,7 +94,8 @@ export type AuditAction =
  *     full row snapshots wastes space — long term we'll switch to
  *     a JSON diff. For Phase 1 / Phase 2 the snapshot is fine.
  *   - `metadata` is free-form for action-specific extra context
- *     (e.g. "uploaded GST certificate, valid until 2027-03-31").
+ *     (e.g. "uploaded GST certificate, valid until 2027-03-31",
+ *     "reversal reason: 'awarded company withdrew offer'").
  */
 export interface AuditEvent {
   actorId: string;
@@ -83,7 +108,7 @@ export interface AuditEvent {
   metadata?: Record<string, unknown>;
 }
 
-// ── Public API ──────────────────────────────────────────────────────────────
+// ── Public API ────────────────────────────────────────────────────────────
 
 /**
  * Record an audit event.

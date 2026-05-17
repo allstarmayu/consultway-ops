@@ -17,6 +17,24 @@
  *   - tenderIdSchema                 — single-id route param validation
  *   - applyToTenderSchema            — company-role users applying
  *   - updateApplicationStatusSchema  — staff transitioning application status
+ *   - withdrawApplicationSchema      — company withdrawing own application
+ *
+ * ── Day 5: reversal schemas ─────────────────────────────────────────────
+ *   - reopenTenderSchema             — admin reopens a closed tender;
+ *                                      optional reason
+ *   - retractAwardSchema             — admin retracts an awarded tender;
+ *                                      REQUIRED reason
+ *   - reinstateApplicationSchema     — admin/staff reverts a
+ *                                      shortlisted/rejected app to
+ *                                      submitted; optional reason
+ *   - recallApplicationSchema        — company recalls own withdrawn
+ *                                      application; optional reason
+ *
+ * Reasons are captured at the schema layer (not just as free-form
+ * metadata in the action) so:
+ *   - Zod surfaces validation errors with the right `field` hint
+ *   - the form layer can wire `result.field === "reason"` straight to
+ *     the textarea
  *
  * @module lib/tenders/schemas
  */
@@ -383,6 +401,9 @@ export type ApplyToTenderInput = z.infer<typeof applyToTenderSchema>;
  * a `submitted` application to `shortlisted` or `rejected`. Excludes
  * `submitted` and `withdrawn` from the allowed target statuses because:
  *   - `submitted` is the initial state; setting it again is meaningless.
+ *     The dedicated `reinstateApplication` action (Day 5) handles
+ *     `shortlisted → submitted` and `rejected → submitted` reversals
+ *     with the correct semantics (clears decidedAt, dedicated audit verb).
  *   - `withdrawn` is company-driven; staff can't withdraw on a company's
  *     behalf. The separate `withdrawApplication` action is the only
  *     legal path to `withdrawn`.
@@ -412,3 +433,110 @@ export const withdrawApplicationSchema = z.object({
 });
 
 export type WithdrawApplicationInput = z.infer<typeof withdrawApplicationSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────
+// Day 5: reversal schemas
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Shared `reason` field used by the reversal schemas. Two variants:
+ *   - optional: a free-form rationale (1–500 chars when present)
+ *   - required: same shape, but rejects empty / missing input
+ *
+ * Length cap of 500 keeps the audit metadata reasonable — reasons are
+ * a one-line explanation, not an essay. Anything richer belongs in
+ * `internalNotes`.
+ */
+const optionalReasonSchema = z
+  .string()
+  .trim()
+  .min(1, "Reason cannot be empty if provided")
+  .max(500, "Reason must be 500 characters or fewer")
+  .optional()
+  .nullable();
+
+const requiredReasonSchema = z
+  .string()
+  .trim()
+  .min(5, "Please give a brief reason (at least 5 characters)")
+  .max(500, "Reason must be 500 characters or fewer");
+
+// ── Reopen tender (admin) ─────────────────────────────────────────────────
+
+/**
+ * Input schema for `reopenTender` — admin moves a `closed` tender back
+ * to `published`. Reason is optional; when provided it's captured under
+ * `metadata.reason` on the `tender_reopened` audit event.
+ *
+ * The action enforces the legal-transition gate via the state machine
+ * (`isLegalTransition(closed, published)` is `true` in the Day-5
+ * relaxed model). The action also enforces the admin role check —
+ * staff cannot reopen.
+ */
+export const reopenTenderSchema = z.object({
+  tenderId: uuidSchema,
+  reason: optionalReasonSchema,
+});
+
+export type ReopenTenderInput = z.infer<typeof reopenTenderSchema>;
+
+// ── Retract award (admin) ─────────────────────────────────────────────────
+
+/**
+ * Input schema for `retractAward` — admin moves an `awarded` tender
+ * back to `closed`. Reason is REQUIRED here (highest-stakes reversal in
+ * the app) and surfaces on the audit log under `metadata.reason`.
+ *
+ * The UI gates this behind a stronger ConfirmDialog with a textarea;
+ * the `field: "reason"` hint on validation failures lets the form
+ * highlight the textarea on submit.
+ */
+export const retractAwardSchema = z.object({
+  tenderId: uuidSchema,
+  reason: requiredReasonSchema,
+});
+
+export type RetractAwardInput = z.infer<typeof retractAwardSchema>;
+
+// ── Reinstate application (admin/staff) ───────────────────────────────────
+
+/**
+ * Input schema for `reinstateApplication` — admin/staff flip a
+ * `shortlisted` or `rejected` application back to `submitted`. The
+ * action clears `decidedAt` to NULL (the application is back to
+ * "waiting on staff") and preserves the original decision time under
+ * `metadata.previousDecidedAt` on the audit event.
+ *
+ * Reason is optional. Most reinstatements are operational corrections
+ * ("clicked reject by mistake"); when a real reason exists it's worth
+ * capturing.
+ */
+export const reinstateApplicationSchema = z.object({
+  applicationId: uuidSchema,
+  reason: optionalReasonSchema,
+});
+
+export type ReinstateApplicationInput = z.infer<
+  typeof reinstateApplicationSchema
+>;
+
+// ── Recall application (company on own) ───────────────────────────────────
+
+/**
+ * Input schema for `recallApplication` — a company-role user flips
+ * their own `withdrawn` application back to `submitted`. The action
+ * enforces:
+ *   - ownership (the application's `companyId` matches the session's
+ *     linked company)
+ *   - current status is `withdrawn`
+ *   - the recall window (see `state-machine.ts::RECALL_WINDOW_DAYS`)
+ *     has not yet expired
+ *
+ * Reason is optional — most recalls are simple changes of mind.
+ */
+export const recallApplicationSchema = z.object({
+  applicationId: uuidSchema,
+  reason: optionalReasonSchema,
+});
+
+export type RecallApplicationInput = z.infer<typeof recallApplicationSchema>;

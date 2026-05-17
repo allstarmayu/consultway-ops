@@ -1,28 +1,49 @@
 /**
- * Tender status state machine.
+ * Tender + application status state machine.
  *
- * Centralises the legal transitions between `TenderStatus` values so the
- * four status-transition Server Actions (`publishTender`, `unpublishTender`,
- * `closeTender`, `markAwarded`) share one source of truth. Without this,
- * each action would re-implement its own "is this transition valid?"
- * branch and the rules would inevitably drift apart.
+ * Centralises the legal transitions between `TenderStatus` and
+ * `TenderApplicationStatus` values so every status-changing Server
+ * Action shares one source of truth. Without this, each action would
+ * re-implement its own "is this transition valid?" branch and the
+ * rules would inevitably drift apart.
  *
- * The legal transitions are:
+ * ── Tender lifecycle ──────────────────────────────────────────────────
  *
- *     draft     ─────▶ published   (publishTender)
- *     published ─────▶ draft       (unpublishTender — guarded: no applications)
- *     published ─────▶ closed      (closeTender)
- *     closed    ─────▶ awarded     (markAwarded)
+ * Legal transitions (Day 5 relaxed model — reversal capability):
  *
- * Everything else is illegal. Notable rejections:
- *   - `closed → published`: re-opening a closed tender would confuse the
- *     companies who saw it close. If staff need to extend a window, they
- *     should do that BEFORE closing, or create a fresh draft.
- *   - `awarded → *`: terminal state. The audit log captures the award
- *     event; reversing it should be an explicit admin DB intervention,
- *     not a one-click action.
- *   - `draft → closed/awarded`: drafts haven't been visible to anyone, so
- *     "closing" or "awarding" them is meaningless — delete instead.
+ *     draft     ──────▶ published     (publishTender)
+ *     published ──────▶ draft         (unpublishTender — guarded: no applications)
+ *     published ──────▶ closed        (closeTender)
+ *     closed    ──────▶ awarded       (markAwarded)
+ *
+ *     ── Reversals (Day 5, admin-initiated) ────────────────────────────
+ *     closed    ──────▶ published     (reopenTender — admin only;
+ *                                       UI warns about applicant
+ *                                       confusion)
+ *     awarded   ──────▶ closed        (retractAward — admin only;
+ *                                       requires a reason captured in
+ *                                       the audit log)
+ *
+ * Notable rejections:
+ *   - `draft → closed / awarded`: drafts haven't been visible to anyone,
+ *     so "closing" or "awarding" them is meaningless — delete instead.
+ *   - `awarded → published / draft`: forcing the path through `closed`
+ *     keeps every state visit auditable. Reopening an awarded tender
+ *     directly to published would skip a checkpoint.
+ *   - Anything from `draft` other than `published`.
+ *
+ * ── Application lifecycle ─────────────────────────────────────────────
+ *
+ *     submitted   ──────▶ shortlisted   (updateApplicationStatus, staff)
+ *     submitted   ──────▶ rejected      (updateApplicationStatus, staff)
+ *     submitted   ──────▶ withdrawn     (withdrawApplication, company)
+ *
+ *     ── Reversals (Day 5) ─────────────────────────────────────────────
+ *     shortlisted ──────▶ submitted     (reinstateApplication, admin/staff)
+ *     rejected    ──────▶ submitted     (reinstateApplication, admin/staff)
+ *     withdrawn   ──────▶ submitted     (recallApplication, company on own,
+ *                                         within RECALL_WINDOW_DAYS of
+ *                                         `decidedAt`)
  *
  * Editability rules are also encoded here so `updateTender` consults
  * one place to decide what fields a row in a given status can mutate.
@@ -30,9 +51,9 @@
  *
  * @module lib/tenders/state-machine
  */
-import type { TenderStatus } from "@/lib/db/schema";
+import type { TenderStatus, TenderApplicationStatus } from "@/lib/db/schema";
 
-// ── Transition table ──────────────────────────────────────────────────────
+// ── Tender transition table ───────────────────────────────────────────────
 
 /**
  * Map of `from → set of legal `to` values`. Reading
@@ -41,12 +62,15 @@ import type { TenderStatus } from "@/lib/db/schema";
  * Stored as `Record<TenderStatus, ReadonlySet<TenderStatus>>` so TypeScript
  * verifies every status has an entry (exhaustiveness) and we don't ship
  * a transition table missing a state.
+ *
+ * Day 5: `closed` gained `published` (reopen), `awarded` gained `closed`
+ * (retract award). All other entries unchanged.
  */
 const LEGAL_TRANSITIONS: Record<TenderStatus, ReadonlySet<TenderStatus>> = {
   draft: new Set<TenderStatus>(["published"]),
   published: new Set<TenderStatus>(["draft", "closed"]),
-  closed: new Set<TenderStatus>(["awarded"]),
-  awarded: new Set<TenderStatus>(), // terminal
+  closed: new Set<TenderStatus>(["awarded", "published"]),
+  awarded: new Set<TenderStatus>(["closed"]),
 };
 
 /**
@@ -79,11 +103,11 @@ export function illegalTransitionMessage(
   // Hand-tuned messages for the common cases — clearer than a generic
   // "can't transition" string. Falls back to a generic message for any
   // illegal pair not in the explicit list.
-  if (from === "awarded") {
-    return "Awarded tenders are final and cannot change status";
-  }
-  if (from === "closed" && to === "published") {
-    return "Closed tenders cannot be re-opened; create a new draft instead";
+  if (from === "awarded" && to !== "closed") {
+    // Day 5: awarded → closed IS legal now (retractAward). Other
+    // forward-from-awarded transitions remain illegal — force the
+    // through-closed checkpoint so every state visit is auditable.
+    return "Awarded tenders can only be reverted one step (to closed); further changes go through closed first";
   }
   if (from === "draft" && (to === "closed" || to === "awarded")) {
     return `A draft tender must be published before it can be ${to}`;
@@ -110,9 +134,13 @@ export function illegalTransitionMessage(
  *                   or a fresh draft.
  *   - `closed`    — only `internalNotes` editable. Staff still need to
  *                   record evaluation notes while reviewing applications.
- *   - `awarded`   — only `internalNotes` editable. Terminal state; the
- *                   notes channel stays open for retrospective context
- *                   (debriefs, lessons-learned, etc.).
+ *   - `awarded`   — only `internalNotes` editable. Once-terminal-now-
+ *                   reversible state; the notes channel stays open for
+ *                   retrospective context (debriefs, lessons-learned).
+ *
+ * Day 5: editability rules are unchanged. A tender that's been
+ * `closed → published` reopened goes back to the `published` field set
+ * naturally because the rule is keyed on current status, not history.
  *
  * The arrays here are field names matching the keys in `tenders.$inferInsert`.
  * `updateTender` consults this list and silently drops any field outside
@@ -212,4 +240,154 @@ export function isAnyFieldEditable(status: TenderStatus): boolean {
  */
 export function acceptsApplications(status: TenderStatus): boolean {
   return status === "published";
+}
+
+// ── Application transition table (Day 5) ──────────────────────────────────
+
+/**
+ * Application status transitions, structured the same way as the tender
+ * transitions above. Centralising here means `updateApplicationStatus`,
+ * `withdrawApplication`, `reinstateApplication`, and `recallApplication`
+ * all consult the same source of truth.
+ *
+ * Forward path:
+ *     submitted ──▶ shortlisted (staff)
+ *     submitted ──▶ rejected    (staff)
+ *     submitted ──▶ withdrawn   (company on own)
+ *
+ * Reversals (Day 5):
+ *     shortlisted ──▶ submitted (admin/staff; clears decidedAt)
+ *     rejected    ──▶ submitted (admin/staff; clears decidedAt)
+ *     withdrawn   ──▶ submitted (company on own; within recall window)
+ *
+ * Terminal forms: there are none. Even withdrawn is reversible inside
+ * the recall window, and shortlisted / rejected can be reinstated any
+ * time before delete.
+ */
+const LEGAL_APPLICATION_TRANSITIONS: Record<
+  TenderApplicationStatus,
+  ReadonlySet<TenderApplicationStatus>
+> = {
+  submitted: new Set<TenderApplicationStatus>([
+    "shortlisted",
+    "rejected",
+    "withdrawn",
+  ]),
+  shortlisted: new Set<TenderApplicationStatus>(["submitted"]),
+  rejected: new Set<TenderApplicationStatus>(["submitted"]),
+  withdrawn: new Set<TenderApplicationStatus>(["submitted"]),
+};
+
+/**
+ * Is the application transition `from → to` legal?
+ *
+ * Same semantics as `isLegalTransition` for tenders — `from === to` is
+ * NOT legal here; callers short-circuit on no-op transitions before
+ * consulting this function.
+ */
+export function isLegalApplicationTransition(
+  from: TenderApplicationStatus,
+  to: TenderApplicationStatus,
+): boolean {
+  return LEGAL_APPLICATION_TRANSITIONS[from].has(to);
+}
+
+/**
+ * Human-friendly error string for an illegal application transition.
+ * Mirrors `illegalTransitionMessage` for the tender side.
+ */
+export function illegalApplicationTransitionMessage(
+  from: TenderApplicationStatus,
+  to: TenderApplicationStatus,
+): string {
+  if (from === to) {
+    return `Application is already ${from}`;
+  }
+  // Common cases get hand-tuned copy; everything else falls through to
+  // the generic message.
+  if (from === "withdrawn" && to !== "submitted") {
+    return "Withdrawn applications can only be recalled (submitted again), not moved directly to another status";
+  }
+  if ((from === "shortlisted" || from === "rejected") && to === "withdrawn") {
+    return "Staff cannot withdraw an application on a company's behalf";
+  }
+  return `Cannot transition application from ${from} to ${to}`;
+}
+
+// ── Recall window (Day 5) ─────────────────────────────────────────────────
+
+/**
+ * Number of days a company has, after withdrawing their own application,
+ * to recall it back to submitted. After this window the withdrawal is
+ * effectively permanent (the row remains for audit; the UI hides the
+ * recall affordance).
+ *
+ * 7 days matches a typical business week — long enough for a Monday-
+ * morning regret to be actioned, short enough that stale withdrawals
+ * don't reappear weeks later and surprise staff.
+ *
+ * Hard-coded on purpose. If we later need per-tender configurability
+ * (some procurements run on tighter cycles), lifting this to a column
+ * on `tenders` is a small change — the call site becomes
+ * `isWithinRecallWindow(decidedAt, tender.recallWindowDays ?? RECALL_WINDOW_DAYS)`.
+ */
+export const RECALL_WINDOW_DAYS = 7;
+
+/**
+ * Returns `true` when the elapsed time since `decidedAt` is within the
+ * recall window.
+ *
+ * Accepts both ISO formats currently in the DB:
+ *   - SQLite `datetime('now')` style:  "2026-05-16 22:14:33"
+ *   - JS `toISOString()` style:        "2026-05-16T22:14:33.000Z"
+ * (See Day-3 tech debt note about timestamp format inconsistency.)
+ *
+ * Returns `false` when `decidedAt` is null/empty — a record with no
+ * decision time can't be inside any window. Also returns `false` if the
+ * timestamp parses to NaN (malformed), failing closed.
+ *
+ * @example
+ *   if (!isWithinRecallWindow(application.decidedAt)) {
+ *     return { ok: false, error: "Recall window has passed" };
+ *   }
+ */
+export function isWithinRecallWindow(decidedAt: string | null): boolean {
+  if (!decidedAt) return false;
+
+  // Normalise to a parseable ISO string. SQLite's space-separated form
+  // is rejected by some date parsers; swap the space for T.
+  const normalised = decidedAt.includes("T")
+    ? decidedAt
+    : decidedAt.replace(" ", "T") + "Z"; // assume UTC for the space form
+
+  const decidedMs = Date.parse(normalised);
+  if (Number.isNaN(decidedMs)) {
+    // Defensive: malformed timestamps fail closed. The caller will
+    // surface a friendly error; the audit log captures the bad value.
+    return false;
+  }
+
+  const elapsedMs = Date.now() - decidedMs;
+  const windowMs = RECALL_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  return elapsedMs >= 0 && elapsedMs <= windowMs;
+}
+
+/**
+ * Number of whole days elapsed since `decidedAt`, used by the UI to
+ * show "Withdrawn 3 days ago — can recall for 4 more days" and by the
+ * audit metadata on `application_recalled` events.
+ *
+ * Returns `null` for null / malformed input. Negative values (future
+ * timestamps) are clamped to 0 — they shouldn't happen but if they do
+ * we'd rather not surface "withdrawn -1 days ago" in the UI.
+ */
+export function daysSince(decidedAt: string | null): number | null {
+  if (!decidedAt) return null;
+  const normalised = decidedAt.includes("T")
+    ? decidedAt
+    : decidedAt.replace(" ", "T") + "Z";
+  const ms = Date.parse(normalised);
+  if (Number.isNaN(ms)) return null;
+  const elapsedDays = Math.floor((Date.now() - ms) / (1000 * 60 * 60 * 24));
+  return Math.max(0, elapsedDays);
 }

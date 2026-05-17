@@ -8,7 +8,7 @@
  * variables every other surface does, so it feels in-app rather than
  * like an OS dialog.
  *
- * Usage:
+ * Basic usage (no reason capture):
  *
  *   <ConfirmDialog
  *     trigger={<Button>Delete</Button>}
@@ -17,6 +17,21 @@
  *     confirmLabel="Delete"
  *     confirmVariant="destructive"
  *     onConfirm={() => deleteRecord(id)}
+ *     pending={isPending}
+ *   />
+ *
+ * Reason-capture usage (Day 5 — reversal actions):
+ *
+ *   <ConfirmDialog
+ *     trigger={<Button>Retract award</Button>}
+ *     title="Retract this award?"
+ *     description="The tender will return to the closed state."
+ *     confirmLabel="Retract award"
+ *     confirmVariant="destructive"
+ *     reasonField="required"
+ *     reasonLabel="Why are you retracting this award?"
+ *     reasonPlaceholder="Awarded company declined the contract…"
+ *     onConfirm={(reason) => retractAward(tenderId, reason!)}
  *     pending={isPending}
  *   />
  *
@@ -36,6 +51,27 @@
  *     for "irreversible-but-not-dangerous" (markAwarded), destructive
  *     for delete-style actions.
  *
+ * ── Day 5: reason capture ──────────────────────────────────────────────
+ *
+ *   - `reasonField` opt-in adds a textarea between the description and
+ *     the buttons. Three modes:
+ *       - omitted          → no textarea (existing behaviour)
+ *       - "optional"       → textarea shown; empty submission allowed,
+ *                            Confirm enabled regardless. `onConfirm`
+ *                            receives the trimmed reason or `undefined`
+ *                            when empty.
+ *       - "required"       → textarea shown; Confirm disabled until the
+ *                            input has at least 5 trimmed characters
+ *                            (matches `requiredReasonSchema` in
+ *                            `lib/tenders/schemas.ts`). `onConfirm`
+ *                            receives the trimmed reason.
+ *   - The reason input state is reset every time the dialog closes so
+ *     stale text doesn't persist between opens.
+ *   - `onConfirm` signature widened to `(reason?: string) => void |
+ *     Promise<void>`. Existing call sites that declared a no-arg
+ *     handler remain compatible — TypeScript permits ignoring
+ *     positional args at the call site.
+ *
  * @module components/ui/confirm-dialog
  */
 "use client";
@@ -54,6 +90,8 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 /**
  * The variant slot of `<Button>` ("default" | "outline" | "destructive"
@@ -63,6 +101,21 @@ import { Button, buttonVariants } from "@/components/ui/button";
 type ButtonVariant = NonNullable<
   VariantProps<typeof buttonVariants>["variant"]
 >;
+
+/**
+ * Reason-capture mode. Mirrors the two reason-schema variants in
+ * `lib/tenders/schemas.ts` (`optionalReasonSchema`, `requiredReasonSchema`).
+ * Omit the prop entirely when no reason is needed.
+ */
+export type ReasonFieldMode = "optional" | "required";
+
+/**
+ * Minimum trimmed length when `reasonField === "required"`. Kept in
+ * sync with `requiredReasonSchema.min(5, …)` in tenders/schemas.ts so
+ * the client-side gate matches the server-side gate. If the schema
+ * minimum ever changes, update this constant too.
+ */
+const REQUIRED_REASON_MIN_LENGTH = 5;
 
 // ── Props ─────────────────────────────────────────────────────────────────
 
@@ -101,8 +154,15 @@ export interface ConfirmDialogProps {
    * Called when the user clicks Confirm. Can be sync or async; callers
    * typically wrap their Server Action call in `useTransition` and
    * pass `pending` to disable the button during the call.
+   *
+   * The `reason` argument is:
+   *   - `undefined` when `reasonField` is omitted
+   *   - the trimmed reason string, or `undefined` if the user left the
+   *     textarea empty and `reasonField === "optional"`
+   *   - the trimmed reason string (guaranteed non-empty) when
+   *     `reasonField === "required"`
    */
-  onConfirm: () => void | Promise<void>;
+  onConfirm: (reason?: string) => void | Promise<void>;
 
   /**
    * True while the action is in flight. Disables both buttons and
@@ -118,6 +178,26 @@ export interface ConfirmDialogProps {
 
   /** Open-state change handler for controlled usage. */
   onOpenChange?: (open: boolean) => void;
+
+  // ── Day 5: reason capture (all optional) ────────────────────────────
+
+  /**
+   * Add a reason textarea to the dialog. Omit entirely for no textarea
+   * (default — preserves existing behaviour for every Day-4 call site).
+   */
+  reasonField?: ReasonFieldMode;
+
+  /** Label above the reason textarea. Default: "Reason". */
+  reasonLabel?: string;
+
+  /** Placeholder inside the reason textarea. Default: a generic prompt. */
+  reasonPlaceholder?: string;
+
+  /**
+   * Hint shown below the textarea when `reasonField === "required"`.
+   * Default explains the minimum length. Pass `null` to hide entirely.
+   */
+  reasonHint?: React.ReactNode | null;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────
@@ -131,27 +211,100 @@ export function ConfirmDialog({
   confirmVariant = "default",
   onConfirm,
   pending = false,
-  open,
-  onOpenChange,
+  open: openProp,
+  onOpenChange: onOpenChangeProp,
+  reasonField,
+  reasonLabel = "Reason",
+  reasonPlaceholder = "Add a brief explanation…",
+  reasonHint,
 }: ConfirmDialogProps) {
-  // Click handler for the confirm button. Calls onConfirm, but
+  // Internal uncontrolled open state. Only used when the caller didn't
+  // pass `open` / `onOpenChange`. We track it ourselves so the reason
+  // textarea can be reset when the dialog closes — radix's
+  // uncontrolled mode doesn't expose state to us otherwise.
+  const [internalOpen, setInternalOpen] = React.useState(false);
+  const isControlled = openProp !== undefined;
+  const isOpen = isControlled ? openProp : internalOpen;
+
+  // Reason textarea state. Reset on close (see effect below) so stale
+  // text from a previous open doesn't leak into the next session.
+  const [reason, setReason] = React.useState("");
+
+  // Bridge open-state changes: forward to the caller when controlled,
+  // update internal state when uncontrolled, and always reset the
+  // reason input on close.
+  const handleOpenChange = React.useCallback(
+    (next: boolean) => {
+      if (!next) {
+        // Closing — clear the textarea so reopens start blank.
+        setReason("");
+      }
+      if (isControlled) {
+        onOpenChangeProp?.(next);
+      } else {
+        setInternalOpen(next);
+      }
+    },
+    [isControlled, onOpenChangeProp],
+  );
+
+  // Computed gating: when `required`, block Confirm until min-length met.
+  // When `optional`, never block on the textarea. When undefined, the
+  // textarea doesn't render and this flag is always `true`.
+  const trimmedReason = reason.trim();
+  const reasonSatisfied =
+    reasonField === "required"
+      ? trimmedReason.length >= REQUIRED_REASON_MIN_LENGTH
+      : true;
+
+  const confirmDisabled = pending || !reasonSatisfied;
+
+  // Click handler for the confirm button. Calls onConfirm with the
+  // trimmed reason (or undefined for omitted / empty optional).
   // SUPPRESSES the AlertDialog's default close-on-action behaviour
-  // when an action is pending — otherwise the dialog closes
-  // immediately and the user loses sight of the loading state.
+  // when an action is pending OR when the reason gate hasn't been
+  // satisfied — otherwise the dialog closes immediately and the user
+  // loses sight of the loading state / their incomplete input.
   function handleConfirm(e: React.MouseEvent<HTMLButtonElement>) {
-    if (pending) {
+    if (confirmDisabled) {
       e.preventDefault();
       return;
     }
+
+    // Resolve the reason value passed back to the caller.
+    let reasonArg: string | undefined;
+    if (reasonField === "required") {
+      reasonArg = trimmedReason;
+    } else if (reasonField === "optional") {
+      reasonArg = trimmedReason.length > 0 ? trimmedReason : undefined;
+    } else {
+      reasonArg = undefined;
+    }
+
     // Fire-and-forget — if onConfirm returns a promise we don't await
     // here because radix has already closed the dialog by the time the
     // promise resolves. Callers that need post-confirm state should
     // observe their own transition state, not this handler.
-    void onConfirm();
+    void onConfirm(reasonArg);
   }
 
+  // Default hint text for the required mode. Only shown when the
+  // caller didn't pass an explicit hint or null.
+  const defaultRequiredHint =
+    reasonField === "required" ? (
+      <p className="text-xs text-muted-foreground">
+        Minimum {REQUIRED_REASON_MIN_LENGTH} characters. Captured in the
+        audit log.
+      </p>
+    ) : null;
+
+  // Resolve the effective hint, honoring an explicit `null` to mean
+  // "no hint at all".
+  const effectiveHint =
+    reasonHint === undefined ? defaultRequiredHint : reasonHint;
+
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
+    <AlertDialog open={isOpen} onOpenChange={handleOpenChange}>
       <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>
 
       <AlertDialogContent>
@@ -159,6 +312,34 @@ export function ConfirmDialog({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
+
+        {/* Reason textarea, when opted in. Re-enable text selection on
+            the input itself so the dashboard's no-select policy doesn't
+            interfere with typing / pasting. */}
+        {reasonField && (
+          <div className="space-y-1.5">
+            <Label htmlFor="confirm-dialog-reason">
+              {reasonLabel}
+              {reasonField === "optional" && (
+                <span className="ml-1 text-xs font-normal text-muted-foreground">
+                  (optional)
+                </span>
+              )}
+            </Label>
+            <Textarea
+              id="confirm-dialog-reason"
+              rows={3}
+              maxLength={500}
+              placeholder={reasonPlaceholder}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              disabled={pending}
+              className="select-text resize-none"
+              autoFocus
+            />
+            {effectiveHint}
+          </div>
+        )}
 
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>
@@ -172,7 +353,7 @@ export function ConfirmDialog({
           <AlertDialogAction asChild>
             <Button
               variant={confirmVariant}
-              disabled={pending}
+              disabled={confirmDisabled}
               onClick={handleConfirm}
             >
               {pending ? `${confirmLabel}…` : confirmLabel}
