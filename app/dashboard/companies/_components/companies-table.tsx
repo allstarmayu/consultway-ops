@@ -20,6 +20,11 @@
  * `useSearchParams()` and preserve filters when changing pages. The
  * table itself stays a Server Component.
  *
+ * Pagination component lives in `@/components/dashboard/pagination`
+ * since Day 4 (Chunk 3) — moved out of `./pagination` so the tenders
+ * module and any future list page can share the same widget without
+ * copy-paste.
+ *
  * @module app/dashboard/companies/_components/companies-table
  */
 import Link from "next/link";
@@ -34,10 +39,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Pagination } from "@/components/dashboard/pagination";
 import { ComplianceBadge, JvBadge, BooleanBadge } from "./badges";
-import { Pagination } from "./pagination";
 
-// ── Props ───────────────────────────────────────────────────────────────────
+// ── Props ─────────────────────────────────────────────────────────────────
 
 export interface CompaniesTableProps {
   rows: Company[];
@@ -50,7 +55,7 @@ export interface CompaniesTableProps {
   canDelete: boolean;
 }
 
-// ── Component ───────────────────────────────────────────────────────────────
+// ── Component ─────────────────────────────────────────────────────────────
 
 export function CompaniesTable({
   rows,

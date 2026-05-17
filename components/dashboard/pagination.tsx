@@ -7,14 +7,20 @@
  *
  * A pure server-side pagination would either lose filters or require
  * threading the entire searchParams object through props. Reading
- * useSearchParams() here keeps the Server Component above clean.
+ * useSearchParams() here keeps the calling Server Component clean.
+ *
+ * Module location: lives in `components/dashboard/` rather than under
+ * any single feature's `_components/` folder because every list page
+ * (companies, tenders, projects, transactions, …) needs the same
+ * widget. Originally lived under the companies module; extracted in
+ * the Day 4 tenders work so the second feature didn't have to copy it.
  *
  * Display rules:
  *   - totalPages <= 7: list them all (1 2 3 4 5 6 7)
  *   - Otherwise: 1, current-1, current, current+1, totalPages, with
  *     "…" filling gaps
  *
- * @module app/dashboard/companies/_components/pagination
+ * @module components/dashboard/pagination
  */
 "use client";
 
@@ -22,7 +28,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
-// ── Props ───────────────────────────────────────────────────────────────────
+// ── Props ─────────────────────────────────────────────────────────────────
 
 export interface PaginationProps {
   /** 1-based current page. */
@@ -31,7 +37,7 @@ export interface PaginationProps {
   totalPages: number;
 }
 
-// ── Component ───────────────────────────────────────────────────────────────
+// ── Component ─────────────────────────────────────────────────────────────
 
 export function Pagination({ page, totalPages }: PaginationProps) {
   const searchParams = useSearchParams();
@@ -94,7 +100,7 @@ export function Pagination({ page, totalPages }: PaginationProps) {
   );
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────
 
 /**
  * Decide which page numbers to show in the pagination strip.
