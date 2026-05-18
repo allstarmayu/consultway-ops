@@ -25,19 +25,24 @@
  *   unpublishTender              ✓       ✓       ✗ (only when 0 applications)
  *   closeTender                  ✓       ✓       ✗
  *   markAwarded                  ✓       ✓       ✗
+ *   reopenTender                 ✓       ✗       ✗ (Day 5 — admin recovery)
+ *   retractAward                 ✓       ✗       ✗ (Day 5 — required reason)
  *   deleteTender                 ✓       ✗       ✗ (admin only, drafts only)
  *   getTender                    ✓       ✓       ✓ (drafts hidden from company role)
  *   listTenders                  ✓       ✓       ✓ (drafts hidden from company role)
  *   applyToTender                ✗       ✗       ✓ (on own behalf only)
  *   withdrawApplication          ✗       ✗       ✓ (on own application only)
  *   updateApplicationStatus      ✓       ✓       ✗
+ *   reinstateApplication         ✓       ✓       ✗ (Day 5 — clears decidedAt)
+ *   recallApplication            ✗       ✗       ✓ (Day 5 — within recall window)
  *   listMyApplications           ✗       ✗       ✓ (own company only)
  *
  * Audit logging: every mutation calls `recordAuditEvent` after the DB
  * write succeeds. Read actions are NOT audited (same convention as
- * companies). Status transitions use the more specific `tender_published`
- * action type where the audit log already supports it; other transitions
- * fall back to `updated`.
+ * companies). Status transitions use the more specific action verbs
+ * where the audit log supports them (`tender_published`,
+ * `tender_reopened`, `tender_award_retracted`, `application_reinstated`,
+ * `application_recalled`); other transitions fall back to `updated`.
  *
  * Status transitions consult `state-machine.ts` — single source of truth
  * for what transitions are legal and which fields are editable in each
@@ -61,7 +66,7 @@ import {
 import { newId } from "@/lib/db/ids";
 import { readSession } from "@/lib/auth/session";
 import { logger } from "@/lib/logger";
-import { recordAuditEvent } from "@/lib/audit/log";
+import { recordAuditEvent, type AuditAction } from "@/lib/audit/log";
 import {
   createTenderSchema,
   updateTenderSchema,
@@ -70,6 +75,11 @@ import {
   applyToTenderSchema,
   updateApplicationStatusSchema,
   withdrawApplicationSchema,
+  // ── Day 5: reversal schemas ────────────────────────────────────────────
+  reopenTenderSchema,
+  retractAwardSchema,
+  reinstateApplicationSchema,
+  recallApplicationSchema,
   type CreateTenderInput,
   type UpdateTenderInput,
   type ListTendersQuery,
@@ -79,6 +89,12 @@ import {
   illegalTransitionMessage,
   isLegalTransition,
   acceptsApplications,
+  // ── Day 5: application state machine + recall window ───────────────────
+  isLegalApplicationTransition,
+  illegalApplicationTransitionMessage,
+  isWithinRecallWindow,
+  daysSince,
+  RECALL_WINDOW_DAYS,
 } from "./state-machine";
 
 const log = logger.child({ module: "tenders-actions" });
@@ -122,7 +138,7 @@ type AuthCheck =
  * Resolve the current session and confirm the caller is admin or staff.
  * Used by all tender mutations except `applyToTender` /
  * `withdrawApplication` (which are company-role-only) and
- * `deleteTender` (which is admin-only).
+ * `deleteTender` / `reopenTender` / `retractAward` (which are admin-only).
  */
 async function requireAdminOrStaff(): Promise<AuthCheck> {
   const session = await readSession();
@@ -139,7 +155,7 @@ async function requireAdminOrStaff(): Promise<AuthCheck> {
   return { ok: true, session };
 }
 
-/** Admin-only gate. Used for deleteTender. */
+/** Admin-only gate. Used for deleteTender, reopenTender, retractAward. */
 async function requireAdmin(): Promise<AuthCheck> {
   const session = await readSession();
   if (!session) return { ok: false, error: "You must be signed in" };
@@ -365,11 +381,10 @@ export async function createTender(
       eligibleSector: input.eligibleSector ?? null,
       eligibleGeography: input.eligibleGeography ?? null,
       minAnnualTurnoverInr: input.minAnnualTurnoverInr ?? null,
-      msmeOnly: input.msmeOnly,
+      msmeOnly: input.msmeOnly ?? false,
       openingDate: input.openingDate ?? null,
       closingDate: input.closingDate ?? null,
       internalNotes: input.internalNotes ?? null,
-      // publishedAt remains NULL — only publishTender sets it.
     });
   } catch (err) {
     const conflict = translateUniqueConflict(err);
@@ -384,7 +399,8 @@ export async function createTender(
     throw err;
   }
 
-  // 5. Audit. Identity-ish fields only — full row contents would be noise.
+  // 5. Audit. Captures the identity-ish fields for later forensic
+  //    queries — full row contents would be noise.
   await recordAuditEvent({
     actorId: auth.session.userId,
     actorRole: auth.session.role,
@@ -393,9 +409,9 @@ export async function createTender(
     targetId: id,
     after: {
       title: input.title,
+      status: "draft",
       sector: input.sector,
       geography: input.geography,
-      status: "draft",
       publisherCompanyId,
     },
   });
@@ -554,10 +570,32 @@ export async function updateTender(
 // ── Status transitions ────────────────────────────────────────────────────
 
 /**
- * Internal helper used by all four status-transition actions. Loads the
+ * Audit action verbs accepted by `transitionTenderStatus`. The union is
+ * a subset of `AuditAction` from the audit module — listed here
+ * explicitly (rather than imported as the full union) so callers can't
+ * pass a wildly inappropriate verb like `compliance_status_changed` to
+ * a tender transition.
+ *
+ * Day 5: extended with `tender_reopened` and `tender_award_retracted`
+ * for the new reversal flows.
+ */
+type TenderTransitionAuditAction = Extract<
+  AuditAction,
+  | "tender_published"
+  | "tender_reopened"
+  | "tender_award_retracted"
+  | "updated"
+>;
+
+/**
+ * Internal helper used by all status-transition actions. Loads the
  * row, checks the transition is legal via the state machine, applies any
  * extra side-effects (publishedAt, application count guard), writes the
  * update, and records the audit event.
+ *
+ * `auditMetadata` is optional and merged into the audit event's
+ * `metadata` field — used by the reversal actions to capture a `reason`
+ * provided by the actor.
  *
  * Not exported — callers should use the named wrappers below so the
  * intent is explicit in the UI code.
@@ -566,7 +604,8 @@ async function transitionTenderStatus(
   tenderId: string,
   nextStatus: TenderStatus,
   session: Session,
-  auditAction: "tender_published" | "updated",
+  auditAction: TenderTransitionAuditAction,
+  auditMetadata?: Record<string, unknown>,
 ): Promise<ActionResult> {
   // Validate id
   const parsed = tenderIdSchema.safeParse({ id: tenderId });
@@ -629,6 +668,11 @@ async function transitionTenderStatus(
   // that's been unpublished and re-published keeps the original time
   // for now (we don't track a re-publish history; if needed, that's a
   // separate audit-trail concern).
+  //
+  // Day 5 note: `closed → published` (reopen) is also a published-
+  // target transition, but the row already has a publishedAt from its
+  // original publish, so the conditional below is a no-op for reopens.
+  // The audit log captures the reopen event with its own verb.
   if (nextStatus === "published" && !existing.publishedAt) {
     patch.publishedAt = new Date().toISOString();
   }
@@ -647,7 +691,8 @@ async function transitionTenderStatus(
   }
 
   // Audit. Status transitions are important events — record from/to
-  // explicitly in the snapshot.
+  // explicitly in the snapshot, plus any caller-supplied metadata
+  // (e.g. reversal reason).
   await recordAuditEvent({
     actorId: session.userId,
     actorRole: session.role,
@@ -655,7 +700,11 @@ async function transitionTenderStatus(
     targetType: "tender",
     targetId: existing.id,
     before: { status: existing.status },
-    after: { status: nextStatus, ...(patch.publishedAt ? { publishedAt: patch.publishedAt } : {}) },
+    after: {
+      status: nextStatus,
+      ...(patch.publishedAt ? { publishedAt: patch.publishedAt } : {}),
+    },
+    ...(auditMetadata ? { metadata: auditMetadata } : {}),
   });
 
   log.info("tender status transitioned", {
@@ -663,6 +712,7 @@ async function transitionTenderStatus(
     from: existing.status,
     to: nextStatus,
     actorId: session.userId,
+    ...(auditMetadata ? { metadata: auditMetadata } : {}),
   });
   return { ok: true };
 }
@@ -707,8 +757,12 @@ export async function closeTender(rawId: unknown): Promise<ActionResult> {
 }
 
 /**
- * Mark a closed tender as awarded. Admin/staff only. Terminal state —
- * no further transitions allowed (see state-machine).
+ * Mark a closed tender as awarded. Admin/staff only.
+ *
+ * As of Day 5, `awarded` is no longer a strictly-terminal state —
+ * `retractAward` can move it back to `closed`. But `markAwarded` still
+ * represents the procurement decision; retraction is the explicit
+ * recovery path for accidental clicks.
  *
  * NOTE: this action does not yet record the winning company. The
  * `awardedCompanyId` column will land when Phase 2 (project tracking)
@@ -1231,6 +1285,10 @@ export async function applyToTender(
  * Company-role users withdraw their own application. Only allowed while
  * the application is still `submitted` — once staff have shortlisted or
  * rejected, the company can't unilaterally rescind (audit trail).
+ *
+ * Day 5: a withdrawn application can be recalled (flipped back to
+ * submitted) by the same company within `RECALL_WINDOW_DAYS` of the
+ * withdrawal. See `recallApplication` below.
  */
 export async function withdrawApplication(
   rawInput: unknown,
@@ -1309,10 +1367,15 @@ export async function withdrawApplication(
  * the legal targets to `shortlisted` and `rejected` — `submitted` is
  * the initial state and `withdrawn` is company-driven only.
  *
- * Allowed sources: `submitted` (most common), and `shortlisted` /
- * `rejected` for reversals (staff change of mind during review). The
- * action records the original→new state in the audit metadata so
- * reversals are traceable.
+ * Day 5: reversals (shortlisted/rejected back to submitted) now go
+ * through the dedicated `reinstateApplication` action below, which
+ * clears `decidedAt` to NULL and uses the `application_reinstated`
+ * audit verb. This action no longer handles those reversals — its
+ * schema only accepts `shortlisted` / `rejected` as targets.
+ *
+ * Allowed sources: `submitted` only — once an application has been
+ * decided either way, this action is a no-op (idempotent same-status
+ * write returns ok). Reversing a decision goes via `reinstateApplication`.
  */
 export async function updateApplicationStatus(
   rawInput: unknown,
@@ -1354,8 +1417,7 @@ export async function updateApplicationStatus(
     return { ok: true }; // idempotent no-op
   }
 
-  // Build patch. Stamp decidedAt every time staff record a decision —
-  // even on reversals so the audit trail shows the latest decision time.
+  // Build patch. Stamp decidedAt every time staff record a decision.
   const patch: Partial<typeof tenderApplications.$inferInsert> = {
     status: input.status,
     decidedAt: new Date().toISOString(),
@@ -1551,4 +1613,462 @@ export async function listMyApplications(): Promise<
   }));
 
   return { ok: true, rows: sanitized };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//                      Day 5 — Reversal capability
+//
+//   Four actions for admin-led (and company-side, for recall) recovery
+//   from accidental status changes. Built on the relaxed state machine
+//   (see `state-machine.ts` — Day-5 edits legalised closed->published,
+//   awarded->closed, and the three application-side reversals).
+//
+//   Delete is intentionally NOT reversed here — the type-to-confirm
+//   friction plus the draft-only restriction are the safety net; soft
+//   delete is a larger surface area that warrants its own design pass.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── reopenTender ──────────────────────────────────────────────────────────
+
+/**
+ * Reopen a closed tender. **Admin only.** Moves the tender from
+ * `closed` back to `published`. Reason is optional but captured in the
+ * audit log when supplied.
+ *
+ * Why this exists: staff occasionally close a tender too early (clicked
+ * the wrong button, misread the closing date, etc.). Before Day 5 the
+ * only recovery was "create a fresh draft", which lost the audit trail
+ * and forced applicants to re-apply. Reopen preserves the original
+ * record + its applications.
+ *
+ * Caveats the UI should surface (via the ConfirmDialog warning copy):
+ *   - Companies who already saw the tender as "closed" will be confused
+ *     when it flips back to published.
+ *   - The original publishedAt timestamp is preserved (we don't reset
+ *     it on reopen) — auditors looking at "when was this published?"
+ *     get the first-publish time, with the reopen captured separately
+ *     in the audit log.
+ *
+ * Restricted to admin (not staff) to keep the blast radius small —
+ * staff who needs a reopen escalates to an admin.
+ */
+export async function reopenTender(
+  rawInput: unknown,
+): Promise<ActionResult> {
+  // 1. AuthZ — admin only
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth;
+
+  // 2. Validate
+  const parsed = reopenTenderSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const input = parsed.data;
+
+  // 3. Defence in depth — assert the row is actually `closed` before
+  //    asking the state machine. transitionTenderStatus will also check,
+  //    but this gives a clearer error for the rare "this tender isn't
+  //    closed" case (e.g. status flipped from under us in a different
+  //    tab).
+  const existing = await db
+    .select({ status: tenders.status })
+    .from(tenders)
+    .where(eq(tenders.id, input.tenderId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { ok: false, error: "Tender not found" };
+  }
+  if (existing.status !== "closed") {
+    return {
+      ok: false,
+      error: `Cannot reopen — tender is ${existing.status}, not closed`,
+    };
+  }
+
+  // 4. Delegate to the shared transition helper with the reversal audit
+  //    verb and reason metadata.
+  return transitionTenderStatus(
+    input.tenderId,
+    "published",
+    auth.session,
+    "tender_reopened",
+    input.reason ? { reason: input.reason } : undefined,
+  );
+}
+
+// ── retractAward ──────────────────────────────────────────────────────────
+
+/**
+ * Retract a tender award. **Admin only.** Moves the tender from
+ * `awarded` back to `closed`. **Reason is REQUIRED** (highest-stakes
+ * reversal in the app — captured prominently in the audit log).
+ *
+ * Why this exists: occasionally an award decision gets reversed for
+ * legitimate reasons (the awarded company withdraws their offer, a
+ * compliance check fails post-award, etc.). The procurement decision
+ * itself is significant enough that we want a written rationale on
+ * record alongside the structured audit event.
+ *
+ * Restricted to admin (not staff) by design — retracting an award is
+ * a higher-stakes action than the original `markAwarded` because of
+ * the contractual implications of the original decision.
+ */
+export async function retractAward(
+  rawInput: unknown,
+): Promise<ActionResult> {
+  // 1. AuthZ — admin only
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth;
+
+  // 2. Validate. Schema enforces reason is present (min 5 chars).
+  const parsed = retractAwardSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const input = parsed.data;
+
+  // 3. Defence-in-depth status check.
+  const existing = await db
+    .select({ status: tenders.status })
+    .from(tenders)
+    .where(eq(tenders.id, input.tenderId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { ok: false, error: "Tender not found" };
+  }
+  if (existing.status !== "awarded") {
+    return {
+      ok: false,
+      error: `Cannot retract award — tender is ${existing.status}, not awarded`,
+    };
+  }
+
+  // 4. Delegate to the shared transition helper with the reversal audit
+  //    verb and required reason metadata.
+  return transitionTenderStatus(
+    input.tenderId,
+    "closed",
+    auth.session,
+    "tender_award_retracted",
+    { reason: input.reason },
+  );
+}
+
+// ── reinstateApplication ──────────────────────────────────────────────────
+
+/**
+ * Reinstate a shortlisted or rejected application. **Admin/staff only.**
+ * Flips the application's status back to `submitted` and clears
+ * `decidedAt` to NULL so the row genuinely returns to "waiting on staff"
+ * state.
+ *
+ * Why this exists: staff occasionally click the wrong icon button in
+ * the applications table (shortlist when they meant to reject, or vice
+ * versa). Reinstate puts the application back in the queue without
+ * losing the audit trail of the original decision.
+ *
+ * Why we clear `decidedAt`: a non-null decidedAt on a `submitted`
+ * application would be a data anomaly — any future query for "when
+ * was this decided?" would get a misleading timestamp for a decision
+ * that's been undone. The previous decidedAt is preserved in the audit
+ * event's `metadata.previousDecidedAt` for forensic reference.
+ *
+ * Reason is optional. Most reinstatements are simple corrections; when
+ * a real reason exists ("re-reviewed eligibility documents and the
+ * application qualifies after all") it's worth capturing.
+ */
+export async function reinstateApplication(
+  rawInput: unknown,
+): Promise<ActionResult> {
+  // 1. AuthZ — admin/staff
+  const auth = await requireAdminOrStaff();
+  if (!auth.ok) return auth;
+
+  // 2. Validate
+  const parsed = reinstateApplicationSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const input = parsed.data;
+
+  // 3. Load existing application — need the snapshot for audit and the
+  //    current status for the transition gate.
+  const existing = await db
+    .select()
+    .from(tenderApplications)
+    .where(eq(tenderApplications.id, input.applicationId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { ok: false, error: "Application not found" };
+  }
+
+  // 4. Reinstate is specifically for staff-decision reversals, not for
+  //    company-driven withdrawals. Recall is the separate company action
+  //    for withdrawn -> submitted; refuse here even though the state
+  //    machine would technically allow it (defence in depth — keeps the
+  //    two actions' surfaces distinct).
+  if (existing.status === "withdrawn") {
+    return {
+      ok: false,
+      error:
+        "Withdrawn applications must be recalled by the applicant, not reinstated by staff",
+    };
+  }
+
+  // 5. Status gate. Only shortlisted/rejected can be reinstated. The
+  //    state machine codifies this; we ask it directly.
+  if (!isLegalApplicationTransition(existing.status, "submitted")) {
+    return {
+      ok: false,
+      error: illegalApplicationTransitionMessage(existing.status, "submitted"),
+    };
+  }
+
+  // 6. Apply patch — status flips back to submitted, decidedAt cleared.
+  const previousStatus = existing.status;
+  const previousDecidedAt = existing.decidedAt;
+  try {
+    await db
+      .update(tenderApplications)
+      .set({
+        status: "submitted",
+        decidedAt: null,
+      })
+      .where(eq(tenderApplications.id, existing.id));
+  } catch (err) {
+    log.error("reinstateApplication failed", {
+      err,
+      applicationId: existing.id,
+      actorId: auth.session.userId,
+    });
+    throw err;
+  }
+
+  // 7. Audit with the dedicated reversal verb. Preserves the previous
+  //    decision time so forensic queries can answer "when was the
+  //    original decision made?" even after the row state is reset.
+  await recordAuditEvent({
+    actorId: auth.session.userId,
+    actorRole: auth.session.role,
+    action: "application_reinstated",
+    targetType: "tender",
+    targetId: existing.tenderId,
+    before: { status: previousStatus, decidedAt: previousDecidedAt },
+    after: { status: "submitted", decidedAt: null },
+    metadata: {
+      applicationId: existing.id,
+      companyId: existing.companyId,
+      previousDecidedAt,
+      ...(input.reason ? { reason: input.reason } : {}),
+    },
+  });
+
+  log.info("application reinstated", {
+    applicationId: existing.id,
+    from: previousStatus,
+    actorId: auth.session.userId,
+  });
+  return { ok: true };
+}
+
+// ── recallApplication ────────────────────────────────────────────────────
+
+/**
+ * Recall a withdrawn application. **Company-role only, on own
+ * application, within the recall window.**
+ *
+ * Flips a `withdrawn` application back to `submitted` and clears
+ * `decidedAt`. Mirrors `reinstateApplication` from the company side but
+ * adds a hard time-window guard: a withdrawal more than
+ * `RECALL_WINDOW_DAYS` (currently 7) old is permanent.
+ *
+ * Why this exists: companies sometimes withdraw applications in haste
+ * (changed their mind about pursuing the contract, miscommunication
+ * inside the organisation) and want to re-engage shortly after. The
+ * 7-day window matches a business week — long enough for a Monday-
+ * morning regret to be actioned, short enough that stale withdrawals
+ * don't reappear weeks later and surprise staff.
+ *
+ * Additional guard: if the tender itself has moved on (closed/awarded
+ * since the withdrawal), the recall is blocked — putting an application
+ * back to `submitted` on a non-published tender would create a row
+ * state the rest of the system can't reason about cleanly.
+ *
+ * Captures `daysSinceWithdrawal` in the audit metadata for forensic
+ * context — useful for spotting patterns of repeat-recall behaviour
+ * if that becomes a concern.
+ */
+export async function recallApplication(
+  rawInput: unknown,
+): Promise<ActionResult> {
+  // 1. AuthZ — company role only
+  const auth = await requireCompanyRole();
+  if (!auth.ok) return auth;
+
+  // 2. Validate
+  const parsed = recallApplicationSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const input = parsed.data;
+
+  // 3. Load existing application
+  const existing = await db
+    .select()
+    .from(tenderApplications)
+    .where(eq(tenderApplications.id, input.applicationId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { ok: false, error: "Application not found" };
+  }
+
+  // 4. Ownership check — caller's companyId must match the application's.
+  //    Don't leak the existence of someone else's application; return
+  //    the same "not found" error a missing-row would.
+  if (existing.companyId !== auth.companyId) {
+    log.warn("recallApplication forbidden", {
+      userId: auth.session.userId,
+      companyId: auth.companyId,
+      applicationId: existing.id,
+      ownerCompanyId: existing.companyId,
+    });
+    return { ok: false, error: "Application not found" };
+  }
+
+  // 5. Current-status gate. Only withdrawn applications can be recalled.
+  if (existing.status !== "withdrawn") {
+    return {
+      ok: false,
+      error: `Cannot recall — application is ${existing.status}, not withdrawn`,
+    };
+  }
+
+  // 6. Recall window gate. State machine helper takes both ISO formats
+  //    (SQLite datetime('now') and JS toISOString) thanks to the
+  //    normalising parse inside isWithinRecallWindow.
+  if (!isWithinRecallWindow(existing.decidedAt)) {
+    return {
+      ok: false,
+      error: `Recall window has passed (applications can only be recalled within ${RECALL_WINDOW_DAYS} days of withdrawal)`,
+    };
+  }
+
+  // 7. Tender status sanity check. If the tender has moved on (closed /
+  //    awarded) since the withdrawal, recall would put the application
+  //    back into a submitted state on a tender that's no longer accepting
+  //    applications. Block this — the company should reapply manually
+  //    if the tender is ever reopened.
+  const tenderRow = await db
+    .select({ status: tenders.status })
+    .from(tenders)
+    .where(eq(tenders.id, existing.tenderId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!tenderRow) {
+    // Shouldn't happen given FK constraints, but defensive.
+    log.error("recallApplication: tender missing for application", {
+      applicationId: existing.id,
+      tenderId: existing.tenderId,
+    });
+    return { ok: false, error: "Tender not found" };
+  }
+
+  if (!acceptsApplications(tenderRow.status)) {
+    return {
+      ok: false,
+      error: `Cannot recall — tender is no longer accepting applications (status: ${tenderRow.status})`,
+    };
+  }
+
+  // 8. Defence-in-depth: confirm the state machine still considers this
+  //    a legal application transition (it does, but if anyone ever
+  //    tightens the machine this surfaces it cleanly).
+  if (!isLegalApplicationTransition(existing.status, "submitted")) {
+    return {
+      ok: false,
+      error: illegalApplicationTransitionMessage(existing.status, "submitted"),
+    };
+  }
+
+  // 9. Capture forensic metadata BEFORE the write — daysSince reads the
+  //    pre-recall decidedAt.
+  const elapsedDays = daysSince(existing.decidedAt);
+  const previousDecidedAt = existing.decidedAt;
+
+  // 10. Apply patch. Same shape as reinstate — status back to submitted,
+  //     decidedAt cleared.
+  try {
+    await db
+      .update(tenderApplications)
+      .set({
+        status: "submitted",
+        decidedAt: null,
+      })
+      .where(eq(tenderApplications.id, existing.id));
+  } catch (err) {
+    log.error("recallApplication failed", {
+      err,
+      applicationId: existing.id,
+      actorId: auth.session.userId,
+    });
+    throw err;
+  }
+
+  // 11. Audit with the company-side reversal verb.
+  await recordAuditEvent({
+    actorId: auth.session.userId,
+    actorRole: auth.session.role,
+    action: "application_recalled",
+    targetType: "tender",
+    targetId: existing.tenderId,
+    before: { status: "withdrawn", decidedAt: previousDecidedAt },
+    after: { status: "submitted", decidedAt: null },
+    metadata: {
+      applicationId: existing.id,
+      companyId: existing.companyId,
+      previousDecidedAt,
+      daysSinceWithdrawal: elapsedDays,
+      recallWindowDays: RECALL_WINDOW_DAYS,
+      ...(input.reason ? { reason: input.reason } : {}),
+    },
+  });
+
+  log.info("application recalled", {
+    applicationId: existing.id,
+    daysSinceWithdrawal: elapsedDays,
+    actorId: auth.session.userId,
+  });
+  return { ok: true };
 }
