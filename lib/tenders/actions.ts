@@ -1,10 +1,10 @@
 /**
- * Tenders module — Server Actions.
+ * Tenders module - Server Actions.
  *
  * Every mutation (create / update / status transition / delete / apply)
  * and every read used by the dashboard goes through one of these. They're
  * the **only** place where the database is touched directly for tender
- * and tender_application rows — UI calls these, never raw SQL.
+ * and tender_application rows - UI calls these, never raw SQL.
  *
  * Return shape established in Day 2 and used identically in the companies
  * module:
@@ -13,29 +13,29 @@
  *
  * Expected failures (bad input, not-found, unauthorized, unique conflict,
  * illegal status transition) return `ok: false`. Unexpected failures
- * (DB driver crash, schema drift) throw — Next.js will turn those into
+ * (DB driver crash, schema drift) throw - Next.js will turn those into
  * a 500 and we want loud signal in the logs, not silent partial success.
  *
  * Role rules (also documented in docs/08-rbac-matrix.md):
  *
  *   Action                       admin   staff   company
- *   createTender                 ✓       ✓       ✗
- *   updateTender                 ✓       ✓       ✗ (subject to status gates)
- *   publishTender                ✓       ✓       ✗
- *   unpublishTender              ✓       ✓       ✗ (only when 0 applications)
- *   closeTender                  ✓       ✓       ✗
- *   markAwarded                  ✓       ✓       ✗
- *   reopenTender                 ✓       ✗       ✗ (Day 5 — admin recovery)
- *   retractAward                 ✓       ✗       ✗ (Day 5 — required reason)
- *   deleteTender                 ✓       ✗       ✗ (admin only, drafts only)
- *   getTender                    ✓       ✓       ✓ (drafts hidden from company role)
- *   listTenders                  ✓       ✓       ✓ (drafts hidden from company role)
- *   applyToTender                ✗       ✗       ✓ (on own behalf only)
- *   withdrawApplication          ✗       ✗       ✓ (on own application only)
- *   updateApplicationStatus      ✓       ✓       ✗
- *   reinstateApplication         ✓       ✓       ✗ (Day 5 — clears decidedAt)
- *   recallApplication            ✗       ✗       ✓ (Day 5 — within recall window)
- *   listMyApplications           ✗       ✗       ✓ (own company only)
+ *   createTender                 Y       Y       N
+ *   updateTender                 Y       Y       N (subject to status gates)
+ *   publishTender                Y       Y       N
+ *   unpublishTender              Y       Y       N (only when 0 applications)
+ *   closeTender                  Y       Y       N
+ *   markAwarded                  Y       Y       N
+ *   reopenTender                 Y       N       N (Day 5 - admin recovery)
+ *   retractAward                 Y       N       N (Day 5 - required reason)
+ *   deleteTender                 Y       N       N (admin only, drafts only)
+ *   getTender                    Y       Y       Y (drafts hidden from company role)
+ *   listTenders                  Y       Y       Y (drafts hidden from company role)
+ *   applyToTender                N       N       Y (on own behalf only)
+ *   withdrawApplication          N       N       Y (on own application only)
+ *   updateApplicationStatus      Y       Y       N
+ *   reinstateApplication         Y       Y       N (Day 5 - clears decidedAt)
+ *   recallApplication            N       N       Y (Day 5 - within recall window)
+ *   listMyApplications           N       N       Y (own company only)
  *
  * Audit logging: every mutation calls `recordAuditEvent` after the DB
  * write succeeds. Read actions are NOT audited (same convention as
@@ -44,7 +44,16 @@
  * `tender_reopened`, `tender_award_retracted`, `application_reinstated`,
  * `application_recalled`); other transitions fall back to `updated`.
  *
- * Status transitions consult `state-machine.ts` — single source of truth
+ * Day 6: application-state-change events (withdraw, decide, reinstate,
+ * recall) target the APPLICATION row directly via
+ * `targetType: "tender_application"`, with the parent tenderId moved to
+ * `metadata.tenderId`. This lets the Day-7 per-application history widget
+ * be a single indexed lookup. The `tender_applied` event (a company
+ * submitting an application) intentionally stays scoped to the tender -
+ * the event reads as "this tender received a submission" from the
+ * audit-trail reader's perspective.
+ *
+ * Status transitions consult `state-machine.ts` - single source of truth
  * for what transitions are legal and which fields are editable in each
  * status. Action code never hard-codes "if status === 'draft'" logic.
  *
@@ -75,7 +84,7 @@ import {
   applyToTenderSchema,
   updateApplicationStatusSchema,
   withdrawApplicationSchema,
-  // ── Day 5: reversal schemas ────────────────────────────────────────────
+  // -- Day 5: reversal schemas ---------------------------------------------
   reopenTenderSchema,
   retractAwardSchema,
   reinstateApplicationSchema,
@@ -89,7 +98,7 @@ import {
   illegalTransitionMessage,
   isLegalTransition,
   acceptsApplications,
-  // ── Day 5: application state machine + recall window ───────────────────
+  // -- Day 5: application state machine + recall window --------------------
   isLegalApplicationTransition,
   illegalApplicationTransitionMessage,
   isWithinRecallWindow,
@@ -99,7 +108,7 @@ import {
 
 const log = logger.child({ module: "tenders-actions" });
 
-// ── Constants ─────────────────────────────────────────────────────────────
+// -- Constants --------------------------------------------------------------
 
 /**
  * Name of the Consultway sentinel publisher company. Kept in sync with
@@ -108,7 +117,7 @@ const log = logger.child({ module: "tenders-actions" });
  */
 const CONSULTWAY_PUBLISHER_NAME = "Consultway Infotech";
 
-// ── Result types ──────────────────────────────────────────────────────────
+// -- Result types -----------------------------------------------------------
 
 /**
  * Generic action result. Reused across actions so the calling UI can
@@ -119,11 +128,11 @@ export type ActionResult<T = unknown> =
   | ({ ok: true } & T)
   | { ok: false; error: string; field?: string };
 
-// ── Authorization helpers ─────────────────────────────────────────────────
+// -- Authorization helpers --------------------------------------------------
 
 /**
  * The session shape, unwrapped from `readSession()`'s nullable return.
- * Same alias as the companies module — different file because Server
+ * Same alias as the companies module - different file because Server
  * Actions can't share types across module boundaries when one is
  * "use server" and the other isn't, but the shape is identical.
  */
@@ -171,7 +180,7 @@ async function requireAdmin(): Promise<AuthCheck> {
 
 /**
  * Company-role-only gate. Returns the linked company id alongside the
- * session for convenience — most company actions need both. A
+ * session for convenience - most company actions need both. A
  * `company`-role user with no linked companyId is a misconfigured
  * account; we fail closed with a clear error.
  */
@@ -200,10 +209,10 @@ async function requireCompanyRole(): Promise<CompanyAuth> {
 /**
  * Read-and-scope helper for tender reads. Any signed-in user may read
  * tenders, but visibility depends on role:
- *   - admin / staff           → all tenders, including drafts
- *   - company                 → published / closed / awarded only;
- *                               drafts are invisible UNLESS the company
- *                               is the publisher (subcontract scenario)
+ *   - admin / staff           -> all tenders, including drafts
+ *   - company                 -> published / closed / awarded only;
+ *                                drafts are invisible UNLESS the company
+ *                                is the publisher (subcontract scenario)
  *
  * Returns:
  *   - session
@@ -233,7 +242,7 @@ async function resolveReadScope(): Promise<ReadScope> {
   return { ok: true, session, scopeCompanyId: session.companyId };
 }
 
-// ── Helper: SQLite unique-constraint translation ──────────────────────────
+// -- Helper: SQLite unique-constraint translation --------------------------
 
 /**
  * Same pattern as the companies module. SQLite reports unique constraint
@@ -252,7 +261,7 @@ function translateUniqueConflict(
       field: "referenceNumber",
     };
   }
-  // Composite-unique on (tender_id, company_id) — the index name appears
+  // Composite-unique on (tender_id, company_id) - the index name appears
   // in the error message verbatim.
   if (msg.includes("tender_applications_tender_company_unique_idx")) {
     return {
@@ -263,7 +272,7 @@ function translateUniqueConflict(
   return null;
 }
 
-// ── Helper: Consultway publisher resolution ───────────────────────────────
+// -- Helper: Consultway publisher resolution -------------------------------
 
 /**
  * Resolve the UUID of the Consultway sentinel publisher company. Cached
@@ -272,7 +281,7 @@ function translateUniqueConflict(
  *
  * In production this runs on a server process with a persistent lifetime,
  * so the cache hits after the first call. In dev with HMR / file watching,
- * the cache may reset more often — acceptable.
+ * the cache may reset more often - acceptable.
  *
  * Returns NULL if the row doesn't exist; the caller surfaces a clear
  * error rather than crashing on the FK constraint. (In practice the seed
@@ -301,7 +310,7 @@ async function resolveConsultwayPublisherId(): Promise<string | null> {
   return row.id;
 }
 
-// ── Helper: snapshot builder ──────────────────────────────────────────────
+// -- Helper: snapshot builder ---------------------------------------------
 
 /**
  * Build a partial snapshot of a tender row, restricted to the named
@@ -320,16 +329,16 @@ function buildPatchSnapshot(
   return snapshot;
 }
 
-// ── createTender ──────────────────────────────────────────────────────────
+// -- createTender ----------------------------------------------------------
 
 /**
  * Create a new tender. Admin/staff only. The created row starts with
- * `status: "draft"` regardless of what the caller sends — status is
+ * `status: "draft"` regardless of what the caller sends - status is
  * something the team transitions, not something the creator declares.
  *
  * If `publisherCompanyId` is omitted, defaults to the Consultway sentinel
  * company (resolved by name). This lets the UI's "Add tender" flow stay
- * simple — the common case (Consultway-internal tender) needs no
+ * simple - the common case (Consultway-internal tender) needs no
  * publisher picker.
  */
 export async function createTender(
@@ -351,7 +360,7 @@ export async function createTender(
   }
   const input: CreateTenderInput = parsed.data;
 
-  // 3. Resolve publisher — explicit if provided, sentinel if not.
+  // 3. Resolve publisher - explicit if provided, sentinel if not.
   let publisherCompanyId = input.publisherCompanyId;
   if (!publisherCompanyId) {
     const sentinelId = await resolveConsultwayPublisherId();
@@ -373,7 +382,7 @@ export async function createTender(
       title: input.title,
       description: input.description ?? null,
       referenceNumber: input.referenceNumber ?? null,
-      // Force draft — never trust create-side status.
+      // Force draft - never trust create-side status.
       status: "draft",
       publisherCompanyId,
       sector: input.sector,
@@ -400,7 +409,7 @@ export async function createTender(
   }
 
   // 5. Audit. Captures the identity-ish fields for later forensic
-  //    queries — full row contents would be noise.
+  //    queries - full row contents would be noise.
   await recordAuditEvent({
     actorId: auth.session.userId,
     actorRole: auth.session.role,
@@ -424,13 +433,13 @@ export async function createTender(
   return { ok: true, id };
 }
 
-// ── updateTender ──────────────────────────────────────────────────────────
+// -- updateTender ----------------------------------------------------------
 
 /**
  * Partial update. Admin/staff only. Field-level editability depends on
- * the row's current status — `getEditableFieldsForStatus` is the single
+ * the row's current status - `getEditableFieldsForStatus` is the single
  * source of truth. Fields outside the editable set are silently dropped
- * (defence in depth — the UI shouldn't offer them, but we enforce too).
+ * (defence in depth - the UI shouldn't offer them, but we enforce too).
  *
  * Status itself is NOT mutable via this action; use the dedicated
  * transition actions (`publishTender`, `closeTender`, etc.).
@@ -472,7 +481,7 @@ export async function updateTender(
   const droppedFields: string[] = [];
 
   // Helper to assign a field if it's editable in this status and the
-  // caller actually sent it. Logs dropped fields for forensic debug —
+  // caller actually sent it. Logs dropped fields for forensic debug -
   // a UI that's offering a field it shouldn't is a bug worth surfacing.
   function applyIfEditable<K extends keyof typeof tenders.$inferInsert>(
     field: K,
@@ -509,7 +518,7 @@ export async function updateTender(
   }
 
   // 5. Cross-field check against the merged row state. The schema's
-  //    superRefine only saw the patch in isolation — here we check what
+  //    superRefine only saw the patch in isolation - here we check what
   //    the row will look like after the patch lands.
   const mergedOpening = patch.openingDate ?? existing.openingDate;
   const mergedClosing = patch.closingDate ?? existing.closingDate;
@@ -567,11 +576,11 @@ export async function updateTender(
   return { ok: true };
 }
 
-// ── Status transitions ────────────────────────────────────────────────────
+// -- Status transitions ----------------------------------------------------
 
 /**
  * Audit action verbs accepted by `transitionTenderStatus`. The union is
- * a subset of `AuditAction` from the audit module — listed here
+ * a subset of `AuditAction` from the audit module - listed here
  * explicitly (rather than imported as the full union) so callers can't
  * pass a wildly inappropriate verb like `compliance_status_changed` to
  * a tender transition.
@@ -594,10 +603,10 @@ type TenderTransitionAuditAction = Extract<
  * update, and records the audit event.
  *
  * `auditMetadata` is optional and merged into the audit event's
- * `metadata` field — used by the reversal actions to capture a `reason`
+ * `metadata` field - used by the reversal actions to capture a `reason`
  * provided by the actor.
  *
- * Not exported — callers should use the named wrappers below so the
+ * Not exported - callers should use the named wrappers below so the
  * intent is explicit in the UI code.
  */
 async function transitionTenderStatus(
@@ -625,7 +634,7 @@ async function transitionTenderStatus(
     return { ok: false, error: "Tender not found" };
   }
 
-  // No-op short-circuit. Distinct from "illegal" — same value is fine.
+  // No-op short-circuit. Distinct from "illegal" - same value is fine.
   if (existing.status === nextStatus) {
     return { ok: true };
   }
@@ -651,7 +660,7 @@ async function transitionTenderStatus(
     if (appCount > 0) {
       return {
         ok: false,
-        error: `Cannot unpublish — ${appCount} ${
+        error: `Cannot unpublish - ${appCount} ${
           appCount === 1 ? "company has" : "companies have"
         } already applied. Close the tender instead.`,
       };
@@ -663,13 +672,13 @@ async function transitionTenderStatus(
     status: nextStatus,
   };
 
-  // Stamp publishedAt only on the draft → published transition. Other
-  // transitions leave the original publishedAt in place — even a tender
+  // Stamp publishedAt only on the draft -> published transition. Other
+  // transitions leave the original publishedAt in place - even a tender
   // that's been unpublished and re-published keeps the original time
   // for now (we don't track a re-publish history; if needed, that's a
   // separate audit-trail concern).
   //
-  // Day 5 note: `closed → published` (reopen) is also a published-
+  // Day 5 note: `closed -> published` (reopen) is also a published-
   // target transition, but the row already has a publishedAt from its
   // original publish, so the conditional below is a no-op for reopens.
   // The audit log captures the reopen event with its own verb.
@@ -690,7 +699,7 @@ async function transitionTenderStatus(
     throw err;
   }
 
-  // Audit. Status transitions are important events — record from/to
+  // Audit. Status transitions are important events - record from/to
   // explicitly in the snapshot, plus any caller-supplied metadata
   // (e.g. reversal reason).
   await recordAuditEvent({
@@ -734,7 +743,7 @@ export async function publishTender(rawId: unknown): Promise<ActionResult> {
 
 /**
  * Transition a published tender back to draft. Admin/staff only. Only
- * permitted while no applications exist on the tender — the state-machine
+ * permitted while no applications exist on the tender - the state-machine
  * helper's call site enforces this.
  */
 export async function unpublishTender(rawId: unknown): Promise<ActionResult> {
@@ -759,14 +768,14 @@ export async function closeTender(rawId: unknown): Promise<ActionResult> {
 /**
  * Mark a closed tender as awarded. Admin/staff only.
  *
- * As of Day 5, `awarded` is no longer a strictly-terminal state —
+ * As of Day 5, `awarded` is no longer a strictly-terminal state -
  * `retractAward` can move it back to `closed`. But `markAwarded` still
  * represents the procurement decision; retraction is the explicit
  * recovery path for accidental clicks.
  *
  * NOTE: this action does not yet record the winning company. The
  * `awardedCompanyId` column will land when Phase 2 (project tracking)
- * starts and we need the link for tender → project conversion. For now,
+ * starts and we need the link for tender -> project conversion. For now,
  * staff record the winner in `internalNotes`.
  */
 export async function markAwarded(rawId: unknown): Promise<ActionResult> {
@@ -778,10 +787,10 @@ export async function markAwarded(rawId: unknown): Promise<ActionResult> {
   return transitionTenderStatus(rawId, "awarded", auth.session, "updated");
 }
 
-// ── deleteTender ──────────────────────────────────────────────────────────
+// -- deleteTender ----------------------------------------------------------
 
 /**
- * Delete a tender. **Admin only.** Only `draft` tenders may be deleted —
+ * Delete a tender. **Admin only.** Only `draft` tenders may be deleted -
  * once a tender has been published, even briefly, we preserve it for
  * audit purposes. Admins can `closeTender` and `markAwarded` to retire
  * a published tender; deletion is reserved for cleanup of unused drafts.
@@ -800,7 +809,7 @@ export async function deleteTender(rawId: unknown): Promise<ActionResult> {
     return { ok: false, error: "Invalid tender id" };
   }
 
-  // Load existing — we need both the status check AND the snapshot for
+  // Load existing - we need both the status check AND the snapshot for
   // audit. One query covers both.
   const existing = await db
     .select()
@@ -823,7 +832,7 @@ export async function deleteTender(rawId: unknown): Promise<ActionResult> {
 
   // Delete with returning() so the cascaded application count is
   // technically discoverable, but SQLite's RETURNING doesn't reach
-  // through cascades — we'd need a separate count beforehand if we
+  // through cascades - we'd need a separate count beforehand if we
   // wanted that metric. Skipping for now; drafts shouldn't have apps.
   await db.delete(tenders).where(eq(tenders.id, parsed.data.id));
 
@@ -859,18 +868,18 @@ export async function deleteTender(rawId: unknown): Promise<ActionResult> {
   return { ok: true };
 }
 
-// ── getTender ─────────────────────────────────────────────────────────────
+// -- getTender -------------------------------------------------------------
 
 /**
  * Single-row fetch for the detail page. Includes role-aware row scoping:
  *
- *   - admin / staff      → see every tender, every field
- *   - company (publisher) → see own drafts (subcontract scenario) +
+ *   - admin / staff      -> see every tender, every field
+ *   - company (publisher) -> see own drafts (subcontract scenario) +
  *                            all published/closed/awarded
- *   - company (other)    → see published / closed / awarded only
+ *   - company (other)    -> see published / closed / awarded only
  *
  * Strips `internalNotes` for company-role callers regardless of which
- * tender — that field is staff-only.
+ * tender - that field is staff-only.
  */
 export async function getTender(
   rawId: unknown,
@@ -897,7 +906,7 @@ export async function getTender(
   if (scope.scopeCompanyId) {
     const isPublisher = row.publisherCompanyId === scope.scopeCompanyId;
     if (row.status === "draft" && !isPublisher) {
-      // Return "not found" rather than "forbidden" — don't leak the
+      // Return "not found" rather than "forbidden" - don't leak the
       // existence of a draft tender to a non-privileged caller.
       return { ok: false, error: "Tender not found" };
     }
@@ -910,7 +919,7 @@ export async function getTender(
   return { ok: true, tender: sanitized };
 }
 
-// ── listTenders ───────────────────────────────────────────────────────────
+// -- listTenders -----------------------------------------------------------
 
 /**
  * Result payload type for `listTenders`. Extracted so the function
@@ -928,9 +937,9 @@ type ListTendersPayload = {
  *
  * Visibility:
  *   - admin/staff: every tender
- *   - company: published / closed / awarded — plus own drafts as publisher
+ *   - company: published / closed / awarded - plus own drafts as publisher
  *
- * Filters compose with AND. Search is a `LIKE` against `title` only —
+ * Filters compose with AND. Search is a `LIKE` against `title` only -
  * SQLite has no FTS5 by default and at Phase 1's scale a sequential LIKE
  * is fast enough.
  */
@@ -961,23 +970,16 @@ export async function listTenders(
   // also asking for their own publisher. Otherwise, drop draft filter
   // and force the whitelist.
   if (scope.scopeCompanyId) {
-    // Company role — show non-drafts always, plus own drafts.
+    // Company role - show non-drafts always, plus own drafts.
     //   (status != 'draft') OR (publisher_company_id = own)
-    // Drizzle expresses this via the `or` operator. We need to import it.
-    // Implementation note: we don't want to pull in `or` for a single
-    // call — instead, push two conditions joined by SQL in a single
-    // template. But Drizzle's typed builders don't allow mixing raw
-    // SQL with type-checked columns cleanly. Cleanest path: query
-    // separately for drafts vs the rest only when needed.
-    //
     // Pragmatic compromise for Phase 1: if no status filter is set,
     // include both "non-draft" tenders AND own-publisher drafts via a
     // post-filter in JS. This is fine at Phase 1 scale (<100 tenders);
     // if it ever becomes a perf issue we'll move to a proper OR clause.
     //
     // If a specific status is requested:
-    //   - status='draft' → show only own drafts (publisher = scope)
-    //   - other status   → standard filter, no special handling
+    //   - status='draft' -> show only own drafts (publisher = scope)
+    //   - other status   -> standard filter, no special handling
     if (query.status === "draft") {
       filters.push(eq(tenders.status, "draft"));
       filters.push(eq(tenders.publisherCompanyId, scope.scopeCompanyId));
@@ -987,7 +989,7 @@ export async function listTenders(
     // If no status filter: handled below by skipping draft-exclusion
     // and post-filtering in JS.
   } else {
-    // admin/staff — straightforward status filter if provided.
+    // admin/staff - straightforward status filter if provided.
     if (query.status) {
       filters.push(eq(tenders.status, query.status));
     }
@@ -1056,7 +1058,7 @@ export async function listTenders(
       (r) =>
         r.status !== "draft" || r.publisherCompanyId === scope.scopeCompanyId,
     );
-    // Adjust total to reflect the JS-side hide. Approximation only —
+    // Adjust total to reflect the JS-side hide. Approximation only -
     // the total may be off by the number of "other-publisher drafts"
     // that fell on this page, but pagination remains usable. Long-term
     // fix is a proper SQL OR clause; tracked as tech debt.
@@ -1079,7 +1081,7 @@ export async function listTenders(
   };
 }
 
-// ── applyToTender ─────────────────────────────────────────────────────────
+// -- applyToTender ---------------------------------------------------------
 
 /**
  * Company-role users apply to a published tender on their own behalf.
@@ -1089,11 +1091,11 @@ export async function listTenders(
  *   2. Closing date hasn't passed (if set)
  *   3. Eligibility filters: sector / geography / MSME match company's
  *      own row state
- *   4. Turnover gate — DEFERRED. The `companies` table doesn't have an
+ *   4. Turnover gate - DEFERRED. The `companies` table doesn't have an
  *      `annualTurnover` column yet (Day-3 schema omits it). When that
  *      ships, enable enforcement here.
  *   5. Composite-unique on (tender_id, company_id) catches duplicate
- *      applications at the DB level — we soft-check first for a friendly
+ *      applications at the DB level - we soft-check first for a friendly
  *      error message.
  *
  * Returns the new application id on success.
@@ -1101,7 +1103,7 @@ export async function listTenders(
 export async function applyToTender(
   rawInput: unknown,
 ): Promise<ActionResult<{ applicationId: string }>> {
-  // 1. AuthZ — company role only
+  // 1. AuthZ - company role only
   const auth = await requireCompanyRole();
   if (!auth.ok) return auth;
 
@@ -1117,7 +1119,7 @@ export async function applyToTender(
   }
   const input = parsed.data;
 
-  // 3. Load tender + company in parallel — we need both to gate on
+  // 3. Load tender + company in parallel - we need both to gate on
   //    eligibility.
   const [tender, company] = await Promise.all([
     db
@@ -1136,7 +1138,7 @@ export async function applyToTender(
 
   if (!tender) return { ok: false, error: "Tender not found" };
   if (!company) {
-    // Session claims a companyId that doesn't exist — bad state.
+    // Session claims a companyId that doesn't exist - bad state.
     log.error("applyToTender: session companyId not found in DB", {
       userId: auth.session.userId,
       companyId: auth.companyId,
@@ -1154,7 +1156,7 @@ export async function applyToTender(
 
   // 5. Closing-date gate. Comparing ISO date strings as strings is
   //    correct (YYYY-MM-DD sorts lexically the same as chronologically).
-  //    "Today" uses the server's view of UTC — fine for India ops where
+  //    "Today" uses the server's view of UTC - fine for India ops where
   //    the date boundary is +5:30 from UTC; a user submitting at 4 AM
   //    IST won't hit edge cases here.
   if (tender.closingDate) {
@@ -1171,7 +1173,7 @@ export async function applyToTender(
   if (tender.eligibleSector && company.sector !== tender.eligibleSector) {
     return {
       ok: false,
-      error: `This tender requires sector "${tender.eligibleSector}" — your company is in "${company.sector}"`,
+      error: `This tender requires sector "${tender.eligibleSector}" - your company is in "${company.sector}"`,
     };
   }
   if (
@@ -1180,7 +1182,7 @@ export async function applyToTender(
   ) {
     return {
       ok: false,
-      error: `This tender requires geography "${tender.eligibleGeography}" — your company is in "${company.geography}"`,
+      error: `This tender requires geography "${tender.eligibleGeography}" - your company is in "${company.geography}"`,
     };
   }
   if (tender.msmeOnly && !company.isMsme) {
@@ -1197,7 +1199,7 @@ export async function applyToTender(
   //   if (turnover < tender.minAnnualTurnoverInr) {
   //     return {
   //       ok: false,
-  //       error: `This tender requires an annual turnover of at least ₹${tender.minAnnualTurnoverInr.toLocaleString("en-IN")}`,
+  //       error: `This tender requires an annual turnover of at least Rs.${tender.minAnnualTurnoverInr.toLocaleString("en-IN")}`,
   //     };
   //   }
   // }
@@ -1236,7 +1238,7 @@ export async function applyToTender(
       internalNotes: null,
     });
   } catch (err) {
-    // Composite-unique race — another tab applied between the soft
+    // Composite-unique race - another tab applied between the soft
     // check and the insert. Translate to a friendly message.
     const conflict = translateUniqueConflict(err);
     if (conflict) {
@@ -1255,7 +1257,11 @@ export async function applyToTender(
   }
 
   // 9. Audit. `tender_applied` is the dedicated audit action for this
-  //    event — clearer log-grepping than a generic 'created'.
+  //    event - clearer log-grepping than a generic 'created'. This event
+  //    intentionally targets the TENDER, not the application - the
+  //    audit-trail read for "this tender received a submission" wants
+  //    the tender as its primary key. The applicationId rides in
+  //    metadata for cross-reference.
   await recordAuditEvent({
     actorId: auth.session.userId,
     actorRole: auth.session.role,
@@ -1279,11 +1285,11 @@ export async function applyToTender(
   return { ok: true, applicationId };
 }
 
-// ── withdrawApplication ───────────────────────────────────────────────────
+// -- withdrawApplication ---------------------------------------------------
 
 /**
  * Company-role users withdraw their own application. Only allowed while
- * the application is still `submitted` — once staff have shortlisted or
+ * the application is still `submitted` - once staff have shortlisted or
  * rejected, the company can't unilaterally rescind (audit trail).
  *
  * Day 5: a withdrawn application can be recalled (flipped back to
@@ -1312,7 +1318,7 @@ export async function withdrawApplication(
     return { ok: false, error: "Application not found" };
   }
 
-  // Ownership check — caller's companyId must match the application's.
+  // Ownership check - caller's companyId must match the application's.
   if (existing.companyId !== auth.companyId) {
     log.warn("withdrawApplication forbidden", {
       userId: auth.session.userId,
@@ -1327,26 +1333,33 @@ export async function withdrawApplication(
   if (existing.status !== "submitted") {
     return {
       ok: false,
-      error: `Cannot withdraw — application is already ${existing.status}`,
+      error: `Cannot withdraw - application is already ${existing.status}`,
     };
   }
+
+  const decidedAtIso = new Date().toISOString();
 
   await db
     .update(tenderApplications)
     .set({
       status: "withdrawn",
-      decidedAt: new Date().toISOString(),
+      decidedAt: decidedAtIso,
     })
     .where(eq(tenderApplications.id, existing.id));
 
+  // Day 6: target the APPLICATION row directly. The parent tenderId
+  // moves to metadata so per-tender history queries can still surface
+  // the event via a metadata.tenderId filter on the audit reader.
   await recordAuditEvent({
     actorId: auth.session.userId,
     actorRole: auth.session.role,
     action: "updated",
-    targetType: "tender",
-    targetId: existing.tenderId,
+    targetType: "tender_application",
+    targetId: existing.id,
+    before: { status: "submitted", decidedAt: null },
+    after: { status: "withdrawn", decidedAt: decidedAtIso },
     metadata: {
-      applicationId: existing.id,
+      tenderId: existing.tenderId,
       companyId: existing.companyId,
       statusChange: { from: "submitted", to: "withdrawn" },
     },
@@ -1359,21 +1372,21 @@ export async function withdrawApplication(
   return { ok: true };
 }
 
-// ── updateApplicationStatus ───────────────────────────────────────────────
+// -- updateApplicationStatus -----------------------------------------------
 
 /**
  * Admin/staff transition an application's status (e.g.
- * submitted → shortlisted, submitted → rejected). The schema restricts
- * the legal targets to `shortlisted` and `rejected` — `submitted` is
+ * submitted -> shortlisted, submitted -> rejected). The schema restricts
+ * the legal targets to `shortlisted` and `rejected` - `submitted` is
  * the initial state and `withdrawn` is company-driven only.
  *
  * Day 5: reversals (shortlisted/rejected back to submitted) now go
  * through the dedicated `reinstateApplication` action below, which
  * clears `decidedAt` to NULL and uses the `application_reinstated`
- * audit verb. This action no longer handles those reversals — its
+ * audit verb. This action no longer handles those reversals - its
  * schema only accepts `shortlisted` / `rejected` as targets.
  *
- * Allowed sources: `submitted` only — once an application has been
+ * Allowed sources: `submitted` only - once an application has been
  * decided either way, this action is a no-op (idempotent same-status
  * write returns ok). Reversing a decision goes via `reinstateApplication`.
  */
@@ -1409,7 +1422,7 @@ export async function updateApplicationStatus(
     return {
       ok: false,
       error:
-        "Cannot change status — the applicant has already withdrawn this application",
+        "Cannot change status - the applicant has already withdrawn this application",
     };
   }
 
@@ -1418,9 +1431,10 @@ export async function updateApplicationStatus(
   }
 
   // Build patch. Stamp decidedAt every time staff record a decision.
+  const decidedAtIso = new Date().toISOString();
   const patch: Partial<typeof tenderApplications.$inferInsert> = {
     status: input.status,
-    decidedAt: new Date().toISOString(),
+    decidedAt: decidedAtIso,
   };
   if (input.internalNotes !== undefined) {
     patch.internalNotes = input.internalNotes;
@@ -1431,14 +1445,21 @@ export async function updateApplicationStatus(
     .set(patch)
     .where(eq(tenderApplications.id, existing.id));
 
+  // Day 6: target the APPLICATION row directly (see withdrawApplication
+  // commentary above). The before/after snapshot is now explicit on the
+  // event itself rather than buried in metadata.statusChange (which
+  // stays for backwards-compat with anything that grepped the old log
+  // lines).
   await recordAuditEvent({
     actorId: auth.session.userId,
     actorRole: auth.session.role,
     action: "updated",
-    targetType: "tender",
-    targetId: existing.tenderId,
+    targetType: "tender_application",
+    targetId: existing.id,
+    before: { status: existing.status, decidedAt: existing.decidedAt },
+    after: { status: input.status, decidedAt: decidedAtIso },
     metadata: {
-      applicationId: existing.id,
+      tenderId: existing.tenderId,
       companyId: existing.companyId,
       statusChange: { from: existing.status, to: input.status },
       ...(input.internalNotes !== undefined
@@ -1456,7 +1477,7 @@ export async function updateApplicationStatus(
   return { ok: true };
 }
 
-// ── listApplicationsForTender ─────────────────────────────────────────────
+// -- listApplicationsForTender ---------------------------------------------
 
 /**
  * Result payload for the tender detail page's applications list. Each
@@ -1475,9 +1496,9 @@ export type TenderApplicationRow = TenderApplication & {
  * basics. Used on the tender detail page.
  *
  * Visibility:
- *   - admin/staff   → all applications, all fields
- *   - company       → if they're the publisher, all applications; if
- *                     they're an applicant, only their own row
+ *   - admin/staff   -> all applications, all fields
+ *   - company       -> if they're the publisher, all applications; if
+ *                      they're an applicant, only their own row
  *
  * The list is ordered submittedAt ASC by default (oldest applications
  * first) so the timeline reads naturally on the detail page.
@@ -1526,7 +1547,7 @@ export async function listApplicationsForTender(
     filters.push(eq(tenderApplications.companyId, scope.scopeCompanyId));
   }
 
-  // INNER JOIN to companies — every application has a company by FK
+  // INNER JOIN to companies - every application has a company by FK
   // contract, so the inner join is correct (no orphan applications
   // possible without violating the cascade).
   const rows = await db
@@ -1562,10 +1583,10 @@ export async function listApplicationsForTender(
   return { ok: true, rows: sanitized };
 }
 
-// ── listMyApplications ────────────────────────────────────────────────────
+// -- listMyApplications ----------------------------------------------------
 
 /**
- * Company-role users see all their company's applications — used for the
+ * Company-role users see all their company's applications - used for the
  * "My applications" page (lands in a later UI chunk).
  *
  * Returns each application joined with a slim tender summary so the UI
@@ -1588,7 +1609,7 @@ export async function listMyApplications(): Promise<
       companyId: tenderApplications.companyId,
       status: tenderApplications.status,
       coverNote: tenderApplications.coverNote,
-      // Company-role caller — strip internal notes by always returning null.
+      // Company-role caller - strip internal notes by always returning null.
       internalNotes: tenderApplications.internalNotes,
       submittedAt: tenderApplications.submittedAt,
       decidedAt: tenderApplications.decidedAt,
@@ -1606,7 +1627,7 @@ export async function listMyApplications(): Promise<
     .where(eq(tenderApplications.companyId, auth.companyId))
     .orderBy(desc(tenderApplications.submittedAt));
 
-  // Strip internal notes — company role.
+  // Strip internal notes - company role.
   const sanitized: MyApplicationRow[] = rows.map((r) => ({
     ...r,
     internalNotes: null,
@@ -1615,22 +1636,22 @@ export async function listMyApplications(): Promise<
   return { ok: true, rows: sanitized };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 //
-//                      Day 5 — Reversal capability
+//                      Day 5 - Reversal capability
 //
 //   Four actions for admin-led (and company-side, for recall) recovery
 //   from accidental status changes. Built on the relaxed state machine
-//   (see `state-machine.ts` — Day-5 edits legalised closed->published,
+//   (see `state-machine.ts` - Day-5 edits legalised closed->published,
 //   awarded->closed, and the three application-side reversals).
 //
-//   Delete is intentionally NOT reversed here — the type-to-confirm
+//   Delete is intentionally NOT reversed here - the type-to-confirm
 //   friction plus the draft-only restriction are the safety net; soft
 //   delete is a larger surface area that warrants its own design pass.
 //
-// ═══════════════════════════════════════════════════════════════════════════
+// ===========================================================================
 
-// ── reopenTender ──────────────────────────────────────────────────────────
+// -- reopenTender ----------------------------------------------------------
 
 /**
  * Reopen a closed tender. **Admin only.** Moves the tender from
@@ -1647,17 +1668,17 @@ export async function listMyApplications(): Promise<
  *   - Companies who already saw the tender as "closed" will be confused
  *     when it flips back to published.
  *   - The original publishedAt timestamp is preserved (we don't reset
- *     it on reopen) — auditors looking at "when was this published?"
+ *     it on reopen) - auditors looking at "when was this published?"
  *     get the first-publish time, with the reopen captured separately
  *     in the audit log.
  *
- * Restricted to admin (not staff) to keep the blast radius small —
+ * Restricted to admin (not staff) to keep the blast radius small -
  * staff who needs a reopen escalates to an admin.
  */
 export async function reopenTender(
   rawInput: unknown,
 ): Promise<ActionResult> {
-  // 1. AuthZ — admin only
+  // 1. AuthZ - admin only
   const auth = await requireAdmin();
   if (!auth.ok) return auth;
 
@@ -1673,7 +1694,7 @@ export async function reopenTender(
   }
   const input = parsed.data;
 
-  // 3. Defence in depth — assert the row is actually `closed` before
+  // 3. Defence in depth - assert the row is actually `closed` before
   //    asking the state machine. transitionTenderStatus will also check,
   //    but this gives a clearer error for the rare "this tender isn't
   //    closed" case (e.g. status flipped from under us in a different
@@ -1691,7 +1712,7 @@ export async function reopenTender(
   if (existing.status !== "closed") {
     return {
       ok: false,
-      error: `Cannot reopen — tender is ${existing.status}, not closed`,
+      error: `Cannot reopen - tender is ${existing.status}, not closed`,
     };
   }
 
@@ -1706,12 +1727,12 @@ export async function reopenTender(
   );
 }
 
-// ── retractAward ──────────────────────────────────────────────────────────
+// -- retractAward ----------------------------------------------------------
 
 /**
  * Retract a tender award. **Admin only.** Moves the tender from
  * `awarded` back to `closed`. **Reason is REQUIRED** (highest-stakes
- * reversal in the app — captured prominently in the audit log).
+ * reversal in the app - captured prominently in the audit log).
  *
  * Why this exists: occasionally an award decision gets reversed for
  * legitimate reasons (the awarded company withdraws their offer, a
@@ -1719,14 +1740,14 @@ export async function reopenTender(
  * itself is significant enough that we want a written rationale on
  * record alongside the structured audit event.
  *
- * Restricted to admin (not staff) by design — retracting an award is
+ * Restricted to admin (not staff) by design - retracting an award is
  * a higher-stakes action than the original `markAwarded` because of
  * the contractual implications of the original decision.
  */
 export async function retractAward(
   rawInput: unknown,
 ): Promise<ActionResult> {
-  // 1. AuthZ — admin only
+  // 1. AuthZ - admin only
   const auth = await requireAdmin();
   if (!auth.ok) return auth;
 
@@ -1756,7 +1777,7 @@ export async function retractAward(
   if (existing.status !== "awarded") {
     return {
       ok: false,
-      error: `Cannot retract award — tender is ${existing.status}, not awarded`,
+      error: `Cannot retract award - tender is ${existing.status}, not awarded`,
     };
   }
 
@@ -1771,7 +1792,7 @@ export async function retractAward(
   );
 }
 
-// ── reinstateApplication ──────────────────────────────────────────────────
+// -- reinstateApplication --------------------------------------------------
 
 /**
  * Reinstate a shortlisted or rejected application. **Admin/staff only.**
@@ -1785,7 +1806,7 @@ export async function retractAward(
  * losing the audit trail of the original decision.
  *
  * Why we clear `decidedAt`: a non-null decidedAt on a `submitted`
- * application would be a data anomaly — any future query for "when
+ * application would be a data anomaly - any future query for "when
  * was this decided?" would get a misleading timestamp for a decision
  * that's been undone. The previous decidedAt is preserved in the audit
  * event's `metadata.previousDecidedAt` for forensic reference.
@@ -1797,7 +1818,7 @@ export async function retractAward(
 export async function reinstateApplication(
   rawInput: unknown,
 ): Promise<ActionResult> {
-  // 1. AuthZ — admin/staff
+  // 1. AuthZ - admin/staff
   const auth = await requireAdminOrStaff();
   if (!auth.ok) return auth;
 
@@ -1813,7 +1834,7 @@ export async function reinstateApplication(
   }
   const input = parsed.data;
 
-  // 3. Load existing application — need the snapshot for audit and the
+  // 3. Load existing application - need the snapshot for audit and the
   //    current status for the transition gate.
   const existing = await db
     .select()
@@ -1829,7 +1850,7 @@ export async function reinstateApplication(
   // 4. Reinstate is specifically for staff-decision reversals, not for
   //    company-driven withdrawals. Recall is the separate company action
   //    for withdrawn -> submitted; refuse here even though the state
-  //    machine would technically allow it (defence in depth — keeps the
+  //    machine would technically allow it (defence in depth - keeps the
   //    two actions' surfaces distinct).
   if (existing.status === "withdrawn") {
     return {
@@ -1848,7 +1869,7 @@ export async function reinstateApplication(
     };
   }
 
-  // 6. Apply patch — status flips back to submitted, decidedAt cleared.
+  // 6. Apply patch - status flips back to submitted, decidedAt cleared.
   const previousStatus = existing.status;
   const previousDecidedAt = existing.decidedAt;
   try {
@@ -1868,19 +1889,20 @@ export async function reinstateApplication(
     throw err;
   }
 
-  // 7. Audit with the dedicated reversal verb. Preserves the previous
-  //    decision time so forensic queries can answer "when was the
-  //    original decision made?" even after the row state is reset.
+  // 7. Audit with the dedicated reversal verb. Day 6: targets the
+  //    APPLICATION directly; tenderId rides in metadata. Preserves the
+  //    previous decision time so forensic queries can answer "when was
+  //    the original decision made?" even after the row state is reset.
   await recordAuditEvent({
     actorId: auth.session.userId,
     actorRole: auth.session.role,
     action: "application_reinstated",
-    targetType: "tender",
-    targetId: existing.tenderId,
+    targetType: "tender_application",
+    targetId: existing.id,
     before: { status: previousStatus, decidedAt: previousDecidedAt },
     after: { status: "submitted", decidedAt: null },
     metadata: {
-      applicationId: existing.id,
+      tenderId: existing.tenderId,
       companyId: existing.companyId,
       previousDecidedAt,
       ...(input.reason ? { reason: input.reason } : {}),
@@ -1895,7 +1917,7 @@ export async function reinstateApplication(
   return { ok: true };
 }
 
-// ── recallApplication ────────────────────────────────────────────────────
+// -- recallApplication -----------------------------------------------------
 
 /**
  * Recall a withdrawn application. **Company-role only, on own
@@ -1909,23 +1931,23 @@ export async function reinstateApplication(
  * Why this exists: companies sometimes withdraw applications in haste
  * (changed their mind about pursuing the contract, miscommunication
  * inside the organisation) and want to re-engage shortly after. The
- * 7-day window matches a business week — long enough for a Monday-
+ * 7-day window matches a business week - long enough for a Monday-
  * morning regret to be actioned, short enough that stale withdrawals
  * don't reappear weeks later and surprise staff.
  *
  * Additional guard: if the tender itself has moved on (closed/awarded
- * since the withdrawal), the recall is blocked — putting an application
+ * since the withdrawal), the recall is blocked - putting an application
  * back to `submitted` on a non-published tender would create a row
  * state the rest of the system can't reason about cleanly.
  *
  * Captures `daysSinceWithdrawal` in the audit metadata for forensic
- * context — useful for spotting patterns of repeat-recall behaviour
+ * context - useful for spotting patterns of repeat-recall behaviour
  * if that becomes a concern.
  */
 export async function recallApplication(
   rawInput: unknown,
 ): Promise<ActionResult> {
-  // 1. AuthZ — company role only
+  // 1. AuthZ - company role only
   const auth = await requireCompanyRole();
   if (!auth.ok) return auth;
 
@@ -1953,7 +1975,7 @@ export async function recallApplication(
     return { ok: false, error: "Application not found" };
   }
 
-  // 4. Ownership check — caller's companyId must match the application's.
+  // 4. Ownership check - caller's companyId must match the application's.
   //    Don't leak the existence of someone else's application; return
   //    the same "not found" error a missing-row would.
   if (existing.companyId !== auth.companyId) {
@@ -1970,7 +1992,7 @@ export async function recallApplication(
   if (existing.status !== "withdrawn") {
     return {
       ok: false,
-      error: `Cannot recall — application is ${existing.status}, not withdrawn`,
+      error: `Cannot recall - application is ${existing.status}, not withdrawn`,
     };
   }
 
@@ -1987,7 +2009,7 @@ export async function recallApplication(
   // 7. Tender status sanity check. If the tender has moved on (closed /
   //    awarded) since the withdrawal, recall would put the application
   //    back into a submitted state on a tender that's no longer accepting
-  //    applications. Block this — the company should reapply manually
+  //    applications. Block this - the company should reapply manually
   //    if the tender is ever reopened.
   const tenderRow = await db
     .select({ status: tenders.status })
@@ -2008,7 +2030,7 @@ export async function recallApplication(
   if (!acceptsApplications(tenderRow.status)) {
     return {
       ok: false,
-      error: `Cannot recall — tender is no longer accepting applications (status: ${tenderRow.status})`,
+      error: `Cannot recall - tender is no longer accepting applications (status: ${tenderRow.status})`,
     };
   }
 
@@ -2022,12 +2044,12 @@ export async function recallApplication(
     };
   }
 
-  // 9. Capture forensic metadata BEFORE the write — daysSince reads the
+  // 9. Capture forensic metadata BEFORE the write - daysSince reads the
   //    pre-recall decidedAt.
   const elapsedDays = daysSince(existing.decidedAt);
   const previousDecidedAt = existing.decidedAt;
 
-  // 10. Apply patch. Same shape as reinstate — status back to submitted,
+  // 10. Apply patch. Same shape as reinstate - status back to submitted,
   //     decidedAt cleared.
   try {
     await db
@@ -2046,17 +2068,19 @@ export async function recallApplication(
     throw err;
   }
 
-  // 11. Audit with the company-side reversal verb.
+  // 11. Audit with the company-side reversal verb. Day 6: targets the
+  //     APPLICATION directly; tenderId rides in metadata alongside the
+  //     forensic-context fields.
   await recordAuditEvent({
     actorId: auth.session.userId,
     actorRole: auth.session.role,
     action: "application_recalled",
-    targetType: "tender",
-    targetId: existing.tenderId,
+    targetType: "tender_application",
+    targetId: existing.id,
     before: { status: "withdrawn", decidedAt: previousDecidedAt },
     after: { status: "submitted", decidedAt: null },
     metadata: {
-      applicationId: existing.id,
+      tenderId: existing.tenderId,
       companyId: existing.companyId,
       previousDecidedAt,
       daysSinceWithdrawal: elapsedDays,
