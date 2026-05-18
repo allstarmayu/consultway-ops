@@ -1,6 +1,6 @@
 /**
  * Tender detail header — title, status badge, and the role-gated set
- * of action buttons (status transitions, edit, delete).
+ * of action buttons (status transitions, edit, delete, reversals).
  *
  * Client Component because each action button calls a Server Action via
  * `useTransition` and shows pending UI. Errors surface in an inline
@@ -15,13 +15,24 @@
  *   - published → Unpublish (only when 0 applications — server enforces;
  *                 we show the button regardless and surface the error),
  *                 Close, Edit
- *   - closed    → Mark awarded, Edit (only internalNotes effectively)
- *   - awarded   → Edit (only internalNotes); no transitions left
+ *   - closed    → Mark awarded, Reopen (admin only), Edit (only
+ *                 internalNotes effectively)
+ *   - awarded   → Retract award (admin only), Edit (only internalNotes)
  *
- * `markAwarded` is the one terminal transition, so it's wrapped in a
- * `<ConfirmDialog>` (radix-based, theme-matched) rather than the native
- * `window.confirm()` we had originally. The other transitions are
- * recoverable and stay one-click.
+ * `markAwarded`, `reopenTender`, and `retractAward` are wrapped in
+ * `<ConfirmDialog>` because each one transitions state in a way that
+ * matters operationally:
+ *   - Mark awarded → significant procurement decision
+ *   - Reopen       → companies who saw the tender as "closed" will be
+ *                    confused if it flips back to published
+ *   - Retract award → reverses a contractual-weight decision; required
+ *                    reason captured in audit log
+ *
+ * The other transitions (publish, unpublish, close) are one-click —
+ * recoverable through their own reversal paths.
+ *
+ * Reopen / retract are **admin-only** (not staff). Staff who needs a
+ * reversal escalates to an admin. Mirrors the deleteTender gate.
  *
  * @module app/dashboard/tenders/[id]/_components/tender-header
  */
@@ -35,15 +46,19 @@ import {
   CheckCircle2,
   Lock,
   Pencil,
+  RotateCcw,
   Trash2,
   Trophy,
   Undo2,
+  XCircle,
 } from "lucide-react";
 import {
   publishTender,
   unpublishTender,
   closeTender,
   markAwarded,
+  reopenTender,
+  retractAward,
 } from "@/lib/tenders/actions";
 import type { Tender } from "@/lib/db/schema";
 import { Button } from "@/components/ui/button";
@@ -57,7 +72,12 @@ export interface TenderHeaderProps {
   tender: Tender;
   /** True when the viewer is admin or staff. Drives transition-button visibility. */
   canManage: boolean;
-  /** True when the viewer is admin. Drives the Delete button. */
+  /**
+   * True when the viewer is admin. Drives the Delete button and the
+   * two reversal buttons (Reopen, Retract award) — all admin-only.
+   * Renamed responsibility-wise as of Day 5, but kept the prop name to
+   * avoid a ripple-edit through the parent page.
+   */
   canDelete: boolean;
   /** True when the tender has at least one application — affects Unpublish copy. */
   hasApplications: boolean;
@@ -115,6 +135,41 @@ export function TenderHeader({
     runTransition("mark awarded", () => markAwarded(tender.id));
   }
 
+  /**
+   * Reopen handler — receives an optional `reason` from the
+   * ConfirmDialog (since reasonField="optional"). Passes through to the
+   * Server Action which records it in the audit metadata.
+   */
+  function handleReopen(reason?: string) {
+    runTransition("reopen", () =>
+      reopenTender({
+        tenderId: tender.id,
+        // Schema accepts `reason` as optional — pass-through when
+        // present, omit the key entirely when not (cleaner audit
+        // metadata than `reason: undefined`).
+        ...(reason ? { reason } : {}),
+      }),
+    );
+  }
+
+  /**
+   * Retract-award handler — receives a `reason` from the ConfirmDialog.
+   * ConfirmDialog enforces the 5-char minimum client-side, so by the
+   * time this handler fires, `reason` is guaranteed to be a non-empty
+   * trimmed string. The Server Action's schema double-checks; the `!`
+   * here reflects the dialog contract.
+   */
+  function handleRetractAward(reason?: string) {
+    runTransition("retract award", () =>
+      retractAward({
+        tenderId: tender.id,
+        // ConfirmDialog with reasonField="required" always provides
+        // reason; the assertion is defensive.
+        reason: reason!,
+      }),
+    );
+  }
+
   // ── Computed flags ──────────────────────────────────────────────────
   const canPublish = canManage && tender.status === "draft";
   const canUnpublish = canManage && tender.status === "published";
@@ -125,6 +180,11 @@ export function TenderHeader({
   const canEdit = canManage;
   // Delete visible only on drafts (action also enforces).
   const canShowDelete = canDelete && tender.status === "draft";
+  // ── Day 5: reversal buttons ─────────────────────────────────────────
+  // Both admin-only. The `canDelete` prop already gates on admin role,
+  // so we reuse it as the admin signal here.
+  const canReopen = canDelete && tender.status === "closed";
+  const canRetractAward = canDelete && tender.status === "awarded";
 
   return (
     <>
@@ -198,10 +258,61 @@ export function TenderHeader({
                 </Button>
               }
               title={`Mark "${tender.title}" as awarded?`}
-              description="This is the final state for a tender. Once awarded, no further status changes are possible and only internal notes remain editable."
+              description="This records the procurement decision. The tender can still be reverted to closed via Retract award if needed."
               confirmLabel="Mark awarded"
               confirmVariant="default"
               onConfirm={handleAward}
+              pending={isPending}
+            />
+          )}
+
+          {/* ── Day 5: Reopen (closed → published, admin only) ──────── */}
+          {canReopen && (
+            <ConfirmDialog
+              trigger={
+                <Button
+                  variant="outline"
+                  disabled={isPending}
+                  aria-label="Reopen tender"
+                >
+                  <RotateCcw className="h-4 w-4" aria-hidden />
+                  Reopen
+                </Button>
+              }
+              title={`Reopen "${tender.title}"?`}
+              description="This moves the tender back to published. Companies who saw it as closed may be surprised — consider notifying them. Any existing applications stay attached."
+              confirmLabel="Reopen tender"
+              confirmVariant="default"
+              reasonField="optional"
+              reasonLabel="Reason (optional)"
+              reasonPlaceholder="e.g. Closed in error — extending the deadline by two weeks"
+              onConfirm={handleReopen}
+              pending={isPending}
+            />
+          )}
+
+          {/* ── Day 5: Retract award (awarded → closed, admin only) ─── */}
+          {canRetractAward && (
+            <ConfirmDialog
+              trigger={
+                <Button
+                  variant="outline"
+                  disabled={isPending}
+                  aria-label="Retract tender award"
+                  className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                >
+                  <XCircle className="h-4 w-4" aria-hidden />
+                  Retract award
+                </Button>
+              }
+              title={`Retract the award for "${tender.title}"?`}
+              description="This moves the tender from awarded back to closed. The procurement decision is reversed and a reason is required for the audit log."
+              confirmLabel="Retract award"
+              confirmVariant="destructive"
+              reasonField="required"
+              reasonLabel="Reason (required)"
+              reasonPlaceholder="e.g. Awarded company unable to fulfil contract — re-evaluating shortlist"
+              onConfirm={handleRetractAward}
               pending={isPending}
             />
           )}

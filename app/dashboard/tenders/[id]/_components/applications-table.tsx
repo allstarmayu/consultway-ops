@@ -10,11 +10,15 @@
  *   - Submitted / decided timestamps
  *   - Cover note preview (truncated; full text on hover via title attr)
  *   - Internal notes (staff only, smaller text)
- *   - Inline Shortlist / Reject icon buttons (staff only, on `submitted`
- *     applications)
+ *   - Inline action icons (staff only):
+ *       - on `submitted` rows         → Shortlist + Reject
+ *       - on `shortlisted`/`rejected` → Reinstate (Day 5)
+ *       - on `withdrawn`              → no actions; the company can
+ *                                       recall via apply-button within
+ *                                       the recall window
  *
  * Empty state when no applications yet. Client Component because the
- * status-change icons call a Server Action via `useTransition`.
+ * status-change icons call Server Actions via `useTransition`.
  *
  * Text-selection: dashboard root disables user-select by default. We
  * RE-ENABLE selection on the cover note and internal notes columns
@@ -30,15 +34,20 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   AlertCircle,
+  Building,
   Inbox,
+  RotateCcw,
   UserCheck,
   UserX,
-  Building,
 } from "lucide-react";
-import { updateApplicationStatus } from "@/lib/tenders/actions";
+import {
+  reinstateApplication,
+  updateApplicationStatus,
+} from "@/lib/tenders/actions";
 import type { TenderApplicationRow } from "@/lib/tenders/actions";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Table,
   TableBody,
@@ -74,7 +83,7 @@ export function ApplicationsTable({
     string | null
   >(null);
 
-  /** Shared transition wrapper for the two staff actions. */
+  /** Shared transition wrapper for shortlist / reject. */
   function changeStatus(
     applicationId: string,
     target: "shortlisted" | "rejected",
@@ -89,6 +98,33 @@ export function ApplicationsTable({
       setPendingApplicationId(null);
       if (!result.ok) {
         setError(result.error ?? "Could not update application");
+        return;
+      }
+      router.refresh();
+    });
+  }
+
+  /**
+   * Day 5 — Reinstate handler.
+   *
+   * Flips a shortlisted/rejected application back to `submitted` and
+   * clears `decidedAt` on the server. Optional reason from the
+   * ConfirmDialog passes through to the audit log.
+   *
+   * After success, the next render shows the row's icons as the
+   * original Shortlist/Reject pair again (status is back to submitted).
+   */
+  function handleReinstate(applicationId: string, reason?: string): void {
+    setError(null);
+    setPendingApplicationId(applicationId);
+    startTransition(async () => {
+      const result = await reinstateApplication({
+        applicationId,
+        ...(reason ? { reason } : {}),
+      });
+      setPendingApplicationId(null);
+      if (!result.ok) {
+        setError(result.error ?? "Could not reinstate application");
         return;
       }
       router.refresh();
@@ -144,8 +180,16 @@ export function ApplicationsTable({
             {rows.map((row) => {
               const rowPending =
                 isPending && pendingApplicationId === row.id;
+              // ── Per-row capability flags ─────────────────────────
+              // canActOnRow → Shortlist/Reject (submitted only)
+              // canReinstateRow → Reinstate (shortlisted/rejected)
+              // Withdrawn rows show no staff actions.
               const canActOnRow =
                 canManage && row.status === "submitted" && !rowPending;
+              const canReinstateRow =
+                canManage &&
+                (row.status === "shortlisted" || row.status === "rejected") &&
+                !rowPending;
 
               return (
                 <TableRow key={row.id}>
@@ -220,6 +264,7 @@ export function ApplicationsTable({
                       <div className="flex items-center justify-end gap-1">
                         {canActOnRow ? (
                           <>
+                            {/* Submitted row: Shortlist + Reject */}
                             <Button
                               variant="ghost"
                               size="icon-sm"
@@ -241,7 +286,40 @@ export function ApplicationsTable({
                               <UserX className="h-4 w-4" />
                             </Button>
                           </>
+                        ) : canReinstateRow ? (
+                          /* Day 5 — Shortlisted or rejected row:
+                             single Reinstate icon, ConfirmDialog with
+                             optional reason. ConfirmDialog renders the
+                             icon as its trigger; on confirm we call
+                             handleReinstate with the (optional) reason. */
+                          <ConfirmDialog
+                            trigger={
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label={`Reinstate ${row.company.name}'s application`}
+                                className="text-muted-foreground hover:text-primary"
+                              >
+                                <RotateCcw className="h-4 w-4" />
+                              </Button>
+                            }
+                            title={`Reinstate ${row.company.name}'s application?`}
+                            description={`This moves the application from ${row.status} back to submitted. The original decision time is preserved in the audit log.`}
+                            confirmLabel="Reinstate"
+                            confirmVariant="default"
+                            reasonField="optional"
+                            reasonLabel="Reason (optional)"
+                            reasonPlaceholder="e.g. Re-reviewed eligibility documents and the application qualifies"
+                            onConfirm={(reason) =>
+                              handleReinstate(row.id, reason)
+                            }
+                            pending={rowPending}
+                          />
                         ) : (
+                          /* Withdrawn rows and pending rows show no
+                             staff actions; pending shows a small
+                             "Updating…" label so the row doesn't look
+                             dead while the transition is in flight. */
                           <span className="text-xs text-muted-foreground">
                             {rowPending ? "Updating…" : ""}
                           </span>

@@ -2,20 +2,25 @@
  * Apply button — the company-role user's entry point into applying for
  * a tender.
  *
- * Renders three different states depending on eligibility:
+ * Renders four different states depending on eligibility and the
+ * caller's existing application:
  *
- *   1. Already applied                → muted state with "Applied"
- *                                       chip + status; clicking opens
- *                                       a small panel showing the
- *                                       current application status
- *                                       and a "Withdraw" button when
- *                                       still `submitted`.
- *   2. Eligible, not yet applied      → "Apply" button. Clicking
- *                                       expands an inline panel with
- *                                       optional cover note + Confirm.
- *   3. Ineligible                      → Disabled button with a
- *                                       human-readable reason in a
- *                                       tooltip / helper text below.
+ *   1. Already applied (submitted)    → muted "Your application:
+ *                                       submitted" with a Withdraw
+ *                                       button gated by ConfirmDialog.
+ *   2. Already applied (decided/        → muted status pill, no actions
+ *      withdrawn outside recall)         (shortlisted/rejected/awarded/
+ *                                         withdrawn-past-recall-window).
+ *   3. Already applied (withdrawn,       → muted "Your application:
+ *      within recall window — Day 5)      withdrawn" with a Recall
+ *                                         button gated by ConfirmDialog
+ *                                         + caption showing days left.
+ *   4. Eligible, not yet applied       → "Apply" button. Clicking
+ *                                         expands an inline panel with
+ *                                         optional cover note + Confirm.
+ *   5. Ineligible                       → Disabled button with a
+ *                                         human-readable reason in a
+ *                                         tooltip / helper text below.
  *
  * The eligibility check here is a friendly *advisory* gate — it tells
  * the user up front if they can't apply, so they don't waste effort
@@ -24,9 +29,9 @@
  *
  * Inline-collapsible approach for Apply instead of a Dialog — we render
  * the cover note inline because it's a multi-field affirmative action.
- * Withdraw goes through a `<ConfirmDialog>` instead because it's a
- * single-decision destructive action — same component that gates
- * Mark Awarded on the staff side.
+ * Withdraw and Recall both go through `<ConfirmDialog>` instead because
+ * each is a single-decision action — same component that gates Mark
+ * Awarded on the staff side.
  *
  * @module app/dashboard/tenders/[id]/_components/apply-button
  */
@@ -34,12 +39,18 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { AlertCircle, Send, X } from "lucide-react";
+import { AlertCircle, RotateCcw, Send, X } from "lucide-react";
 import {
   applyToTender,
+  recallApplication,
   withdrawApplication,
 } from "@/lib/tenders/actions";
 import type { Tender, TenderApplication } from "@/lib/db/schema";
+import {
+  daysSince,
+  isWithinRecallWindow,
+  RECALL_WINDOW_DAYS,
+} from "@/lib/tenders/state-machine";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -180,8 +191,77 @@ export function ApplyButton({
     });
   }
 
+  /**
+   * Day 5 — Recall handler. Receives optional reason from the
+   * ConfirmDialog (reasonField="optional"). Pass-through to the
+   * Server Action which gates on ownership + recall window + tender
+   * status; UI advisory below also checks the window so the button
+   * isn't even rendered when the recall is impossible.
+   */
+  function handleRecall(reason?: string) {
+    if (!existingApplication) return;
+    setError(null);
+    startTransition(async () => {
+      const result = await recallApplication({
+        applicationId: existingApplication.id,
+        ...(reason ? { reason } : {}),
+      });
+      if (!result.ok) {
+        setError(result.error ?? "Could not recall application");
+        return;
+      }
+      router.refresh();
+    });
+  }
+
   // ── Render: already applied ─────────────────────────────────────────
   if (existingApplication) {
+    /**
+     * Day 5 — Compute recall eligibility for a withdrawn application.
+     *
+     * Three things must be true client-side for the Recall button to
+     * appear:
+     *   1. status === "withdrawn"
+     *   2. decidedAt is non-null and within the recall window
+     *   3. the underlying tender is still accepting applications
+     *      (status === "published")
+     *
+     * The server re-checks all of this; the UI advisory keeps the
+     * button from teasing the user with an action that would 100%
+     * fail server-side.
+     */
+    const isWithdrawn = existingApplication.status === "withdrawn";
+    const recallWindowOk = isWithinRecallWindow(existingApplication.decidedAt);
+    const tenderAcceptsApps = tender.status === "published";
+    const canRecall = isWithdrawn && recallWindowOk && tenderAcceptsApps;
+
+    // Caption for the withdrawn state — explains the recall situation
+    // regardless of whether the button is shown.
+    let recallCaption: string | null = null;
+    if (isWithdrawn) {
+      if (!tenderAcceptsApps) {
+        recallCaption = `Cannot recall — tender is ${tender.status}`;
+      } else if (!recallWindowOk) {
+        recallCaption = `Recall window of ${RECALL_WINDOW_DAYS} days has passed`;
+      } else if (existingApplication.decidedAt) {
+        // `daysSince` returns null when the timestamp is malformed.
+        // If that happens we leave the caption empty rather than
+        // surfacing a nonsensical "NaN days left". The recall button
+        // itself is gated separately by `isWithinRecallWindow`, which
+        // also fails closed on malformed timestamps.
+        const elapsed = daysSince(existingApplication.decidedAt);
+        if (elapsed !== null) {
+          const remaining = Math.max(0, RECALL_WINDOW_DAYS - elapsed);
+          recallCaption =
+            remaining === 0
+              ? "Last day to recall this application"
+              : remaining === 1
+                ? "1 day left to recall this application"
+                : `${remaining} days left to recall this application`;
+        }
+      }
+    }
+
     return (
       <div className="flex flex-col items-end gap-2">
         <div className="flex items-center gap-2">
@@ -191,6 +271,7 @@ export function ApplyButton({
           <ApplicationStatusBadge status={existingApplication.status} />
         </div>
 
+        {/* Withdraw — available only while still submitted */}
         {existingApplication.status === "submitted" && (
           <ConfirmDialog
             trigger={
@@ -199,12 +280,42 @@ export function ApplyButton({
               </Button>
             }
             title="Withdraw your application?"
-            description="Once withdrawn, you cannot re-apply to this tender. Staff will see your application marked as withdrawn in their reviewing pipeline."
+            description={`Staff will see your application marked as withdrawn in their pipeline. You can recall it within ${RECALL_WINDOW_DAYS} days while the tender is still open for applications.`}
             confirmLabel="Withdraw"
             confirmVariant="destructive"
             onConfirm={handleWithdraw}
             pending={isPending}
           />
+        )}
+
+        {/* Day 5 — Recall, available only on a withdrawn application
+            within the recall window AND while the tender still accepts
+            applications. Caption renders below regardless. */}
+        {canRecall && existingApplication.decidedAt && (
+          <ConfirmDialog
+            trigger={
+              <Button variant="outline" size="sm" disabled={isPending}>
+                <RotateCcw className="h-4 w-4" aria-hidden />
+                Recall application
+              </Button>
+            }
+            title="Recall your withdrawn application?"
+            description="This moves your application back to submitted so staff can review it again. Your original cover note stays attached."
+            confirmLabel="Recall application"
+            confirmVariant="default"
+            reasonField="optional"
+            reasonLabel="Reason (optional)"
+            reasonPlaceholder="e.g. Withdrew in error — still interested in this tender"
+            onConfirm={handleRecall}
+            pending={isPending}
+          />
+        )}
+
+        {/* Caption — days remaining, or why recall is unavailable. */}
+        {recallCaption && (
+          <p className="text-right text-xs text-muted-foreground">
+            {recallCaption}
+          </p>
         )}
 
         {error && (
