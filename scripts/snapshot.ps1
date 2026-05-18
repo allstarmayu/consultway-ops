@@ -22,8 +22,7 @@
 #     test-results, playwright-report, drizzle/meta/*.json (except _journal)
 #   - Binary/image files (png, jpg, pdf, zip, sqlite, etc.)
 #   - pnpm-lock.yaml (enormous, not useful for context)
-#   - Files over 50 KB (with a note in the output)
-#   - Anything that pushes the total output over 500 KB
+#   - NO size limits as of the Day-5 patch (see history below).
 #
 # Usage (from project root):
 #   pnpm snapshot              # normal - includes components
@@ -32,6 +31,30 @@
 # Flags:
 #   -Lean     Skip components/ui/*. Useful once the project grows and
 #             snapshot size becomes a concern.
+#
+# ---------------------------------------------------------------
+# Day 5 patch history:
+#
+#   2026-05-18 (a): FIX - Test-Path and Get-Item were silently
+#   dropping every file under an [id] dynamic-route folder because
+#   PowerShell treats square brackets as wildcard character classes.
+#   Every absolute-path cmdlet now uses -LiteralPath.
+#
+#   2026-05-18 (b): REMOVE size limits at owner's request. The
+#   bracketed-path bug above was the actual cause of "missing files"
+#   pain; size budgets had only added one further failure mode on top.
+#   With the bug fixed, the owner prefers to err on the side of
+#   capturing every source file, accepting larger upload sizes for
+#   the Claude Project knowledge base. The hard exclusion lists
+#   (node_modules, binary extensions, pnpm-lock.yaml) remain - those
+#   are about signal, not size, and removing them would flood the
+#   snapshot with multi-megabyte noise that no LLM can use.
+#
+#   The Snapshot Health table at the top of the output is preserved
+#   as a regression-detection surface (dumped/skipped counts) so the
+#   next "files I expect to see are missing" surprise surfaces in one
+#   glance rather than buried in an 11k-line file.
+# ---------------------------------------------------------------
 #
 # Note on encoding: this file intentionally uses ASCII-only characters
 # (plain hyphens, no em-dashes) because Windows PowerShell 5.x reads
@@ -52,12 +75,13 @@ Set-Location $projectRoot
 
 $out = Join-Path $projectRoot "project-snapshot.md"
 
-# Size caps - tuned for Claude Project knowledge-base ingestion.
-$MaxTotalBytes = 500KB
-$MaxFileBytes  = 50KB
-
 # -- Exclusion patterns -----------------------------------------
-# Applied to full paths (case-insensitive). Any match means skip.
+# These are NOT size limits - they're signal filters. node_modules
+# alone would add 200+ MB of zero-signal code; pnpm-lock.yaml is
+# regenerable from package.json; PNGs and PDFs encode to garbage
+# inside a markdown code fence. None of these excluded categories
+# help Claude reason about the project, so they stay excluded
+# regardless of the no-budget policy.
 $excludedDirs = @(
     '\\node_modules\\',
     '\\\.next\\',
@@ -81,7 +105,7 @@ $excludedExtensions = @(
     'woff', 'woff2', 'ttf', 'eot'
 )
 
-# Specific filenames we never dump (large or low-signal).
+# Specific filenames we never dump (regenerable or self-referential).
 $excludedFilenames = @(
     'pnpm-lock.yaml',
     'package-lock.json',
@@ -132,6 +156,19 @@ Get-ChildItem -Recurse -Force -File |
 '```' | Out-File $out -Append -Encoding utf8
 "" | Out-File $out -Append -Encoding utf8
 
+# -- Snapshot Health placeholder --------------------------------
+# We don't know the final counts yet - those come from the dump
+# pass below. Reserve a marker we'll patch in post-pass via a
+# token replace so the health summary appears near the top where
+# it's visible at a glance, not buried at the bottom of an 11k-line
+# file. The marker is a string the rest of the document will not
+# accidentally contain.
+$healthMarker = '<!-- SNAPSHOT_HEALTH_MARKER -->'
+"## Snapshot Health" | Out-File $out -Append -Encoding utf8
+""                   | Out-File $out -Append -Encoding utf8
+$healthMarker        | Out-File $out -Append -Encoding utf8
+""                   | Out-File $out -Append -Encoding utf8
+
 # -- Language detection for fenced code blocks ------------------
 function Get-CodeFenceLanguage {
     param([string]$Path)
@@ -169,10 +206,20 @@ function Get-CodeFenceLanguage {
     }
 }
 
-# -- Helper: dump one file with size tracking -------------------
-$script:totalBytes = 0
-$script:dumped     = 0
-$script:skipped    = @()
+# -- Helper: dump one file --------------------------------------
+#
+# No size cap. Files that get here are dumped verbatim regardless
+# of size. The exclusion lists above are the only filter.
+#
+# Day 5 fix: every path-consuming cmdlet here uses -LiteralPath so
+# the [id] bracketed directories in App-Router dynamic routes are
+# treated as literal characters, not glob character classes.
+$script:totalBytes      = 0
+$script:dumped          = 0
+$script:skipped         = @()
+$script:skippedReasons  = @{
+    NotPresent = 0
+}
 
 function Write-FileSection {
     param(
@@ -180,26 +227,19 @@ function Write-FileSection {
         [string]$AbsolutePath
     )
 
-    if (-not (Test-Path $AbsolutePath)) {
+    # -LiteralPath: critical for App-Router [id] folders. Without it,
+    # PowerShell interprets [ and ] as wildcard glob characters.
+    if (-not (Test-Path -LiteralPath $AbsolutePath)) {
         $script:skipped += "$RelativePath (not present)"
+        $script:skippedReasons.NotPresent++
         return
     }
 
-    $fileInfo = Get-Item $AbsolutePath
-    if ($fileInfo.Length -gt $MaxFileBytes) {
-        $sizeKb = [int]($fileInfo.Length / 1KB)
-        $script:skipped += "$RelativePath (too large: $sizeKb KB)"
-        return
-    }
-
-    # Total-size budget check - leave room for trailing sections.
-    if ($script:totalBytes + $fileInfo.Length -gt $MaxTotalBytes) {
-        $script:skipped += "$RelativePath (total-size budget exceeded)"
-        return
-    }
+    $fileInfo = Get-Item -LiteralPath $AbsolutePath
 
     $lang    = Get-CodeFenceLanguage -Path $RelativePath
-    $content = Get-Content $AbsolutePath -Raw
+    # Get-Content also needs -LiteralPath for the same bracket reason.
+    $content = Get-Content -LiteralPath $AbsolutePath -Raw
 
     "### ``$RelativePath``"       | Out-File $out -Append -Encoding utf8
     ""                            | Out-File $out -Append -Encoding utf8
@@ -236,8 +276,13 @@ function Write-DirectoryFiles {
         $dir    = $src.Directory
         $filter = $src.Filter
 
-        if (-not (Test-Path $dir)) { continue }
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
 
+        # Get-ChildItem with -Path + -Recurse does not need -LiteralPath
+        # for the [id] case because -Path here is the top-level dir
+        # ('app', 'lib') which has no brackets. Recursion below walks
+        # into [id] folders fine; it is only path-equality checks
+        # (Test-Path, Get-Item, Get-Content) that need -LiteralPath.
         $found = Get-ChildItem -Path $dir -Filter $filter -Recurse -File `
                                -ErrorAction SilentlyContinue
 
@@ -300,8 +345,6 @@ Write-DirectoryFiles -SectionTitle "Database - Migrations and Schema History" -S
 
 # -- Section 3: shared lib --------------------------------------
 # The heart of the business logic: schemas, actions, db, auth, utilities.
-# This is the one that was broken before - lib/db/*.ts and lib/auth/*.ts
-# were being silently skipped.
 Write-DirectoryFiles -SectionTitle "Shared Library (lib/)" -Sources @(
     @{ Directory = 'lib'; Filter = '*.ts' },
     @{ Directory = 'lib'; Filter = '*.tsx' }
@@ -338,12 +381,14 @@ Write-DirectoryFiles -SectionTitle "Scripts" -Sources @(
 )
 
 # -- Section 7: docs index --------------------------------------
-# Just the titles of each doc - full contents would blow the budget.
+# Just the titles of each doc - full contents would dwarf everything
+# else even in no-budget mode (docs are wordy by nature). Ask for
+# specific docs as needed in chat.
 "## Docs Index" | Out-File $out -Append -Encoding utf8
 ""              | Out-File $out -Append -Encoding utf8
 
 $docFiles = @()
-if (Test-Path 'docs') {
+if (Test-Path -LiteralPath 'docs') {
     $docFiles = Get-ChildItem -Path 'docs' -Filter '*.md' -File -ErrorAction SilentlyContinue |
                 Sort-Object Name
 }
@@ -363,10 +408,15 @@ if ($docFiles) {
 }
 
 # -- Section 8: footer - skipped files report -------------------
+# In no-budget mode the only skip reason left is "not present",
+# but we still surface the list so a typo'd path or a deleted
+# file shows up clearly.
 if ($script:skipped.Count -gt 0) {
     "## Skipped Files" | Out-File $out -Append -Encoding utf8
     ""                 | Out-File $out -Append -Encoding utf8
-    "The following files were skipped (size budget, binary, or not yet present):" |
+    "The following files were skipped. Reasons in parentheses." | Out-File $out -Append -Encoding utf8
+    "" | Out-File $out -Append -Encoding utf8
+    "- ``not present`` means the script looked for the file but did not find it on disk (e.g., middleware.ts hasn't shipped yet)." |
         Out-File $out -Append -Encoding utf8
     ""                 | Out-File $out -Append -Encoding utf8
     foreach ($s in $script:skipped) {
@@ -375,17 +425,49 @@ if ($script:skipped.Count -gt 0) {
     "" | Out-File $out -Append -Encoding utf8
 }
 
-# -- Console summary --------------------------------------------
-$finalSizeKb = [int]((Get-Item $out).Length / 1KB)
-$budgetKb    = [int]($MaxTotalBytes / 1KB)
+# -- Patch the Snapshot Health placeholder ---------------------
+# We now know the counts. Compose the health block and substitute
+# it in for the marker. This puts the summary near the top of the
+# file where it's visible at a glance, without forcing a second
+# pre-pass to count files.
+$finalSizeKb = [int]((Get-Item -LiteralPath $out).Length / 1KB)
 
+$healthLines = @(
+    "| Metric | Value |"
+    "|---|---|"
+    "| Files dumped | $($script:dumped) |"
+    "| Files skipped | $($script:skipped.Count) |"
+    "| ... because the path was not on disk | $($script:skippedReasons.NotPresent) |"
+    "| Output size | $finalSizeKb KB (no budget) |"
+)
+if ($Lean) {
+    $healthLines += "| Mode | LEAN (components/ui excluded) |"
+}
+$healthLines += ""
+$healthLines += "Skipped files (if any) are listed at the bottom of this document with reasons."
+$healthBlock = $healthLines -join "`n"
+
+# Read the file, replace the marker, write back. Out-File adds a
+# trailing newline so re-writing the whole file is cheaper than
+# stream-editing for a file this size.
+$content = Get-Content -LiteralPath $out -Raw
+$content = $content -replace [regex]::Escape($healthMarker), $healthBlock
+Set-Content -LiteralPath $out -Value $content -Encoding utf8 -NoNewline
+
+# -- Console summary --------------------------------------------
 Write-Host ""
 Write-Host "Snapshot written to project-snapshot.md" -ForegroundColor Green
 Write-Host "  Files dumped: $($script:dumped)"
-Write-Host "  Files skipped: $($script:skipped.Count)"
-Write-Host "  Output size: $finalSizeKb KB (budget: $budgetKb KB)"
+Write-Host "  Files skipped: $($script:skipped.Count) (not-present: $($script:skippedReasons.NotPresent))"
+Write-Host "  Output size: $finalSizeKb KB (no size budget)"
 if ($Lean) {
     Write-Host "  Mode: LEAN (components/ui excluded)" -ForegroundColor Yellow
+}
+if ($script:skippedReasons.NotPresent -gt 0) {
+    Write-Host ""
+    Write-Host "Note: $($script:skippedReasons.NotPresent) file(s) reported as 'not present'." -ForegroundColor Yellow
+    Write-Host "      If you expected these files to be on disk, see the Skipped Files section"
+    Write-Host "      in project-snapshot.md - paths inside [id] folders need -LiteralPath."
 }
 Write-Host ""
 Write-Host "Next step: upload project-snapshot.md to your Claude Project knowledge base."
