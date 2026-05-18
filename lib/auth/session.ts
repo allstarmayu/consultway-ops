@@ -1,8 +1,17 @@
 /**
- * Session management — sign, verify, and manage the session cookie.
+ * Session management - sign, verify, and manage the session cookie.
  *
  * Uses `jose` (not `jsonwebtoken`) because middleware runs in the Edge
  * runtime which has no Node modules. `jose` works in both Node and Edge.
+ *
+ * Day 6 note: `proxy.ts` (Next 16's rename of `middleware.ts`) imports
+ * `verifySession` and `SESSION_COOKIE` from this file directly. That
+ * works because Next 16 runs `proxy.ts` on the Node runtime by default,
+ * so the `next/headers` import below doesn't break the proxy bundle.
+ * If we ever flip the proxy back to Edge (Next provides no opt-in for
+ * that today on `proxy.ts`), we'd need to extract the cookie name,
+ * signing key, and `verifySession` into a sibling `./edge.ts` so they
+ * can be imported without dragging `next/headers` in.
  *
  * Design:
  *   - Session state lives in a signed JWT inside an httpOnly cookie
@@ -11,10 +20,10 @@
  *   - 7-day expiry; user must re-authenticate after that
  *
  * Callers:
- *   - lib/auth/actions.ts          — createSession() on successful login
- *   - middleware.ts                — readSession() to guard routes
- *   - app/dashboard/page.tsx       — readSession() to personalize UI
- *   - logout Server Action         — destroySession() on sign-out
+ *   - lib/auth/actions.ts          - createSession() on successful login
+ *   - proxy.ts                     - verifySession() to guard routes
+ *   - app/dashboard/page.tsx       - readSession() to personalize UI
+ *   - logout Server Action         - destroySession() on sign-out
  *
  * @module lib/auth/session
  */
@@ -26,7 +35,7 @@ import type { UserRole } from "@/lib/db/schema";
 
 const log = logger.child({ module: "session" });
 
-// ── Constants ───────────────────────────────────────────────────────────────
+// -- Constants ---------------------------------------------------------------
 /** Cookie name. Scoped to this project to avoid collisions on shared domains. */
 const SESSION_COOKIE = "cw_session";
 
@@ -42,9 +51,9 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
  */
 const signingKey = new TextEncoder().encode(env.JWT_SECRET);
 
-// ── Types ───────────────────────────────────────────────────────────────────
+// -- Types -------------------------------------------------------------------
 /**
- * What we store in the JWT payload. Keep this minimal — JWTs aren't
+ * What we store in the JWT payload. Keep this minimal - JWTs aren't
  * encrypted, only signed. Anything here is readable by whoever has
  * the cookie. Never put sensitive values in this shape.
  */
@@ -60,12 +69,12 @@ export interface SessionPayload extends JWTPayload {
    * `staff`. Cached in the JWT so row-scoped reads (e.g. "my company")
    * don't need a users-table lookup on every request. If the user's
    * company link changes server-side, they'll keep their old scope
-   * until the next login — acceptable for our threat model.
+   * until the next login - acceptable for our threat model.
    */
   companyId: string | null;
 }
 
-// ── Public API ──────────────────────────────────────────────────────────────
+// -- Public API --------------------------------------------------------------
 
 /**
  * Sign a session payload into a JWT string. Does NOT set the cookie.
@@ -81,7 +90,7 @@ export async function signSession(payload: SessionPayload): Promise<string> {
 
 /**
  * Verify a JWT string and return the payload, or null if invalid/expired.
- * Never throws — callers can treat it as a pure boolean-ish check.
+ * Never throws - callers can treat it as a pure boolean-ish check.
  */
 export async function verifySession(
   token: string | undefined,
@@ -105,7 +114,7 @@ export async function verifySession(
  * Call this from Server Actions after a successful password check.
  *
  * Must run inside a Server Action or Route Handler (needs cookie write
- * access). Won't work from a Server Component — those can only read.
+ * access). Won't work from a Server Component - those can only read.
  */
 export async function createSession(payload: SessionPayload): Promise<void> {
   const token = await signSession(payload);
@@ -127,8 +136,10 @@ export async function createSession(payload: SessionPayload): Promise<void> {
  * Returns null if no cookie, invalid signature, or expired.
  *
  * Safe to call from Server Components, Route Handlers, and Server Actions.
- * NOT safe for middleware — middleware uses `verifySession()` directly
- * against the request cookie (see middleware.ts).
+ * NOT safe for callers that don't have cookie-store access (e.g. an Edge-
+ * runtime worker would need `verifySession()` directly against a raw
+ * token). `proxy.ts` runs on Node so it can use either; today it uses
+ * `verifySession` directly after reading the cookie via `req.cookies`.
  */
 export async function readSession(): Promise<SessionPayload | null> {
   const cookieStore = await cookies();
@@ -140,7 +151,7 @@ export async function readSession(): Promise<SessionPayload | null> {
  * Destroy the current session by deleting the cookie.
  * Call from a logout Server Action.
  *
- * Note: this is client-side logout only — since we use stateless JWTs,
+ * Note: this is client-side logout only - since we use stateless JWTs,
  * a stolen token remains valid until its natural expiry. Full revocation
  * requires a DB-backed blocklist (deferred to a later phase).
  */
@@ -150,9 +161,9 @@ export async function destroySession(): Promise<void> {
   log.info("session destroyed");
 }
 
-// ── Exports for edge runtime (middleware) ───────────────────────────────────
+// -- Exports for proxy.ts ---------------------------------------------------
 /**
- * Cookie name — re-exported so middleware.ts can read the raw cookie
- * without pulling in the Server-only `next/headers` import.
+ * Cookie name - re-exported so proxy.ts can read the raw cookie from
+ * the request without re-declaring the constant.
  */
 export { SESSION_COOKIE };
