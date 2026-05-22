@@ -1,0 +1,1 @@
+ALTER TABLE `companies` ADD `annual_turnover` integer;

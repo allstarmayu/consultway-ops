@@ -189,6 +189,30 @@ export const companies = sqliteTable(
     parentCompanyIds: text("parent_company_ids", { mode: "json" })
       .$type<string[] | null>(),
 
+    /**
+     * Stated annual turnover in INR (whole rupees, no paise). Same
+     * integer-not-REAL choice and same scale (~9.2 quintillion ceiling)
+     * as `tenders.minAnnualTurnoverInr` - the two columns are compared
+     * directly by the turnover-eligibility gate in
+     * `lib/tenders/actions.ts::applyToTender`, so they have to be the
+     * same shape.
+     *
+     * NULL means "not stated by the company." On the tender side NULL
+     * means "no minimum required" - the asymmetry is deliberate: a
+     * company that hasn't stated a turnover is treated as ineligible
+     * for tenders that DO require a minimum (we can't verify they
+     * qualify), but the unstated-figure default doesn't bar them from
+     * unrestricted tenders. Same column shape, role-dependent semantics.
+     *
+     * The column is nullable with no default on purpose - the seed
+     * doesn't backfill turnover figures, and a company self-registering
+     * via the eventual public flow may not know their turnover at
+     * registration time. They can update later via the company edit
+     * form. The apply-to-tender gate enforces "stated" at the moment
+     * eligibility actually matters.
+     */
+    annualTurnover: integer("annual_turnover"),
+
     /** Contact email - distinct from any linked user's email. */
     contactEmail: text("contact_email"),
     /** Contact phone (E.164 recommended but not enforced at DB level). */
@@ -313,12 +337,10 @@ export type TenderApplicationStatus =
  * separate criteria table. Each filter is nullable - NULL means "no
  * restriction on this dimension."
  *
- * Important deferred item: server-side enforcement of `minAnnualTurnoverInr`
- * is **not** wired in this chunk. The `companies` table doesn't carry an
- * `annualTurnover` field yet (Day-3 schema omitted it). The column ships
- * here and is shown in the UI; the eligibility gate enforces it once the
- * companies field lands. See `lib/tenders/actions.ts::applyToTender` for
- * the TODO marker.
+ * Turnover-eligibility enforcement is live as of Day 8 - the gate in
+ * `lib/tenders/actions.ts::applyToTender` compares this column against
+ * `companies.annualTurnover` and rejects applicants who either don't
+ * meet the minimum or haven't stated their turnover at all.
  */
 export const tenders = sqliteTable(
   "tenders",
@@ -395,9 +417,10 @@ export const tenders = sqliteTable(
      * ~9.2 quintillion, well above any realistic turnover. NULL means
      * "no minimum turnover required."
      *
-     * NOTE: server-side enforcement of this gate is deferred. The
-     * `companies` table doesn't have an `annualTurnover` column yet -
-     * shipped in a follow-up chunk.
+     * Enforced server-side in `applyToTender` against the applying
+     * company's own `annualTurnover` (Day 8). Companies with NULL
+     * `annualTurnover` cannot apply to tenders that set a minimum -
+     * the gate refuses unstated figures because they can't be verified.
      */
     minAnnualTurnoverInr: integer("min_annual_turnover_inr"),
 
