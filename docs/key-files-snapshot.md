@@ -7540,9 +7540,15 @@ export function BooleanBadge({
  *      page into a header strip (title + actions) and a content card
  *      (the fact sheet).
  *
+ *   6. EntityHistory card (Day 7) — audit-log feed for this company.
+ *      Wrapped in <Suspense> so its DB queries don't block the
+ *      overview render. Same component the tender detail page uses,
+ *      with the company-only variant (no application fan-out).
+ *
  * @module app/dashboard/companies/[id]/page
  */
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { inArray } from "drizzle-orm";
 import { readSession } from "@/lib/auth/session";
@@ -7550,6 +7556,8 @@ import { getCompany } from "@/lib/companies/actions";
 import { db } from "@/lib/db";
 import { companies } from "@/lib/db/schema";
 import { Card } from "@/components/ui/card";
+import { EntityHistory } from "@/components/audit/entity-history";
+import { EntityHistoryLoading } from "@/components/audit/entity-history-loading";
 import { CompanyHeader } from "./_components/company-header";
 import { CompanyOverview } from "./_components/company-overview";
 
@@ -7636,6 +7644,27 @@ export default async function CompanyDetailPage({
           viewerRole={session.role}
         />
       </Card>
+
+      {/* History section (Day 7) — audit-log feed scoped to this
+          company. Wrapped in Suspense so the DB query streams in
+          independently of the overview render above. Company-only
+          variant — no application fan-out, single listAuditEvents
+          call inside EntityHistory.
+
+          Visibility: admin/staff see every event on this company.
+          Company-role users only reach this page for their own row
+          (row-scope in getCompany), and listAuditEvents further
+          scopes them to their own actions — so they see their own
+          edits but not staff-actor events on their company. This
+          matches the Phase-1 cross-actor visibility decision flagged
+          in the Day-6 report. */}
+      <Suspense fallback={<EntityHistoryLoading />}>
+        <EntityHistory
+          targetType="company"
+          targetId={company.id}
+          emptyDescription="No activity recorded on this company yet."
+        />
+      </Suspense>
     </>
   );
 }
@@ -8971,6 +9000,8 @@ These exist in the project tree but are omitted here to keep this document focus
 
 These files live in `lib/`, `app/`, or `components/` but are not embedded above and not mentioned in the explicit exclusion list. If any of them have grown into a pattern reference, add them to `scripts/snapshot-config.ts`.
 
+- `app/dashboard/_components/activity-feed-loading.tsx`
+- `app/dashboard/_components/activity-feed.tsx`
 - `app/dashboard/companies/[id]/delete/_components/delete-form.tsx`
 - `app/dashboard/companies/[id]/delete/page.tsx`
 - `app/dashboard/companies/[id]/edit/page.tsx`
@@ -8978,6 +9009,10 @@ These files live in `lib/`, `app/`, or `components/` but are not embedded above 
 - `app/dashboard/companies/new/_components/partner-picker.tsx`
 - `app/dashboard/companies/new/page.tsx`
 - `app/favicon.ico`
+- `components/audit/activity-feed-empty.tsx`
+- `components/audit/activity-feed-row.tsx`
+- `components/audit/entity-history-loading.tsx`
+- `components/audit/entity-history.tsx`
 - `components/ui/button.tsx`
 - `components/ui/card.tsx`
 - `components/ui/checkbox.tsx`
@@ -8986,6 +9021,10 @@ These files live in `lib/`, `app/`, or `components/` but are not embedded above 
 - `components/ui/select.tsx`
 - `components/ui/switch.tsx`
 - `components/ui/textarea.tsx`
+- `lib/audit/diff.ts`
+- `lib/audit/labels.ts`
+- `lib/audit/resolve-targets.ts`
+- `lib/utils/format-relative-time.ts`
 
 ---
 

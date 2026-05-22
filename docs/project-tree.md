@@ -4,7 +4,7 @@
 
 _Last generated: 2026-05-22_
 
-Current file inventory for the Consultway Ops internal platform (**127 files** tracked by git, excluding binaries and lockfiles). Derived from `git ls-files` — always matches HEAD.
+Current file inventory for the Consultway Ops internal platform (**141 files** tracked by git, excluding binaries and lockfiles). Derived from `git ls-files` — always matches HEAD.
 
 Use this for orientation only. **For file contents, see `docs/key-files-snapshot.md` (curated).** When this file disagrees with what is actually on disk, regenerate.
 
@@ -14,14 +14,14 @@ Use this for orientation only. **For file contents, see `docs/key-files-snapshot
 
 | Area | Files |
 |---|---|
-| `app/` | 40 |
-| `components/` | 22 |
-| `lib/` | 17 |
+| `app/` | 42 |
+| `components/` | 26 |
+| `lib/` | 21 |
 | `drizzle/` | 11 |
-| `docs/` | 18 |
-| `scripts/` | 2 |
+| `docs/` | 21 |
+| `scripts/` | 3 |
 | _root_ | 17 |
-| **Total** | **127** |
+| **Total** | **141** |
 
 ## Quick Orientation
 
@@ -60,11 +60,14 @@ wrangler.jsonc
 
 ### `app/`
 
-_40 files_
+_42 files_
 
 ```
 app/
 ├── dashboard/
+│   ├── _components/
+│   │   ├── activity-feed-loading.tsx
+│   │   └── activity-feed.tsx
 │   ├── companies/
 │   │   ├── [id]/
 │   │   │   ├── _components/
@@ -127,10 +130,15 @@ app/
 
 ### `components/`
 
-_22 files_
+_26 files_
 
 ```
 components/
+├── audit/
+│   ├── activity-feed-empty.tsx
+│   ├── activity-feed-row.tsx
+│   ├── entity-history-loading.tsx
+│   └── entity-history.tsx
 ├── companies/
 │   └── company-form.tsx
 ├── dashboard/
@@ -162,12 +170,15 @@ components/
 
 ### `lib/`
 
-_17 files_
+_21 files_
 
 ```
 lib/
 ├── audit/
+│   ├── diff.ts
+│   ├── labels.ts
 │   ├── log.ts
+│   ├── resolve-targets.ts
 │   └── schemas.ts
 ├── auth/
 │   ├── actions.ts
@@ -185,6 +196,8 @@ lib/
 │   ├── actions.ts
 │   ├── schemas.ts
 │   └── state-machine.ts
+├── utils/
+│   └── format-relative-time.ts
 ├── env.ts
 ├── logger.ts
 └── utils.ts
@@ -212,7 +225,7 @@ drizzle/
 
 ### `docs/`
 
-_18 files_
+_21 files_
 
 ```
 docs/
@@ -225,7 +238,8 @@ docs/
 ├── reports/
 │   ├── day-3-report.md
 │   ├── day-4-report.md
-│   └── day-5-report.md
+│   ├── day-5-report.md
+│   └── day-6-report.md
 ├── 01-project-brief.md
 ├── 02-tech-stack.md
 ├── 03-development-phases.md
@@ -237,17 +251,20 @@ docs/
 ├── 09-deployment.md
 ├── 10-local-setup.md
 ├── 11-coding-standards.md
-└── 12-testing.md
+├── 12-testing.md
+├── key-files-snapshot.md
+└── project-tree.md
 ```
 
 ### `scripts/`
 
-_2 files_
+_3 files_
 
 ```
 scripts/
 ├── seed.ts
-└── snapshot.ps1
+├── snapshot-config.ts
+└── snapshot.ts
 ```
 
 ---
