@@ -6,14 +6,21 @@
  * renders its own top bar. It uses the shared `<PageHeader>` for the
  * title strip, matching every other dashboard page for consistency.
  *
- * Currently a stub — Phase-1 widgets (KPI tiles, charts, quick-action
- * buttons matching the figma) land in a later chunk. For now the page
- * just confirms authentication works end-to-end and surfaces the
- * session payload for developer inspection.
+ * Current content:
+ *   - Welcome card confirming auth (Day 1 stub - intentionally still
+ *     here, will be replaced by real KPI tiles per the figma in a
+ *     later chunk)
+ *   - Recent-activity widget (Day 7) - first UI consumer of the
+ *     `listAuditEvents` read API. Wrapped in <Suspense> so its
+ *     server-side fetch doesn't block the welcome card's render.
+ *
+ * Future Phase-1 widgets (KPI tiles, charts, quick-action buttons
+ * matching the figma) land in a later chunk.
  *
  * @module app/dashboard/page
  */
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { UserCircle2 } from "lucide-react";
 import { readSession } from "@/lib/auth/session";
@@ -25,6 +32,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { ActivityFeed } from "./_components/activity-feed";
+import { ActivityFeedLoading } from "./_components/activity-feed-loading";
 
 export const metadata: Metadata = {
   title: "Dashboard",
@@ -88,6 +97,15 @@ export default async function DashboardPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Activity feed - wrapped in Suspense so its DB queries don't
+          block the welcome card. The page streams: header + welcome
+          render immediately; activity feed streams in when ready. */}
+      <div className="mt-6">
+        <Suspense fallback={<ActivityFeedLoading />}>
+          <ActivityFeed />
+        </Suspense>
+      </div>
     </>
   );
 }
