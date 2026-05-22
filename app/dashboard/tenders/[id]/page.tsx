@@ -14,6 +14,12 @@
  *                         it shows everyone; for an applying company
  *                         it shows their own application (filtered by
  *                         the action's row-scope).
+ *   - EntityHistory     — audit-log feed for this tender plus its
+ *                         applications (Day 7). One combined card,
+ *                         not a tab, so the page layout stays
+ *                         consistent with the cards above. The
+ *                         component is wrapped in <Suspense> so its
+ *                         DB queries don't block the above content.
  *
  * Access control:
  *   - admin / staff   → full visibility
@@ -28,6 +34,7 @@
  * @module app/dashboard/tenders/[id]/page
  */
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
@@ -42,6 +49,8 @@ import { companies, tenderApplications } from "@/lib/db/schema";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { EntityHistory } from "@/components/audit/entity-history";
+import { EntityHistoryLoading } from "@/components/audit/entity-history-loading";
 import { TenderHeader } from "./_components/tender-header";
 import { TenderOverview } from "./_components/tender-overview";
 import { ApplicationsTable } from "./_components/applications-table";
@@ -240,6 +249,21 @@ export default async function TenderDetailPage({
           <ApplicationsTable rows={applications} canManage={canManage} />
         )}
       </Card>
+
+      {/* History section (Day 7).
+          Wrapped in Suspense so its two DB queries (tender-direct
+          events + applications-fan-out events) stream in independently
+          of the page render above. Includes tender_application events
+          via the includeTenderApplications flag so the feed shows the
+          full lifecycle of this tender. */}
+      <Suspense fallback={<EntityHistoryLoading />}>
+        <EntityHistory
+          targetType="tender"
+          targetId={tender.id}
+          includeTenderApplications
+          emptyDescription="No activity recorded on this tender yet."
+        />
+      </Suspense>
     </>
   );
 }

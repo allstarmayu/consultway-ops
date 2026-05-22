@@ -22,9 +22,15 @@
  *      page into a header strip (title + actions) and a content card
  *      (the fact sheet).
  *
+ *   6. EntityHistory card (Day 7) — audit-log feed for this company.
+ *      Wrapped in <Suspense> so its DB queries don't block the
+ *      overview render. Same component the tender detail page uses,
+ *      with the company-only variant (no application fan-out).
+ *
  * @module app/dashboard/companies/[id]/page
  */
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { inArray } from "drizzle-orm";
 import { readSession } from "@/lib/auth/session";
@@ -32,6 +38,8 @@ import { getCompany } from "@/lib/companies/actions";
 import { db } from "@/lib/db";
 import { companies } from "@/lib/db/schema";
 import { Card } from "@/components/ui/card";
+import { EntityHistory } from "@/components/audit/entity-history";
+import { EntityHistoryLoading } from "@/components/audit/entity-history-loading";
 import { CompanyHeader } from "./_components/company-header";
 import { CompanyOverview } from "./_components/company-overview";
 
@@ -118,6 +126,27 @@ export default async function CompanyDetailPage({
           viewerRole={session.role}
         />
       </Card>
+
+      {/* History section (Day 7) — audit-log feed scoped to this
+          company. Wrapped in Suspense so the DB query streams in
+          independently of the overview render above. Company-only
+          variant — no application fan-out, single listAuditEvents
+          call inside EntityHistory.
+
+          Visibility: admin/staff see every event on this company.
+          Company-role users only reach this page for their own row
+          (row-scope in getCompany), and listAuditEvents further
+          scopes them to their own actions — so they see their own
+          edits but not staff-actor events on their company. This
+          matches the Phase-1 cross-actor visibility decision flagged
+          in the Day-6 report. */}
+      <Suspense fallback={<EntityHistoryLoading />}>
+        <EntityHistory
+          targetType="company"
+          targetId={company.id}
+          emptyDescription="No activity recorded on this company yet."
+        />
+      </Suspense>
     </>
   );
 }
