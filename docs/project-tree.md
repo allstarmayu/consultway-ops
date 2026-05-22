@@ -4,7 +4,7 @@
 
 _Last generated: 2026-05-22_
 
-Current file inventory for the Consultway Ops internal platform (**141 files** tracked by git, excluding binaries and lockfiles). Derived from `git ls-files` — always matches HEAD.
+Current file inventory for the Consultway Ops internal platform (**145 files** tracked by git, excluding binaries and lockfiles). Derived from `git ls-files` — always matches HEAD.
 
 Use this for orientation only. **For file contents, see `docs/key-files-snapshot.md` (curated).** When this file disagrees with what is actually on disk, regenerate.
 
@@ -16,12 +16,12 @@ Use this for orientation only. **For file contents, see `docs/key-files-snapshot
 |---|---|
 | `app/` | 42 |
 | `components/` | 26 |
-| `lib/` | 21 |
-| `drizzle/` | 11 |
-| `docs/` | 21 |
+| `lib/` | 22 |
+| `drizzle/` | 13 |
+| `docs/` | 22 |
 | `scripts/` | 3 |
 | _root_ | 17 |
-| **Total** | **141** |
+| **Total** | **145** |
 
 ## Quick Orientation
 
@@ -170,7 +170,7 @@ components/
 
 ### `lib/`
 
-_21 files_
+_22 files_
 
 ```
 lib/
@@ -192,6 +192,8 @@ lib/
 │   ├── ids.ts
 │   ├── index.ts
 │   └── schema.ts
+├── format/
+│   └── inr.ts
 ├── tenders/
 │   ├── actions.ts
 │   ├── schemas.ts
@@ -205,7 +207,7 @@ lib/
 
 ### `drizzle/`
 
-_11 files_
+_13 files_
 
 ```
 drizzle/
@@ -215,17 +217,19 @@ drizzle/
 │   ├── 0002_snapshot.json
 │   ├── 0003_snapshot.json
 │   ├── 0004_snapshot.json
+│   ├── 0005_snapshot.json
 │   └── _journal.json
 ├── 0000_wild_wendell_rand.sql
 ├── 0001_loving_serpent_society.sql
 ├── 0002_peaceful_blizzard.sql
 ├── 0003_elite_gambit.sql
-└── 0004_familiar_marvel_zombies.sql
+├── 0004_familiar_marvel_zombies.sql
+└── 0005_zippy_reavers.sql
 ```
 
 ### `docs/`
 
-_21 files_
+_22 files_
 
 ```
 docs/
@@ -239,7 +243,8 @@ docs/
 │   ├── day-3-report.md
 │   ├── day-4-report.md
 │   ├── day-5-report.md
-│   └── day-6-report.md
+│   ├── day-6-report.md
+│   └── day-7-report.md
 ├── 01-project-brief.md
 ├── 02-tech-stack.md
 ├── 03-development-phases.md

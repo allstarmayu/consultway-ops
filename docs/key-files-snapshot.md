@@ -623,6 +623,30 @@ export const companies = sqliteTable(
     parentCompanyIds: text("parent_company_ids", { mode: "json" })
       .$type<string[] | null>(),
 
+    /**
+     * Stated annual turnover in INR (whole rupees, no paise). Same
+     * integer-not-REAL choice and same scale (~9.2 quintillion ceiling)
+     * as `tenders.minAnnualTurnoverInr` - the two columns are compared
+     * directly by the turnover-eligibility gate in
+     * `lib/tenders/actions.ts::applyToTender`, so they have to be the
+     * same shape.
+     *
+     * NULL means "not stated by the company." On the tender side NULL
+     * means "no minimum required" - the asymmetry is deliberate: a
+     * company that hasn't stated a turnover is treated as ineligible
+     * for tenders that DO require a minimum (we can't verify they
+     * qualify), but the unstated-figure default doesn't bar them from
+     * unrestricted tenders. Same column shape, role-dependent semantics.
+     *
+     * The column is nullable with no default on purpose - the seed
+     * doesn't backfill turnover figures, and a company self-registering
+     * via the eventual public flow may not know their turnover at
+     * registration time. They can update later via the company edit
+     * form. The apply-to-tender gate enforces "stated" at the moment
+     * eligibility actually matters.
+     */
+    annualTurnover: integer("annual_turnover"),
+
     /** Contact email - distinct from any linked user's email. */
     contactEmail: text("contact_email"),
     /** Contact phone (E.164 recommended but not enforced at DB level). */
@@ -747,12 +771,10 @@ export type TenderApplicationStatus =
  * separate criteria table. Each filter is nullable - NULL means "no
  * restriction on this dimension."
  *
- * Important deferred item: server-side enforcement of `minAnnualTurnoverInr`
- * is **not** wired in this chunk. The `companies` table doesn't carry an
- * `annualTurnover` field yet (Day-3 schema omitted it). The column ships
- * here and is shown in the UI; the eligibility gate enforces it once the
- * companies field lands. See `lib/tenders/actions.ts::applyToTender` for
- * the TODO marker.
+ * Turnover-eligibility enforcement is live as of Day 8 - the gate in
+ * `lib/tenders/actions.ts::applyToTender` compares this column against
+ * `companies.annualTurnover` and rejects applicants who either don't
+ * meet the minimum or haven't stated their turnover at all.
  */
 export const tenders = sqliteTable(
   "tenders",
@@ -829,9 +851,10 @@ export const tenders = sqliteTable(
      * ~9.2 quintillion, well above any realistic turnover. NULL means
      * "no minimum turnover required."
      *
-     * NOTE: server-side enforcement of this gate is deferred. The
-     * `companies` table doesn't have an `annualTurnover` column yet -
-     * shipped in a follow-up chunk.
+     * Enforced server-side in `applyToTender` against the applying
+     * company's own `annualTurnover` (Day 8). Companies with NULL
+     * `annualTurnover` cannot apply to tenders that set a minimum -
+     * the gate refuses unstated figures because they can't be verified.
      */
     minAnnualTurnoverInr: integer("min_annual_turnover_inr"),
 
@@ -2303,6 +2326,36 @@ const trimmedNameSchema = z
   .min(2, "Must be at least 2 characters")
   .max(200, "Must be 200 characters or fewer");
 
+/**
+ * Annual turnover in INR, whole rupees only. Mirrors the shape of
+ * `tenders.minAnnualTurnoverInr` so the two compare cleanly in the
+ * `applyToTender` gate without coercion gymnastics.
+ *
+ *   - `z.coerce.number()` — the form input arrives as a string from the
+ *     URL or FormData layer; we coerce once here.
+ *   - `.int()` — whole rupees only. Fractional rupees would be paise,
+ *     which Indian regulators treat as a separate unit; we keep this
+ *     field rupees-only.
+ *   - `.nonnegative()` — a company can have zero stated turnover (newly
+ *     incorporated, no revenue yet) but not negative.
+ *   - `.max(Number.MAX_SAFE_INTEGER)` — guards against typo'd monster
+ *     figures landing in the DB. Well below SQLite's INTEGER ceiling
+ *     and well above any realistic turnover (~9 quadrillion rupees).
+ *   - `.optional().nullable()` — both an absent field on the patch and
+ *     an explicit `null` are accepted. NULL means "not stated" on the
+ *     company side; the apply-to-tender gate refuses unstated figures.
+ */
+const annualTurnoverSchema = z.coerce
+  .number()
+  .int("Annual turnover must be a whole rupee amount")
+  .nonnegative("Annual turnover cannot be negative")
+  .max(
+    Number.MAX_SAFE_INTEGER,
+    "Annual turnover figure is unrealistically large",
+  )
+  .optional()
+  .nullable();
+
 // ── Compliance status enum (mirrors lib/db/schema.ts ComplianceStatus) ──────
 
 /**
@@ -2331,6 +2384,11 @@ export const complianceStatusSchema = z.enum([
  *   - `complianceStatus` is forced to `"pending"` on create — only an
  *     admin/staff update can change it. The schema simply omits the
  *     field; the action sets `pending` server-side.
+ *   - `annualTurnover` is optional. Companies that don't state their
+ *     turnover at create time can update later via the edit form. The
+ *     tender-eligibility gate enforces "stated" at the moment a company
+ *     tries to apply to a tender with a minimum-turnover requirement
+ *     (Day 8 - see `applyToTender` in lib/tenders/actions.ts).
  */
 export const createCompanySchema = z
   .object({
@@ -2359,6 +2417,15 @@ export const createCompanySchema = z
      * Cross-validated below — a JV needs 2+, a non-JV needs none.
      */
     parentCompanyIds: z.array(uuidSchema).optional().nullable(),
+
+    /**
+     * Stated annual turnover in INR (whole rupees). Optional - companies
+     * may not know this figure at registration time and can fill it in
+     * later. NULL/absent means "not stated"; the tender-apply gate
+     * treats unstated turnovers as ineligible for tenders that set a
+     * minimum.
+     */
+    annualTurnover: annualTurnoverSchema,
 
     contactEmail: z
       .string()
@@ -2454,6 +2521,15 @@ export const updateCompanySchema = z
     isMsme: z.boolean().optional(),
     isJv: z.boolean().optional(),
     parentCompanyIds: z.array(uuidSchema).optional().nullable(),
+
+    /**
+     * Same shape as on createCompanySchema. Companies update their own
+     * turnover via this action; admins/staff can also update it on
+     * behalf of a company. Not gated to staff-only - this is a fact
+     * about the company that the company itself is the authority on.
+     */
+    annualTurnover: annualTurnoverSchema,
+
     contactEmail: z
       .string()
       .trim()
@@ -2784,6 +2860,11 @@ export async function createCompany(
       // Force pending — never trust create-side compliance.
       complianceStatus: "pending",
       parentCompanyIds: input.isJv ? (input.parentCompanyIds ?? null) : null,
+      // Day 8: turnover is optional at create time. Companies that don't
+      // know their figure (typical for self-registration) can fill it in
+      // via the edit form later. NULL = "not stated" and bars them from
+      // applying to tenders with a minimum-turnover requirement.
+      annualTurnover: input.annualTurnover ?? null,
       contactEmail: input.contactEmail ?? null,
       contactPhone: input.contactPhone ?? null,
       contactPersonName: input.contactPersonName ?? null,
@@ -2899,6 +2980,13 @@ export async function updateCompany(
   if (input.isJv !== undefined) patch.isJv = input.isJv;
   if (input.parentCompanyIds !== undefined)
     patch.parentCompanyIds = input.parentCompanyIds;
+  // Day 8: turnover is a fact about the company that the company itself
+  // is the authority on. Always-applied (NOT inside the isStaffOrAdmin
+  // block below) - a company-role user updating their own row can set
+  // or clear their stated turnover. Audit captures the before/after via
+  // the standard buildPatchSnapshot walk.
+  if (input.annualTurnover !== undefined)
+    patch.annualTurnover = input.annualTurnover;
   if (input.contactEmail !== undefined) patch.contactEmail = input.contactEmail;
   if (input.contactPhone !== undefined) patch.contactPhone = input.contactPhone;
   if (input.contactPersonName !== undefined)
@@ -3040,6 +3128,11 @@ export async function deleteCompany(rawId: unknown): Promise<ActionResult> {
       isJv: deletedRow.isJv,
       complianceStatus: deletedRow.complianceStatus,
       parentCompanyIds: deletedRow.parentCompanyIds,
+      // Day 8: include in the deletion snapshot so forensic queries can
+      // see what turnover the company had on record when removed. Cheap
+      // and useful - a vanishing turnover figure on a deleted JV partner
+      // is exactly the kind of thing an auditor would want to reconstruct.
+      annualTurnover: deletedRow.annualTurnover,
       contactEmail: deletedRow.contactEmail,
       contactPhone: deletedRow.contactPhone,
       contactPersonName: deletedRow.contactPersonName,
@@ -4618,9 +4711,8 @@ How a real form ties together: Server Action handling, optimistic UI, unsaved-ch
  *       - form starts pre-populated with the existing row's values
  *
  * Architecture:
- *   - One form, one submit. Six visually-sectioned blocks via
- *     `<FormSection>` so the user can mentally chunk progress without
- *     wizard friction.
+ *   - One form, one submit. Sectioned blocks via `<FormSection>` so the
+ *     user can mentally chunk progress without wizard friction.
  *   - Inline Zod resolver (same pattern as login) — avoids the
  *     @hookform/resolvers + Zod 4 compatibility issues.
  *   - On-blur validation per field — surface errors next to the field
@@ -4642,6 +4734,7 @@ import {
   createCompanySchema,
   type CreateCompanyInput,
 } from "@/lib/companies/schemas";
+import { formatInr } from "@/lib/format/inr";
 import type { Company } from "@/lib/db/schema";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -4684,6 +4777,10 @@ export interface CompanyFormProps {
  * Defaults for CREATE mode. All optional fields default to empty string
  * (controlled inputs from the start, no controlled-vs-uncontrolled
  * warnings) and get normalised back to null at submit time.
+ *
+ * `annualTurnover` defaults to `null` rather than empty string because
+ * it's a numeric field — the Controller-driven input below renders the
+ * empty UI when the value is null/undefined.
  */
 const CREATE_DEFAULTS: CreateCompanyInput = {
   name: "",
@@ -4694,6 +4791,7 @@ const CREATE_DEFAULTS: CreateCompanyInput = {
   isMsme: false,
   isJv: false,
   parentCompanyIds: null,
+  annualTurnover: null,
   contactEmail: null,
   contactPhone: null,
   contactPersonName: null,
@@ -4724,6 +4822,7 @@ function buildEditDefaults(company: Company): CreateCompanyInput {
     isMsme: company.isMsme,
     isJv: company.isJv,
     parentCompanyIds: company.parentCompanyIds,
+    annualTurnover: company.annualTurnover,
     contactEmail: company.contactEmail,
     contactPhone: company.contactPhone,
     contactPersonName: company.contactPersonName,
@@ -4971,7 +5070,88 @@ export function CompanyForm({
         </FormField>
       </FormSection>
 
-      {/* Section 3: Joint Venture ────────────────────────────────── */}
+      {/* Section 3: Commercial profile ───────────────────────────── */}
+      {/*
+        New section as of Day 8. Sits between Identifiers (which covers
+        GST/PAN/MSME) and Joint venture so the form's flow reads:
+        "who you are" -> "your papers" -> "your finances" -> "your
+        structure." Single field today; the section title is generic
+        enough to absorb future commercial fields (paid-up capital,
+        working-capital line, banker reference) without renaming.
+
+        Controller-wrapped because the field is numeric — RHF's plain
+        `register` on a number input round-trips through string and
+        loses NaN handling. The implementation mirrors the tender form's
+        `minAnnualTurnoverInr` input exactly: leading ₹ glyph inside the
+        input, empty string -> null, non-empty -> truncated int, live
+        en-IN echo below for sanity-check.
+      */}
+      <FormSection
+        title="Commercial profile"
+        description="Financial information used to determine eligibility for tenders that set a minimum turnover requirement."
+        layout="stack"
+      >
+        <FormField
+          name="annualTurnover"
+          label="Annual turnover (INR)"
+          description="Whole rupees. Optional, but tenders that set a minimum will reject applications from companies without a stated figure."
+          error={errors.annualTurnover?.message}
+        >
+          <Controller
+            name="annualTurnover"
+            control={control}
+            render={({ field }) => (
+              <div className="space-y-1">
+                <div className="relative">
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground"
+                  >
+                    ₹
+                  </span>
+                  <Input
+                    id="annualTurnover"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    step={1}
+                    className="pl-7"
+                    placeholder="10000000"
+                    disabled={submitDisabled}
+                    value={field.value ?? ""}
+                    onChange={(e) => {
+                      // Empty input → null. Non-empty → coerce to int.
+                      // Identical handling to the tender form so the
+                      // two fields stay behaviourally consistent.
+                      const raw = e.target.value;
+                      if (raw === "") {
+                        field.onChange(null);
+                        return;
+                      }
+                      const n = Number(raw);
+                      // Reject NaN; keep prior value rather than poisoning state.
+                      field.onChange(
+                        Number.isFinite(n) ? Math.trunc(n) : field.value,
+                      );
+                    }}
+                    onBlur={field.onBlur}
+                  />
+                </div>
+                {/* Indian-locale grouped echo. Example: 10000000 →
+                    ₹ 1,00,00,000. Same shared formatter as the tender
+                    form and the detail page. */}
+                {typeof field.value === "number" && field.value > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {formatInr(field.value)}
+                  </p>
+                )}
+              </div>
+            )}
+          />
+        </FormField>
+      </FormSection>
+
+      {/* Section 4: Joint Venture ────────────────────────────────── */}
       <FormSection
         title="Joint venture"
         description="Toggle on if this entry represents a JV between existing companies."
@@ -5027,7 +5207,7 @@ export function CompanyForm({
         )}
       </FormSection>
 
-      {/* Section 4: Contact ──────────────────────────────────────── */}
+      {/* Section 5: Contact ──────────────────────────────────────── */}
       <FormSection
         title="Contact"
         description="Primary point of contact for this company."
@@ -5080,7 +5260,7 @@ export function CompanyForm({
         </FormField>
       </FormSection>
 
-      {/* Section 5: Address ─────────────────────────────────────── */}
+      {/* Section 6: Address ─────────────────────────────────────── */}
       <FormSection
         title="Address"
         description="Registered office or primary location."
@@ -5147,7 +5327,7 @@ export function CompanyForm({
         </FormField>
       </FormSection>
 
-      {/* Section 6: Internal notes — admin/staff-only field */}
+      {/* Section 7: Internal notes — admin/staff-only field */}
       <FormSection
         title="Internal notes"
         description="Only visible to Consultway staff. Not shared with the company."
@@ -7775,10 +7955,11 @@ export function CompanyHeader({
 /**
  * Company overview — the fact-sheet body of the detail page.
  *
- * Renders the row as labelled facts in six sections that mirror the
- * create form structure (Identity / Identifiers / Joint venture /
- * Contact / Address / Internal notes). Each section is a `<dl>` for
- * semantic correctness — these are definition lists, not generic divs.
+ * Renders the row as labelled facts in seven sections that mirror the
+ * create form structure (Identity / Identifiers / Commercial profile /
+ * Joint venture / Contact / Address / Internal notes). Each section is
+ * a `<dl>` for semantic correctness — these are definition lists, not
+ * generic divs.
  *
  * Layout rules:
  *   - Section title (h2) + optional description, then a 2-column grid
@@ -7789,6 +7970,9 @@ export function CompanyHeader({
  *     page rather than relying on null-check, because internalNotes
  *     could legitimately be null for an admin too)
  *   - JV section shows partner list when isJv; says "Standalone" when not
+ *   - Commercial profile shows "Not stated" (not "Not on file") when
+ *     turnover is null — the company itself is the authority on this
+ *     figure, so the empty-state copy puts the ball in their court
  *
  * Server-Component-compatible — pure render.
  *
@@ -7797,6 +7981,7 @@ export function CompanyHeader({
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
 import type { Company, UserRole } from "@/lib/db/schema";
+import { formatInr } from "@/lib/format/inr";
 import { BooleanBadge } from "../../_components/badges";
 import { cn } from "@/lib/utils";
 
@@ -7830,6 +8015,17 @@ export function CompanyOverview({
       .join(", "),
   ].filter((line) => line && line.trim().length > 0);
 
+  // Formatted turnover for the Commercial profile Fact. We compute
+  // outside the JSX because the `value` vs `emptyHint` branch needs
+  // a string-or-null shape rather than a JSX node — using `value`
+  // (not `valueNode`) keeps the Fact primitive's mono/spanFull props
+  // semantically clear, and lets the Fact handle the "not stated"
+  // italic styling consistently with the other empty-state cases.
+  const formattedTurnover =
+    company.annualTurnover !== null
+      ? formatInr(company.annualTurnover)
+      : null;
+
   return (
     <div className="divide-y divide-border">
       {/* Identity ─────────────────────────────────────────────────── */}
@@ -7862,6 +8058,31 @@ export function CompanyOverview({
         <Fact
           label="MSME registered"
           valueNode={<BooleanBadge value={company.isMsme} />}
+        />
+      </Section>
+
+      {/* Commercial profile ───────────────────────────────────────── */}
+      {/*
+        New section as of Day 8. Mirrors the form's section ordering -
+        Identifiers (papers) -> Commercial profile (finances) -> Joint
+        venture (structure). Single Fact today; reads cleanly with
+        spanFull because the figure tends to be visually long.
+
+        Empty-state copy is "Not stated" rather than "Not on file"
+        (used for GST/PAN) - turnover is a fact about the company that
+        the company itself is the authority on, not paperwork awaiting
+        arrival, so the empty hint nudges the company to fill it in
+        rather than reading like a passive missing-document state.
+      */}
+      <Section
+        title="Commercial profile"
+        description="Financial information used to determine eligibility for tenders that set a minimum turnover requirement."
+      >
+        <Fact
+          label="Annual turnover"
+          value={formattedTurnover}
+          emptyHint="Not stated"
+          spanFull
         />
       </Section>
 
@@ -9024,6 +9245,7 @@ These files live in `lib/`, `app/`, or `components/` but are not embedded above 
 - `lib/audit/diff.ts`
 - `lib/audit/labels.ts`
 - `lib/audit/resolve-targets.ts`
+- `lib/format/inr.ts`
 - `lib/utils/format-relative-time.ts`
 
 ---
