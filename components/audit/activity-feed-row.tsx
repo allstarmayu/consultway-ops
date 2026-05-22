@@ -2,11 +2,24 @@
  * Single row in an activity feed.
  *
  * Renders one audit event as: coloured icon disc on the left, sentence
- * + relative timestamp on the right. Pure presentation - resolved
- * target names and actor display strings come in as props. Doing the
- * resolution upstream (in the Server Component that fetches events)
- * means this row component stays a leaf with no database dependencies
- * and is easy to reason about.
+ * + relative timestamp on the right, optional expand-toggle for
+ * field-by-field diff.
+ *
+ * Day-7 Chunk 4 change: rows are now collapsible Client Components.
+ * Default collapsed. When the event has a meaningful diff (computed
+ * via `computeDiff` on the before/after snapshots), a chevron toggle
+ * appears next to the timestamp; clicking it reveals a panel below
+ * the row showing each changed field with its old and new values.
+ *
+ * Why Client Component: the toggle needs `useState`. Promoting only
+ * the row to client (not the feed wrapper) keeps the DB-touching
+ * Feed/History parents on the server.
+ *
+ * Why not always render the diff inline: a diff can be 5+ fields,
+ * each potentially a long string. Inlining 20 rows of diffs on the
+ * dashboard kills the at-a-glance scannability that the icon-disc-
+ * sentence pattern is built for. Click-to-expand keeps the feed
+ * compact while giving forensic detail on demand.
  *
  * Sentence shape:
  *   "{actorLabel} {verb} {targetLabel}{optional metadata fragment}"
@@ -30,14 +43,13 @@
  * whole feed. Defence in depth: the writer validates, the reader
  * tolerates.
  *
- * Server-Component-compatible: no hooks, no event handlers. Could be
- * a Client Component if a future iteration adds row-level interactivity
- * (e.g. expand-to-see-diff), but that's not Day 7.
- *
  * @module components/audit/activity-feed-row
  */
+"use client";
+
+import { useState, useMemo } from "react";
 import Link from "next/link";
-import { HelpCircle } from "lucide-react";
+import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 
 import type { AuditLogEntry } from "@/lib/db/schema";
 import type { AuditAction } from "@/lib/audit/log";
@@ -47,6 +59,11 @@ import {
   type AuditTone,
 } from "@/lib/audit/labels";
 import { formatRelativeTime } from "@/lib/utils/format-relative-time";
+import {
+  computeDiff,
+  humaniseFieldName,
+  renderDiffValue,
+} from "@/lib/audit/diff";
 import { cn } from "@/lib/utils";
 
 // ── Props ───────────────────────────────────────────────────────────────────
@@ -158,6 +175,19 @@ function resolveLabel(rawAction: string): AuditLabel {
   return unknownActionLabel(rawAction);
 }
 
+/**
+ * Truncate a string to ~80 chars with an ellipsis. Used in the diff
+ * panel to keep long internal-notes or descriptions from blowing
+ * out the row. Full text is available on hover via the `title`
+ * attribute.
+ */
+const DIFF_TRUNCATE_AT = 80;
+function truncateForDiff(s: string): string {
+  return s.length > DIFF_TRUNCATE_AT
+    ? `${s.slice(0, DIFF_TRUNCATE_AT)}...`
+    : s;
+}
+
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function ActivityFeedRow({
@@ -187,69 +217,173 @@ export function ActivityFeedRow({
   const reasonText =
     typeof reason === "string" && reason.length > 0 ? reason : null;
 
+  // Compute the diff lazily. `useMemo` ensures we don't recompute on
+  // every re-render of the parent feed - the snapshots are stable
+  // references that come from the DB, so the memo key is the event
+  // id (which uniquely identifies before/after).
+  const diff = useMemo(
+    () => computeDiff(event.before, event.after),
+    [event.id, event.before, event.after],
+  );
+
+  // Toggle only appears when there's something to show. `created`
+  // events with no `before` and `deleted` events with no `after`
+  // typically produce a non-empty diff (one side is empty), which
+  // IS useful forensic info - so we show the toggle for those too.
+  const hasDiff = diff.length > 0;
+  const [expanded, setExpanded] = useState(false);
+
   return (
-    <li className="flex items-start gap-3 py-3">
-      {/* Icon disc. Fixed-size so the sentence column aligns regardless
-          of icon glyph. aria-hidden because the tone+verb in the sentence
-          already convey the meaning to screen readers. */}
-      <div
-        className={cn(
-          "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-          toneClass,
-        )}
-        aria-hidden
-      >
-        <Icon className="h-4 w-4" />
-      </div>
-
-      {/* Sentence + timestamp column. min-w-0 lets the long target label
-          truncate cleanly inside flexbox. */}
-      <div className="min-w-0 flex-1">
-        <p className="text-sm leading-relaxed text-foreground">
-          <span
-            className="font-medium text-foreground"
-            title={actorLabel}
-          >
-            {actorLabel}
-          </span>{" "}
-          <span className="text-muted-foreground">{label.verb}</span>{" "}
-          {targetIsLink && targetHref ? (
-            <Link
-              href={targetHref}
-              className="font-medium text-foreground underline-offset-2 hover:underline"
-            >
-              {displayTarget}
-            </Link>
-          ) : (
-            <span
-              className={cn(
-                "font-medium",
-                targetLabel === null
-                  ? "italic text-muted-foreground"
-                  : "text-foreground",
-              )}
-            >
-              {displayTarget}
-            </span>
+    <li className="py-3">
+      <div className="flex items-start gap-3">
+        {/* Icon disc. Fixed-size so the sentence column aligns regardless
+            of icon glyph. aria-hidden because the tone+verb in the sentence
+            already convey the meaning to screen readers. */}
+        <div
+          className={cn(
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
+            toneClass,
           )}
-        </p>
-
-        {/* Optional reason suffix - reversal verbs typically have one. */}
-        {reasonText && (
-          <p className="mt-0.5 text-xs italic text-muted-foreground">
-            &ldquo;{reasonText}&rdquo;
-          </p>
-        )}
-
-        {/* Timestamp row. Always relative on the feed; the full ISO
-            string lives in the `title` attribute for hover-reveal. */}
-        <p
-          className="mt-0.5 text-xs text-muted-foreground"
-          title={event.createdAt}
+          aria-hidden
         >
-          {formatRelativeTime(event.createdAt)}
-        </p>
+          <Icon className="h-4 w-4" />
+        </div>
+
+        {/* Sentence + timestamp column. min-w-0 lets the long target label
+            truncate cleanly inside flexbox. */}
+        <div className="min-w-0 flex-1">
+          <p className="text-sm leading-relaxed text-foreground">
+            <span
+              className="font-medium text-foreground"
+              title={actorLabel}
+            >
+              {actorLabel}
+            </span>{" "}
+            <span className="text-muted-foreground">{label.verb}</span>{" "}
+            {targetIsLink && targetHref ? (
+              <Link
+                href={targetHref}
+                className="font-medium text-foreground underline-offset-2 hover:underline"
+              >
+                {displayTarget}
+              </Link>
+            ) : (
+              <span
+                className={cn(
+                  "font-medium",
+                  targetLabel === null
+                    ? "italic text-muted-foreground"
+                    : "text-foreground",
+                )}
+              >
+                {displayTarget}
+              </span>
+            )}
+          </p>
+
+          {/* Optional reason suffix - reversal verbs typically have one. */}
+          {reasonText && (
+            <p className="mt-0.5 text-xs italic text-muted-foreground">
+              &ldquo;{reasonText}&rdquo;
+            </p>
+          )}
+
+          {/* Timestamp + optional expand toggle. Toggle is a button
+              that flips local state; the diff panel below the flex
+              row reacts to that state.
+
+              Native button (not the shadcn Button component) because
+              we want the chevron flush with the timestamp text, not
+              a separate UI element. */}
+          <div className="mt-0.5 flex items-center gap-1.5">
+            <span
+              className="text-xs text-muted-foreground"
+              title={event.createdAt}
+            >
+              {formatRelativeTime(event.createdAt)}
+            </span>
+            {hasDiff && (
+              <button
+                type="button"
+                onClick={() => setExpanded((prev) => !prev)}
+                className={cn(
+                  "inline-flex items-center gap-0.5 rounded text-xs",
+                  "text-muted-foreground transition-colors hover:text-foreground",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                )}
+                aria-expanded={expanded}
+                aria-label={expanded ? "Hide details" : "Show details"}
+              >
+                <span aria-hidden>·</span>
+                {expanded ? (
+                  <ChevronDown className="h-3 w-3" aria-hidden />
+                ) : (
+                  <ChevronRight className="h-3 w-3" aria-hidden />
+                )}
+                <span>{expanded ? "hide details" : "details"}</span>
+              </button>
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* Diff panel - only rendered when expanded. Indented to align
+          with the sentence column so the visual hierarchy reads as
+          "this detail belongs to that row". */}
+      {expanded && hasDiff && (
+        <div className="ml-12 mt-2 rounded-md border border-border bg-muted/30 p-3">
+          <dl className="space-y-1.5">
+            {diff.map(({ field, from, to }) => {
+              const fromRendered = renderDiffValue(from);
+              const toRendered = renderDiffValue(to);
+              return (
+                <div
+                  key={field}
+                  className="grid grid-cols-[auto_1fr] gap-x-3 text-xs"
+                >
+                  <dt className="font-medium text-foreground">
+                    {humaniseFieldName(field)}
+                  </dt>
+                  <dd className="flex flex-wrap items-baseline gap-x-2 text-muted-foreground">
+                    <span
+                      className={cn(
+                        fromRendered.isMissing && "italic",
+                      )}
+                      title={
+                        typeof from === "string" && from.length > DIFF_TRUNCATE_AT
+                          ? from
+                          : undefined
+                      }
+                    >
+                      {typeof from === "string"
+                        ? truncateForDiff(fromRendered.display)
+                        : fromRendered.display}
+                    </span>
+                    <span aria-hidden className="text-muted-foreground/60">
+                      →
+                    </span>
+                    <span
+                      className={cn(
+                        "text-foreground",
+                        toRendered.isMissing && "italic text-muted-foreground",
+                      )}
+                      title={
+                        typeof to === "string" && to.length > DIFF_TRUNCATE_AT
+                          ? to
+                          : undefined
+                      }
+                    >
+                      {typeof to === "string"
+                        ? truncateForDiff(toRendered.display)
+                        : toRendered.display}
+                    </span>
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+        </div>
+      )}
     </li>
   );
 }
