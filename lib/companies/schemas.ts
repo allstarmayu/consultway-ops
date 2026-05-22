@@ -62,6 +62,36 @@ const trimmedNameSchema = z
   .min(2, "Must be at least 2 characters")
   .max(200, "Must be 200 characters or fewer");
 
+/**
+ * Annual turnover in INR, whole rupees only. Mirrors the shape of
+ * `tenders.minAnnualTurnoverInr` so the two compare cleanly in the
+ * `applyToTender` gate without coercion gymnastics.
+ *
+ *   - `z.coerce.number()` — the form input arrives as a string from the
+ *     URL or FormData layer; we coerce once here.
+ *   - `.int()` — whole rupees only. Fractional rupees would be paise,
+ *     which Indian regulators treat as a separate unit; we keep this
+ *     field rupees-only.
+ *   - `.nonnegative()` — a company can have zero stated turnover (newly
+ *     incorporated, no revenue yet) but not negative.
+ *   - `.max(Number.MAX_SAFE_INTEGER)` — guards against typo'd monster
+ *     figures landing in the DB. Well below SQLite's INTEGER ceiling
+ *     and well above any realistic turnover (~9 quadrillion rupees).
+ *   - `.optional().nullable()` — both an absent field on the patch and
+ *     an explicit `null` are accepted. NULL means "not stated" on the
+ *     company side; the apply-to-tender gate refuses unstated figures.
+ */
+const annualTurnoverSchema = z.coerce
+  .number()
+  .int("Annual turnover must be a whole rupee amount")
+  .nonnegative("Annual turnover cannot be negative")
+  .max(
+    Number.MAX_SAFE_INTEGER,
+    "Annual turnover figure is unrealistically large",
+  )
+  .optional()
+  .nullable();
+
 // ── Compliance status enum (mirrors lib/db/schema.ts ComplianceStatus) ──────
 
 /**
@@ -90,6 +120,11 @@ export const complianceStatusSchema = z.enum([
  *   - `complianceStatus` is forced to `"pending"` on create — only an
  *     admin/staff update can change it. The schema simply omits the
  *     field; the action sets `pending` server-side.
+ *   - `annualTurnover` is optional. Companies that don't state their
+ *     turnover at create time can update later via the edit form. The
+ *     tender-eligibility gate enforces "stated" at the moment a company
+ *     tries to apply to a tender with a minimum-turnover requirement
+ *     (Day 8 - see `applyToTender` in lib/tenders/actions.ts).
  */
 export const createCompanySchema = z
   .object({
@@ -118,6 +153,15 @@ export const createCompanySchema = z
      * Cross-validated below — a JV needs 2+, a non-JV needs none.
      */
     parentCompanyIds: z.array(uuidSchema).optional().nullable(),
+
+    /**
+     * Stated annual turnover in INR (whole rupees). Optional - companies
+     * may not know this figure at registration time and can fill it in
+     * later. NULL/absent means "not stated"; the tender-apply gate
+     * treats unstated turnovers as ineligible for tenders that set a
+     * minimum.
+     */
+    annualTurnover: annualTurnoverSchema,
 
     contactEmail: z
       .string()
@@ -213,6 +257,15 @@ export const updateCompanySchema = z
     isMsme: z.boolean().optional(),
     isJv: z.boolean().optional(),
     parentCompanyIds: z.array(uuidSchema).optional().nullable(),
+
+    /**
+     * Same shape as on createCompanySchema. Companies update their own
+     * turnover via this action; admins/staff can also update it on
+     * behalf of a company. Not gated to staff-only - this is a fact
+     * about the company that the company itself is the authority on.
+     */
+    annualTurnover: annualTurnoverSchema,
+
     contactEmail: z
       .string()
       .trim()

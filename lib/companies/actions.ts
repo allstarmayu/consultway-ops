@@ -228,6 +228,11 @@ export async function createCompany(
       // Force pending — never trust create-side compliance.
       complianceStatus: "pending",
       parentCompanyIds: input.isJv ? (input.parentCompanyIds ?? null) : null,
+      // Day 8: turnover is optional at create time. Companies that don't
+      // know their figure (typical for self-registration) can fill it in
+      // via the edit form later. NULL = "not stated" and bars them from
+      // applying to tenders with a minimum-turnover requirement.
+      annualTurnover: input.annualTurnover ?? null,
       contactEmail: input.contactEmail ?? null,
       contactPhone: input.contactPhone ?? null,
       contactPersonName: input.contactPersonName ?? null,
@@ -343,6 +348,13 @@ export async function updateCompany(
   if (input.isJv !== undefined) patch.isJv = input.isJv;
   if (input.parentCompanyIds !== undefined)
     patch.parentCompanyIds = input.parentCompanyIds;
+  // Day 8: turnover is a fact about the company that the company itself
+  // is the authority on. Always-applied (NOT inside the isStaffOrAdmin
+  // block below) - a company-role user updating their own row can set
+  // or clear their stated turnover. Audit captures the before/after via
+  // the standard buildPatchSnapshot walk.
+  if (input.annualTurnover !== undefined)
+    patch.annualTurnover = input.annualTurnover;
   if (input.contactEmail !== undefined) patch.contactEmail = input.contactEmail;
   if (input.contactPhone !== undefined) patch.contactPhone = input.contactPhone;
   if (input.contactPersonName !== undefined)
@@ -484,6 +496,11 @@ export async function deleteCompany(rawId: unknown): Promise<ActionResult> {
       isJv: deletedRow.isJv,
       complianceStatus: deletedRow.complianceStatus,
       parentCompanyIds: deletedRow.parentCompanyIds,
+      // Day 8: include in the deletion snapshot so forensic queries can
+      // see what turnover the company had on record when removed. Cheap
+      // and useful - a vanishing turnover figure on a deleted JV partner
+      // is exactly the kind of thing an auditor would want to reconstruct.
+      annualTurnover: deletedRow.annualTurnover,
       contactEmail: deletedRow.contactEmail,
       contactPhone: deletedRow.contactPhone,
       contactPersonName: deletedRow.contactPersonName,

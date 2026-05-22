@@ -329,6 +329,27 @@ function buildPatchSnapshot(
   return snapshot;
 }
 
+// -- Helper: INR formatter for error messages -----------------------------
+
+/**
+ * Format a whole-rupee integer as an Indian-locale grouped string with
+ * the rupee prefix. Used in user-facing error messages from the turnover
+ * gate so the figure reads cleanly in the alert banner ("at least
+ * Rs.5,00,00,000" rather than "at least 50000000").
+ *
+ * Kept inline rather than imported from the shared formatter (Chunk 3)
+ * because this lives in a "use server" file and we want zero coupling
+ * to client-facing helpers. The shared `formatInr` will replace this
+ * once the lift happens; until then they produce visually equivalent
+ * output. Using "Rs." prefix (ASCII) rather than the rupee glyph since
+ * the error message is consumed by a JSON string passed to the client.
+ */
+function formatInrForError(rupees: number): string {
+  return `Rs.${new Intl.NumberFormat("en-IN", {
+    maximumFractionDigits: 0,
+  }).format(rupees)}`;
+}
+
 // -- createTender ----------------------------------------------------------
 
 /**
@@ -1091,9 +1112,12 @@ export async function listTenders(
  *   2. Closing date hasn't passed (if set)
  *   3. Eligibility filters: sector / geography / MSME match company's
  *      own row state
- *   4. Turnover gate - DEFERRED. The `companies` table doesn't have an
- *      `annualTurnover` column yet (Day-3 schema omits it). When that
- *      ships, enable enforcement here.
+ *   4. Turnover gate (Day 8): when the tender sets a minimum, the
+ *      applying company must have a STATED turnover that meets it.
+ *      Unstated turnover (`NULL`) is a hard refusal - we can't verify
+ *      eligibility without the figure. Stated-but-too-low surfaces a
+ *      different error so the company knows the bar is real and isn't
+ *      just a data-entry oversight.
  *   5. Composite-unique on (tender_id, company_id) catches duplicate
  *      applications at the DB level - we soft-check first for a friendly
  *      error message.
@@ -1192,17 +1216,49 @@ export async function applyToTender(
     };
   }
 
-  // TODO: Turnover gate. Re-enable once `companies.annualTurnover` ships.
+  // 6b. Turnover gate (Day 8). Two distinct branches:
   //
-  // if (tender.minAnnualTurnoverInr !== null) {
-  //   const turnover = company.annualTurnover ?? 0;
-  //   if (turnover < tender.minAnnualTurnoverInr) {
-  //     return {
-  //       ok: false,
-  //       error: `This tender requires an annual turnover of at least Rs.${tender.minAnnualTurnoverInr.toLocaleString("en-IN")}`,
-  //     };
-  //   }
-  // }
+  //     - Tender requires a minimum AND company has not stated their
+  //       turnover -> refuse. We cannot verify eligibility without the
+  //       figure, and silently allowing the application would let
+  //       under-qualifying companies slip through by leaving the field
+  //       blank. The error surfaces the actionable next step (set the
+  //       turnover on the company profile) and carries a field hint
+  //       pointing to the gap on the company record itself.
+  //
+  //     - Tender requires a minimum AND company's stated turnover is
+  //       below it -> refuse with the figure the tender requires, so
+  //       the company knows the gap rather than just "ineligible." No
+  //       field hint here - the user can't unilaterally fix this by
+  //       editing their own row (raising turnover to apply would be
+  //       fraud), so a field-targeted error would be misleading.
+  //
+  //     NULL on the tender side (`minAnnualTurnoverInr === null`) means
+  //     "no minimum required," and the gate is skipped entirely - both
+  //     stated-zero and unstated-NULL companies pass through unmolested.
+  //
+  //     The audit trail captures successful applications via the
+  //     `tender_applied` event below; gate-rejected attempts deliberately
+  //     do NOT create audit rows (existing convention - only successful
+  //     state changes audit). If we ever want forensic visibility on
+  //     repeat-rejection patterns, that's a separate `tender_application_
+  //     rejected_eligibility` verb worth its own design pass.
+  if (tender.minAnnualTurnoverInr !== null) {
+    if (company.annualTurnover === null) {
+      return {
+        ok: false,
+        field: "annualTurnover",
+        error:
+          "This tender requires a minimum annual turnover. Update your company's annual turnover on the company profile before applying.",
+      };
+    }
+    if (company.annualTurnover < tender.minAnnualTurnoverInr) {
+      return {
+        ok: false,
+        error: `Your stated annual turnover (${formatInrForError(company.annualTurnover)}) does not meet this tender's minimum of ${formatInrForError(tender.minAnnualTurnoverInr)}.`,
+      };
+    }
+  }
 
   // 7. Soft duplicate check for a friendlier error message. The DB
   //    composite unique is the hard guard; this avoids the user seeing
