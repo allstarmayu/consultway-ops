@@ -52,6 +52,61 @@ const envSchema = z.object({
   LOG_LEVEL: z
     .enum(["debug", "info", "warn", "error"])
     .default("info"),
+
+  // ── R2 (object storage for documents) ───────────────────────────────
+  // Cloudflare R2 is S3-API compatible. We hit it via sigv4-signed HTTPS
+  // requests (aws4fetch), not the binding-injection approach - that's
+  // a deployment-time concern handled separately in wrangler.jsonc.
+  //
+  // To get these values:
+  //   1. `wrangler r2 bucket create consultway-docs` (one-time)
+  //   2. Cloudflare dashboard -> R2 -> Manage R2 API Tokens
+  //   3. Create Account API Token: Object Read & Write, scoped to the
+  //      consultway-docs bucket, TTL Forever, no IP filter
+  //   4. Copy the Access Key ID + Secret Access Key into .env.local
+  //
+  // Dev-only defaults are placeholder strings. They let the app boot
+  // (so devs who haven't set up R2 can still work on unrelated features)
+  // but any R2-API call made with them will fail loudly at sign time -
+  // that's the desired failure mode. Production MUST set real values
+  // via Cloudflare secrets.
+
+  /**
+   * Cloudflare account ID. Visible in the Cloudflare dashboard top-right
+   * panel, also embedded in the R2 S3 endpoint URL (the hex prefix
+   * before `.r2.cloudflarestorage.com`).
+   */
+  R2_ACCOUNT_ID: z.string().min(1).default("dev-placeholder-account-id"),
+
+  /**
+   * R2 access key ID. Minted alongside the secret key when creating an
+   * R2 API token in the dashboard. Treat as a non-secret identifier
+   * (it's logged on errors); the secret below is the actual secret.
+   */
+  R2_ACCESS_KEY_ID: z
+    .string()
+    .min(1)
+    .default("dev-placeholder-access-key-id"),
+
+  /**
+   * R2 secret access key. NEVER log this. NEVER commit a real value.
+   * `lib/logger.ts` doesn't auto-redact secrets - it's on the call site
+   * to keep this out of log payloads. The Zod min(1) catches the
+   * empty-string footgun but doesn't enforce a particular length
+   * because Cloudflare's secret length isn't documented as stable.
+   */
+  R2_SECRET_ACCESS_KEY: z
+    .string()
+    .min(1)
+    .default("dev-placeholder-secret-access-key"),
+
+  /**
+   * R2 bucket name. We use `consultway-docs` for both dev and prod;
+   * environment separation is handled at the account level, not by
+   * bucket name. If we add a staging bucket later (per the deployment
+   * doc's `consultway-docs-staging` plan) this is where it gets pointed.
+   */
+  R2_BUCKET_NAME: z.string().min(1).default("consultway-docs"),
 });
 
 /**
