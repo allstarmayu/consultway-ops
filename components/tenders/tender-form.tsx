@@ -62,6 +62,7 @@ import {
   type CreateTenderInput,
 } from "@/lib/tenders/schemas";
 import { getEditableFieldsForStatus } from "@/lib/tenders/state-machine";
+import { formatInr } from "@/lib/format/inr";
 import type { Tender, TenderStatus } from "@/lib/db/schema";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -447,7 +448,7 @@ export function TenderForm({
         <FormField
           name="minAnnualTurnoverInr"
           label="Minimum annual turnover (INR)"
-          description="Whole rupees. Enforcement ships when companies start recording turnover."
+          description="Whole rupees. Applicants must have a stated turnover at or above this figure; the gate runs at apply time."
           error={errors.minAnnualTurnoverInr?.message}
         >
           <Controller
@@ -490,7 +491,9 @@ export function TenderForm({
                 </div>
                 {/* Indian-locale grouped echo so users can sanity-check
                     a big number at a glance. Example: 50000000 →
-                    ₹ 5,00,00,000 */}
+                    ₹ 5,00,00,000. Uses the shared formatter so the
+                    visual matches the company form's turnover field
+                    and the detail-page display. */}
                 {typeof field.value === "number" && field.value > 0 && (
                   <p className="text-xs text-muted-foreground">
                     {formatInr(field.value)}
@@ -714,20 +717,4 @@ function normaliseFormValues(
     }
   }
   return out;
-}
-
-/**
- * Format a rupee integer with Indian-locale grouping (lakh / crore
- * commas) for the live-echo helper line under the turnover input.
- *
- * Example: 50000000 → "₹ 5,00,00,000".
- *
- * Uses `Intl.NumberFormat` with the en-IN locale; output is consistent
- * across Node, browsers, and the V8 isolate the form runs in.
- */
-function formatInr(rupees: number): string {
-  const formatter = new Intl.NumberFormat("en-IN", {
-    maximumFractionDigits: 0,
-  });
-  return `₹ ${formatter.format(rupees)}`;
 }

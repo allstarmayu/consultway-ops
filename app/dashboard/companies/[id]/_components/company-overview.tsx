@@ -1,10 +1,11 @@
 /**
  * Company overview — the fact-sheet body of the detail page.
  *
- * Renders the row as labelled facts in six sections that mirror the
- * create form structure (Identity / Identifiers / Joint venture /
- * Contact / Address / Internal notes). Each section is a `<dl>` for
- * semantic correctness — these are definition lists, not generic divs.
+ * Renders the row as labelled facts in seven sections that mirror the
+ * create form structure (Identity / Identifiers / Commercial profile /
+ * Joint venture / Contact / Address / Internal notes). Each section is
+ * a `<dl>` for semantic correctness — these are definition lists, not
+ * generic divs.
  *
  * Layout rules:
  *   - Section title (h2) + optional description, then a 2-column grid
@@ -15,6 +16,9 @@
  *     page rather than relying on null-check, because internalNotes
  *     could legitimately be null for an admin too)
  *   - JV section shows partner list when isJv; says "Standalone" when not
+ *   - Commercial profile shows "Not stated" (not "Not on file") when
+ *     turnover is null — the company itself is the authority on this
+ *     figure, so the empty-state copy puts the ball in their court
  *
  * Server-Component-compatible — pure render.
  *
@@ -23,6 +27,7 @@
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
 import type { Company, UserRole } from "@/lib/db/schema";
+import { formatInr } from "@/lib/format/inr";
 import { BooleanBadge } from "../../_components/badges";
 import { cn } from "@/lib/utils";
 
@@ -56,6 +61,17 @@ export function CompanyOverview({
       .join(", "),
   ].filter((line) => line && line.trim().length > 0);
 
+  // Formatted turnover for the Commercial profile Fact. We compute
+  // outside the JSX because the `value` vs `emptyHint` branch needs
+  // a string-or-null shape rather than a JSX node — using `value`
+  // (not `valueNode`) keeps the Fact primitive's mono/spanFull props
+  // semantically clear, and lets the Fact handle the "not stated"
+  // italic styling consistently with the other empty-state cases.
+  const formattedTurnover =
+    company.annualTurnover !== null
+      ? formatInr(company.annualTurnover)
+      : null;
+
   return (
     <div className="divide-y divide-border">
       {/* Identity ─────────────────────────────────────────────────── */}
@@ -88,6 +104,31 @@ export function CompanyOverview({
         <Fact
           label="MSME registered"
           valueNode={<BooleanBadge value={company.isMsme} />}
+        />
+      </Section>
+
+      {/* Commercial profile ───────────────────────────────────────── */}
+      {/*
+        New section as of Day 8. Mirrors the form's section ordering -
+        Identifiers (papers) -> Commercial profile (finances) -> Joint
+        venture (structure). Single Fact today; reads cleanly with
+        spanFull because the figure tends to be visually long.
+
+        Empty-state copy is "Not stated" rather than "Not on file"
+        (used for GST/PAN) - turnover is a fact about the company that
+        the company itself is the authority on, not paperwork awaiting
+        arrival, so the empty hint nudges the company to fill it in
+        rather than reading like a passive missing-document state.
+      */}
+      <Section
+        title="Commercial profile"
+        description="Financial information used to determine eligibility for tenders that set a minimum turnover requirement."
+      >
+        <Fact
+          label="Annual turnover"
+          value={formattedTurnover}
+          emptyHint="Not stated"
+          spanFull
         />
       </Section>
 

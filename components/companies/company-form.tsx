@@ -22,9 +22,8 @@
  *       - form starts pre-populated with the existing row's values
  *
  * Architecture:
- *   - One form, one submit. Six visually-sectioned blocks via
- *     `<FormSection>` so the user can mentally chunk progress without
- *     wizard friction.
+ *   - One form, one submit. Sectioned blocks via `<FormSection>` so the
+ *     user can mentally chunk progress without wizard friction.
  *   - Inline Zod resolver (same pattern as login) — avoids the
  *     @hookform/resolvers + Zod 4 compatibility issues.
  *   - On-blur validation per field — surface errors next to the field
@@ -46,6 +45,7 @@ import {
   createCompanySchema,
   type CreateCompanyInput,
 } from "@/lib/companies/schemas";
+import { formatInr } from "@/lib/format/inr";
 import type { Company } from "@/lib/db/schema";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -88,6 +88,10 @@ export interface CompanyFormProps {
  * Defaults for CREATE mode. All optional fields default to empty string
  * (controlled inputs from the start, no controlled-vs-uncontrolled
  * warnings) and get normalised back to null at submit time.
+ *
+ * `annualTurnover` defaults to `null` rather than empty string because
+ * it's a numeric field — the Controller-driven input below renders the
+ * empty UI when the value is null/undefined.
  */
 const CREATE_DEFAULTS: CreateCompanyInput = {
   name: "",
@@ -98,6 +102,7 @@ const CREATE_DEFAULTS: CreateCompanyInput = {
   isMsme: false,
   isJv: false,
   parentCompanyIds: null,
+  annualTurnover: null,
   contactEmail: null,
   contactPhone: null,
   contactPersonName: null,
@@ -128,6 +133,7 @@ function buildEditDefaults(company: Company): CreateCompanyInput {
     isMsme: company.isMsme,
     isJv: company.isJv,
     parentCompanyIds: company.parentCompanyIds,
+    annualTurnover: company.annualTurnover,
     contactEmail: company.contactEmail,
     contactPhone: company.contactPhone,
     contactPersonName: company.contactPersonName,
@@ -375,7 +381,88 @@ export function CompanyForm({
         </FormField>
       </FormSection>
 
-      {/* Section 3: Joint Venture ────────────────────────────────── */}
+      {/* Section 3: Commercial profile ───────────────────────────── */}
+      {/*
+        New section as of Day 8. Sits between Identifiers (which covers
+        GST/PAN/MSME) and Joint venture so the form's flow reads:
+        "who you are" -> "your papers" -> "your finances" -> "your
+        structure." Single field today; the section title is generic
+        enough to absorb future commercial fields (paid-up capital,
+        working-capital line, banker reference) without renaming.
+
+        Controller-wrapped because the field is numeric — RHF's plain
+        `register` on a number input round-trips through string and
+        loses NaN handling. The implementation mirrors the tender form's
+        `minAnnualTurnoverInr` input exactly: leading ₹ glyph inside the
+        input, empty string -> null, non-empty -> truncated int, live
+        en-IN echo below for sanity-check.
+      */}
+      <FormSection
+        title="Commercial profile"
+        description="Financial information used to determine eligibility for tenders that set a minimum turnover requirement."
+        layout="stack"
+      >
+        <FormField
+          name="annualTurnover"
+          label="Annual turnover (INR)"
+          description="Whole rupees. Optional, but tenders that set a minimum will reject applications from companies without a stated figure."
+          error={errors.annualTurnover?.message}
+        >
+          <Controller
+            name="annualTurnover"
+            control={control}
+            render={({ field }) => (
+              <div className="space-y-1">
+                <div className="relative">
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground"
+                  >
+                    ₹
+                  </span>
+                  <Input
+                    id="annualTurnover"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    step={1}
+                    className="pl-7"
+                    placeholder="10000000"
+                    disabled={submitDisabled}
+                    value={field.value ?? ""}
+                    onChange={(e) => {
+                      // Empty input → null. Non-empty → coerce to int.
+                      // Identical handling to the tender form so the
+                      // two fields stay behaviourally consistent.
+                      const raw = e.target.value;
+                      if (raw === "") {
+                        field.onChange(null);
+                        return;
+                      }
+                      const n = Number(raw);
+                      // Reject NaN; keep prior value rather than poisoning state.
+                      field.onChange(
+                        Number.isFinite(n) ? Math.trunc(n) : field.value,
+                      );
+                    }}
+                    onBlur={field.onBlur}
+                  />
+                </div>
+                {/* Indian-locale grouped echo. Example: 10000000 →
+                    ₹ 1,00,00,000. Same shared formatter as the tender
+                    form and the detail page. */}
+                {typeof field.value === "number" && field.value > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {formatInr(field.value)}
+                  </p>
+                )}
+              </div>
+            )}
+          />
+        </FormField>
+      </FormSection>
+
+      {/* Section 4: Joint Venture ────────────────────────────────── */}
       <FormSection
         title="Joint venture"
         description="Toggle on if this entry represents a JV between existing companies."
@@ -431,7 +518,7 @@ export function CompanyForm({
         )}
       </FormSection>
 
-      {/* Section 4: Contact ──────────────────────────────────────── */}
+      {/* Section 5: Contact ──────────────────────────────────────── */}
       <FormSection
         title="Contact"
         description="Primary point of contact for this company."
@@ -484,7 +571,7 @@ export function CompanyForm({
         </FormField>
       </FormSection>
 
-      {/* Section 5: Address ─────────────────────────────────────── */}
+      {/* Section 6: Address ─────────────────────────────────────── */}
       <FormSection
         title="Address"
         description="Registered office or primary location."
@@ -551,7 +638,7 @@ export function CompanyForm({
         </FormField>
       </FormSection>
 
-      {/* Section 6: Internal notes — admin/staff-only field */}
+      {/* Section 7: Internal notes — admin/staff-only field */}
       <FormSection
         title="Internal notes"
         description="Only visible to Consultway staff. Not shared with the company."
