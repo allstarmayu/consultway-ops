@@ -735,3 +735,269 @@ export type NewAuditLogEntry = typeof auditLog.$inferInsert;
 
 /** Inferred select type. Used by `listAuditEvents` (Chunk 2) for return rows. */
 export type AuditLogEntry = typeof auditLog.$inferSelect;
+
+// -- Shared types: documents ------------------------------------------------
+/**
+ * Categorical kind of a document. Drives downstream rules:
+ *   - which docs are mandatory for a company to reach `compliant` status
+ *   - which docs feed tender eligibility checks (Phase 2 / Phase 3)
+ *   - which docs the expiry-reminder cron emails on (Day 10+)
+ *
+ * Closed union. SQLite has no native enums; validated app-side via Zod
+ * (`lib/documents/schemas.ts`) and via the type at the action layer.
+ *
+ * The seven values match `docs/05-database-schema.md`. Easy to widen via
+ * a follow-up migration if the brief's MSME cert / balance sheet / bank
+ * statement need to land - flag for Day 9 follow-up.
+ */
+export type DocumentType =
+  | "gst_certificate"
+  | "pan_card"
+  | "incorporation_cert"
+  | "board_resolution"
+  | "cancelled_cheque"
+  | "trade_license"
+  | "other";
+
+/**
+ * Lifecycle state of a document row.
+ *
+ *   - `pending`        - row inserted at upload-initiation time. The
+ *                        presigned PUT URL has been minted but the
+ *                        client has not yet confirmed the upload
+ *                        completed. Orphaned `pending` rows older than
+ *                        ~1 hour are sweep-eligible by a future cron.
+ *   - `pending_review` - upload confirmed; the file is in R2 and the
+ *                        row carries valid `fileKey` / `sizeBytes`.
+ *                        Awaiting admin/staff verification. THIS is the
+ *                        state `docs/05-database-schema.md` documents
+ *                        as the initial state - we added `pending` ahead
+ *                        of it for the two-step direct-to-R2 upload.
+ *   - `verified`       - admin/staff approved the document.
+ *   - `rejected`       - admin/staff rejected the document with notes.
+ *                        Company user can re-upload (creates a new row).
+ *   - `expired`        - past `expiresAt`. Set automatically by the
+ *                        nightly cron sweep (Day 10+).
+ *
+ * Closed union, app-validated. Same convention as `ComplianceStatus`.
+ */
+export type DocumentStatus =
+  | "pending"
+  | "pending_review"
+  | "verified"
+  | "rejected"
+  | "expired";
+
+// -- documents --------------------------------------------------------------
+/**
+ * Per-company document storage metadata. The file bytes live in
+ * Cloudflare R2; this table stores the metadata (filename, size, MIME,
+ * issuer-side dates, review state) and the R2 object key (`fileKey`)
+ * that lets us mint a presigned GET URL on download.
+ *
+ * Upload flow (two-step, see Day 9 prompt):
+ *   1. Client calls `initiateDocumentUpload` (Chunk 3). Server validates,
+ *      RBAC-checks, inserts a row with `status = 'pending'`, returns the
+ *      row id + a short-lived presigned PUT URL.
+ *   2. Client streams bytes directly to R2 with the presigned URL.
+ *      Worker is not involved - saves egress + CPU + sidesteps Workers'
+ *      100 MB request limit on large PDFs.
+ *   3. Client calls `confirmDocumentUpload` (Chunk 3). Server flips the
+ *      row to `status = 'pending_review'` and writes the `document_uploaded`
+ *      audit event. This is the moment that "counts" - a row that never
+ *      reaches `pending_review` is treated as never having existed by
+ *      the rest of the system.
+ *
+ * Cascade semantics:
+ *   - Company deleted -> documents deleted (`ON DELETE CASCADE`). When a
+ *     company row is removed, the metadata follows. **The R2 objects are
+ *     NOT automatically deleted by this cascade** - we leak them.
+ *     Cleaning up R2 alongside a company delete is an action-layer
+ *     responsibility, not a DB constraint. Tracked as a follow-up.
+ *
+ * Verifier FK:
+ *   - `reviewedBy` references `users.id` with `ON DELETE SET NULL`. If
+ *     the verifying staff member is later deactivated and deleted, the
+ *     document row survives with `reviewedBy = NULL`; the `reviewedAt`
+ *     timestamp preserves "when this was verified", which is the
+ *     load-bearing fact for compliance.
+ *
+ * Uploader FK:
+ *   - `uploadedBy` references `users.id` with `ON DELETE RESTRICT`.
+ *     Tighter than `reviewedBy` because every document has an uploader
+ *     (mandatory), and we want the admin to consciously reassign or
+ *     delete documents before removing the uploading user. Same shape
+ *     as how `tenders.publisherCompanyId` uses RESTRICT.
+ */
+export const documents = sqliteTable(
+  "documents",
+  {
+    /** UUID v7. Generated app-side via `newId()`. */
+    id: text("id").primaryKey().$defaultFn(newId),
+
+    /**
+     * Owning company. Cascade-deletes the metadata row when a company
+     * is removed. See table-level docstring re: R2 object cleanup
+     * being an action-layer responsibility, not a DB cascade.
+     */
+    companyId: text("company_id")
+      .notNull()
+      .references(() => companies.id, {
+        onDelete: "cascade",
+        onUpdate: "no action",
+      }),
+
+    /** See `DocumentType`. Validated app-side with Zod. */
+    documentType: text("document_type").notNull().$type<DocumentType>(),
+
+    /**
+     * R2 object key. Format:
+     *   `companies/{companyId}/{documentId}/{sanitizedFilename}`
+     *
+     * Chosen for:
+     *   - Per-top-level-prefix lifecycle rules in R2 (companies/* can
+     *     get a retention policy distinct from any other top-level
+     *     prefix we add later).
+     *   - Per-company scoping for offboarding bulk-delete.
+     *   - `{documentId}` is the row's UUID, guaranteeing the key is
+     *     unique even if two uploads share a filename.
+     *
+     * Generated by `lib/r2/keys.ts::buildDocumentKey` (Chunk 2).
+     * NOT NULL because a row should always carry a key - the key is
+     * minted at insert time, even for `pending` rows that don't yet
+     * have bytes behind it (the key reserves the target slot in R2).
+     */
+    fileKey: text("file_key").notNull(),
+
+    /**
+     * Original filename as supplied by the client at upload time.
+     * Kept verbatim (capped to 255 chars by Zod) for display and for
+     * the `Content-Disposition` header on download. The sanitised
+     * form lives inside `fileKey`; this column is the human-readable
+     * one we show in the UI.
+     */
+    fileName: text("file_name").notNull(),
+
+    /**
+     * MIME type, as supplied by the client and validated against an
+     * allow-list (`application/pdf`, `image/png`, `image/jpeg`,
+     * `image/webp`) in `lib/documents/schemas.ts`. Stored verbatim so
+     * presigned GET URLs can serve the right `Content-Type`.
+     */
+    mimeType: text("mime_type").notNull(),
+
+    /**
+     * File size in bytes. Validated <= 10 MB at the action layer.
+     * INTEGER not REAL - exact bytes, not approximate.
+     */
+    sizeBytes: integer("size_bytes").notNull(),
+
+    /**
+     * See `DocumentStatus`. Default `pending` - new rows start in the
+     * pre-confirm state. The `confirmDocumentUpload` action moves them
+     * to `pending_review` once the R2 PUT completes.
+     */
+    status: text("status")
+      .notNull()
+      .$type<DocumentStatus>()
+      .default("pending"),
+
+    /**
+     * Reviewer's notes when rejecting (or, optionally, when verifying).
+     * NULL while no review has happened. Plain text, capped at ~2000
+     * chars by Zod at the action layer.
+     */
+    reviewNotes: text("review_notes"),
+
+    /**
+     * The admin/staff user who verified or rejected the document.
+     * `ON DELETE SET NULL` - if the reviewer is later removed, the
+     * row keeps `reviewedAt` but loses the actor identity, which is
+     * acceptable for compliance (the audit log preserves the full
+     * trail; this column is a convenience for the detail page).
+     */
+    reviewedBy: text("reviewed_by").references(() => users.id, {
+      onDelete: "set null",
+      onUpdate: "no action",
+    }),
+
+    /** ISO-8601 UTC. Stamped when status transitions to verified/rejected. */
+    reviewedAt: text("reviewed_at"),
+
+    /**
+     * ISO-8601 date (YYYY-MM-DD) when the document was issued by its
+     * issuing authority (e.g. the GST registration date). NULL when
+     * unknown or not applicable.
+     */
+    issuedOn: text("issued_on"),
+
+    /**
+     * ISO-8601 date when the document expires. NULL means "never
+     * expires" - applies to documents like PAN cards that don't have
+     * a renewal cycle. Indexed for the expiry-sweep cron (Day 10+).
+     */
+    expiresAt: text("expires_at"),
+
+    /**
+     * The user who initiated the upload. RESTRICT semantics - see
+     * table-level docstring. Mandatory column.
+     */
+    uploadedBy: text("uploaded_by")
+      .notNull()
+      .references(() => users.id, {
+        onDelete: "restrict",
+        onUpdate: "no action",
+      }),
+
+    /**
+     * ISO-8601 UTC. Stamped by SQLite on insert (i.e. at upload-
+     * initiation time). For audit purposes this is "when the row was
+     * created"; the moment bytes actually landed in R2 is implicit in
+     * the status transition from `pending` to `pending_review`.
+     */
+    uploadedAt: text("uploaded_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+
+    /** ISO-8601 UTC. Set by SQLite default on insert. */
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+
+    /** ISO-8601 UTC. Updated app-side via Drizzle $onUpdate hook. */
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(datetime('now'))`)
+      .$onUpdate(() => new Date().toISOString()),
+  },
+  (table) => [
+    // "Show me all documents for this company" - the company detail
+    // page's Documents tab (Day 10) hits this on every render.
+    index("documents_company_id_idx").on(table.companyId),
+
+    // Filter the global documents list by review state, and used by
+    // the cron to find `pending` rows older than the sweep horizon.
+    index("documents_status_idx").on(table.status),
+
+    // The expiry-sweep cron query: "find all documents expiring in N
+    // days that we haven't yet reminded about." Date comparisons on
+    // ISO-8601 strings are lexicographic-equals-chronological, so a
+    // plain B-tree index works without any custom collation.
+    index("documents_expires_at_idx").on(table.expiresAt),
+
+    // "Does this company have a verified GST certificate?" - the
+    // compliance-status calculation walks (company, type) combinations.
+    // Composite index puts company first because that's how reads
+    // narrow before sub-filtering by type.
+    index("documents_company_type_idx").on(
+      table.companyId,
+      table.documentType,
+    ),
+  ],
+);
+
+/** Inferred insert type - use for Zod parsing / insert validation. */
+export type NewDocument = typeof documents.$inferInsert;
+
+/** Inferred select type - what a row looks like when read from the DB. */
+export type Document = typeof documents.$inferSelect;

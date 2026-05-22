@@ -43,6 +43,13 @@
       "when": 1779477077989,
       "tag": "0005_zippy_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1779487161762,
+      "tag": "0006_elite_madame_web",
+      "breakpoints": true
     }
   ]
 }
