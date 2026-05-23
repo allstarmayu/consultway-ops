@@ -169,8 +169,73 @@ function parseEnv(): z.infer<typeof envSchema> {
   return result.data;
 }
 
+/**
+ * Loud warnings when secret-ish vars still hold their dev-only placeholder
+ * defaults at module load. The defaults are convenient for first-clone
+ * onboarding (the app boots without any setup) but are catastrophic if
+ * they slip into production unchanged. This catches that class of mistake
+ * at the earliest possible point — server boot — instead of letting it
+ * surface as a silent auth failure or a cryptic R2 SignatureDoesNotMatch
+ * later.
+ *
+ * Day 11 follow-up to Day 9's "lost an hour to a silent pepper mismatch"
+ * gotcha. Each warning is independent: setting four real values and
+ * leaving one placeholder still warns about the remaining one.
+ *
+ * Suppressed in `NODE_ENV=test` so the test runner's stderr stays clean
+ * (the test setup never reads real secrets anyway).
+ *
+ * Uses `console.warn` directly — `lib/logger.ts` depends on `env`, so
+ * pulling the logger in here would create a circular import. Same
+ * exception pattern as the validation-failure `console.error` above.
+ */
+function warnOnPlaceholderSecrets(parsed: z.infer<typeof envSchema>): void {
+  if (parsed.NODE_ENV === "test") return;
+
+  // Keep in sync with the `default(...)` values in `envSchema` above.
+  // Each entry: [env key, the placeholder string, human-friendly hint].
+  const placeholders: Array<readonly [keyof typeof parsed, string, string]> = [
+    [
+      "JWT_SECRET",
+      "dev-only-jwt-secret-please-replace-in-production-environments",
+      "JWT signing key — sessions will not be portable across deploys",
+    ],
+    [
+      "PASSWORD_PEPPER",
+      "dev-only-pepper-replace-in-prod",
+      "password hash pepper — changing this invalidates every existing hash",
+    ],
+    [
+      "R2_ACCOUNT_ID",
+      "dev-placeholder-account-id",
+      "R2 account id — every signed R2 request will fail at sign time",
+    ],
+    [
+      "R2_ACCESS_KEY_ID",
+      "dev-placeholder-access-key-id",
+      "R2 access key id — every signed R2 request will fail at sign time",
+    ],
+    [
+      "R2_SECRET_ACCESS_KEY",
+      "dev-placeholder-secret-access-key",
+      "R2 secret key — every signed R2 request will fail at sign time",
+    ],
+  ];
+
+  for (const [key, placeholder, hint] of placeholders) {
+    if (parsed[key] === placeholder) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `⚠ ${key} is using the dev-only placeholder default. ${hint}.`,
+      );
+    }
+  }
+}
+
 /** Validated environment. Prefer this over `process.env` everywhere. */
 export const env = parseEnv();
+
+warnOnPlaceholderSecrets(env);
 
 /** Convenience boolean flags derived from NODE_ENV. */
 export const isDev = env.NODE_ENV === "development";

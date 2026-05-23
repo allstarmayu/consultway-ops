@@ -7,6 +7,15 @@ Each day has: a clear **goal**, a set of **deliverables**, an **acceptance
 check**, and a **commit target**. Don't move to the next day until the acceptance
 check passes — compounding shortcuts kill projects.
 
+> **⚠ Cadence drift — read this first.** The day numbers below are the
+> *original* 21-day plan. Real session cadence has slid (Day 9's upload
+> foundation slipped into a dedicated session; Day 10's "polish + demo"
+> work is being delivered across Day 10 + Day 11; etc). Treat the
+> mappings here as the *intended scope* per phase, not the literal
+> session calendar. The authoritative record of what shipped on which
+> session is `docs/reports/day-N-report.md`, written at the end of
+> each session. When in doubt, the most recent report wins.
+
 ---
 
 ## Legend

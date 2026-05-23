@@ -76,6 +76,7 @@ import { newId } from "@/lib/db/ids";
 import { readSession } from "@/lib/auth/session";
 import { logger } from "@/lib/logger";
 import { recordAuditEvent, type AuditAction } from "@/lib/audit/log";
+import type { ActionResult } from "@/lib/types/action-result";
 import {
   createTenderSchema,
   updateTenderSchema,
@@ -116,17 +117,6 @@ const log = logger.child({ module: "tenders-actions" });
  * grows a shared-constants module, this should move there.
  */
 const CONSULTWAY_PUBLISHER_NAME = "Consultway Infotech";
-
-// -- Result types -----------------------------------------------------------
-
-/**
- * Generic action result. Reused across actions so the calling UI can
- * branch on `result.ok` consistently. The `field` hint lets the form
- * highlight a specific input on validation conflicts.
- */
-export type ActionResult<T = unknown> =
-  | ({ ok: true } & T)
-  | { ok: false; error: string; field?: string };
 
 // -- Authorization helpers --------------------------------------------------
 

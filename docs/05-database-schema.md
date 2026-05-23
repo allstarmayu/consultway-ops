@@ -124,7 +124,7 @@ Many-to-many: companies × sectors.
 | `file_name` | TEXT | NOT NULL | Original filename |
 | `mime_type` | TEXT | NOT NULL |  |
 | `size_bytes` | INTEGER | NOT NULL |  |
-| `status` | TEXT | NOT NULL DEFAULT 'pending_review' CHECK (status IN ('pending_review','verified','rejected','expired')) |  |
+| `status` | TEXT | NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','pending_review','verified','rejected','expired')) | See note below |
 | `review_notes` | TEXT | NULLABLE |  |
 | `reviewed_by` | TEXT | NULLABLE, FK → users.id |  |
 | `reviewed_at` | TEXT | NULLABLE |  |
@@ -140,6 +140,23 @@ Indexes:
 - `idx_documents_status` on `status`
 - `idx_documents_expires_at` on `expires_at` (for cron query)
 - `idx_documents_company_type` on `(company_id, document_type)`
+
+**Status values:**
+
+- `pending` — pre-confirm. The two-step direct-to-R2 upload inserts a
+  row in this state first, returns a presigned PUT URL, and waits for
+  the client to confirm the upload succeeded. Rows stuck in `pending`
+  past the 1-hour grace window are swept by the `pending-cleanup`
+  cron (no R2 bytes ever landed for these rows by definition). See
+  the docstring at `lib/db/schema.ts::documents` and Day 9's upload
+  flow for the full pipeline.
+- `pending_review` — bytes are in R2 and the document is awaiting
+  staff/admin review.
+- `verified` — admin/staff approved the document.
+- `rejected` — admin/staff rejected with notes; the company user can
+  re-upload (a new row, not a re-use of this one).
+- `expired` — past `expires_at`. Set automatically by the daily
+  expiry-sweep cron.
 
 ### `reminders_sent`
 

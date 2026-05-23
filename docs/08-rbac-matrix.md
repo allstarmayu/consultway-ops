@@ -75,7 +75,7 @@ documented answer. When in doubt: **deny**.
 | Update document metadata | ✅ | ✅ | 🟡 | Company user: only if status is `pending_review` or `rejected` |
 | Verify document | ✅ | ✅ | ❌ | |
 | Reject document (with reason) | ✅ | ✅ | ❌ | |
-| Delete document | ✅ | ❌ | 🟡 | Company user: only if status is `pending_review` or `rejected` |
+| Delete document | ✅ | ❌ | 🟡 | Company user: only if status is `pending` (pre-confirm orphan) or `rejected`. Once a doc reaches `pending_review`, only admin can delete. |
 
 ### Tenders
 

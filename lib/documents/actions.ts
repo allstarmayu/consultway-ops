@@ -47,6 +47,7 @@ import { logger } from "@/lib/logger";
 import { recordAuditEvent } from "@/lib/audit/log";
 import { getPresignedPutUrl } from "@/lib/r2/client";
 import { buildDocumentKey } from "@/lib/r2/keys";
+import type { ActionResult } from "@/lib/types/action-result";
 import {
   initiateDocumentUploadSchema,
   confirmDocumentUploadSchema,
@@ -58,19 +59,6 @@ import {
 import { deleteR2Object } from "@/lib/r2/client";
 
 const log = logger.child({ module: "documents-actions" });
-
-// ── Result types ────────────────────────────────────────────────────────────
-
-/**
- * Generic action result. Reused across actions so the calling UI can
- * branch on `result.ok` consistently. Same shape as companies/tenders -
- * declared locally rather than centralised because that lift requires
- * touching all three domain modules and isn't Day 9's job (see day-9
- * follow-up notes).
- */
-export type ActionResult<T = unknown> =
-  | ({ ok: true } & T)
-  | { ok: false; error: string; field?: string };
 
 // ── Authorization helpers ───────────────────────────────────────────────────
 

@@ -41,6 +41,7 @@ import { newId } from "@/lib/db/ids";
 import { readSession } from "@/lib/auth/session";
 import { logger } from "@/lib/logger";
 import { recordAuditEvent } from "@/lib/audit/log";
+import type { ActionResult } from "@/lib/types/action-result";
 import {
   createCompanySchema,
   updateCompanySchema,
@@ -52,18 +53,6 @@ import {
 } from "./schemas";
 
 const log = logger.child({ module: "companies-actions" });
-
-// ── Result types ────────────────────────────────────────────────────────────
-
-/**
- * Generic action result. Reused across actions so the calling UI can
- * branch on `result.ok` consistently. The `field` hint lets the form
- * highlight a specific input (e.g. focus the GST field on a unique
- * conflict instead of showing a generic banner).
- */
-export type ActionResult<T = unknown> =
-  | ({ ok: true } & T)
-  | { ok: false; error: string; field?: string };
 
 // ── Authorization helpers ───────────────────────────────────────────────────
 

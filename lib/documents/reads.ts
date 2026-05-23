@@ -42,6 +42,7 @@ import { readSession } from "@/lib/auth/session";
 import { logger } from "@/lib/logger";
 import { getPresignedGetUrl } from "@/lib/r2/client";
 import { sessionCanAccessDocumentForCompany } from "./auth";
+import type { ActionResult } from "@/lib/types/action-result";
 import {
   listDocumentsForCompanyQuerySchema,
   documentByIdInputSchema,
@@ -49,19 +50,6 @@ import {
 } from "./schemas";
 
 const log = logger.child({ module: "documents-reads" });
-
-// ── Result types ────────────────────────────────────────────────────────────
-
-/**
- * Generic action result. Mirrored from `./actions.ts` because Next.js
- * server-action files can only export async functions - re-exporting a
- * `type` from a sibling file is fine, but keeping it inline here matches
- * how `./actions.ts` declares it locally (centralisation to
- * `lib/types/action-result.ts` is open tech debt, not Chunk 1's job).
- */
-export type ActionResult<T = unknown> =
-  | ({ ok: true } & T)
-  | { ok: false; error: string; field?: string };
 
 // ── listDocumentsForCompany ─────────────────────────────────────────────────
 
