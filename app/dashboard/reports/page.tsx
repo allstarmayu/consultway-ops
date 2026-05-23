@@ -7,11 +7,12 @@
  * per-month transactions card, so the no-arg landing feels like a
  * familiar entry point.
  *
- * Layout: the period picker sits at the top of the content area
- * (URL-shaped, no client state); below it sit three summary cards —
- * Projects created, Tenders published, Transactions (admin-only) — each
- * a Server Component that takes the resolved `(start, end)` pair and
- * runs its own period-bounded aggregate query in parallel.
+ * Layout: a company picker + period picker sit at the top of the content
+ * area (both URL-shaped, no client state); below them sit three summary
+ * cards — Projects created, Tenders published, Transactions (admin-only)
+ * — each a Server Component that takes the resolved
+ * `(start, end, companyId)` triple and runs its own period-bounded
+ * aggregate query in parallel.
  *
  * Access control: admin + staff only. Company-role redirects to
  * `/dashboard` (the report aggregates aren't designed for the company
@@ -19,8 +20,10 @@
  * admin-only transactions card additionally gates itself at the helper
  * level, so a staff viewer doesn't render that card.
  *
- * PDF export of the report is Day 20 (Phase 3). This session lands the
- * HTML surface so the data layer is stable before printing.
+ * PDF download (admin/staff) lives in the PageHeader action slot —
+ * forwards the resolved `(start, end, companyId)` to
+ * `/dashboard/reports/pdf` so the file matches what's on screen even
+ * when defaults were filled in.
  *
  * @module app/dashboard/reports/page
  */
@@ -28,12 +31,16 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { asc } from "drizzle-orm";
 import { Download } from "lucide-react";
 
 import { readSession } from "@/lib/auth/session";
+import { db } from "@/lib/db";
+import { companies } from "@/lib/db/schema";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { CompanyPicker } from "./_components/company-picker";
 import { PeriodPicker } from "./_components/period-picker";
 import { ProjectsSummaryCard } from "./_components/projects-summary-card";
 import { TendersSummaryCard } from "./_components/tenders-summary-card";
@@ -55,7 +62,13 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
     redirect("/dashboard");
   }
 
-  const params = await searchParams;
+  const [params, companyOptions] = await Promise.all([
+    searchParams,
+    db
+      .select({ id: companies.id, name: companies.name })
+      .from(companies)
+      .orderBy(asc(companies.name)),
+  ]);
   const { start, end, companyId } = resolvePeriod(params);
   const isAdmin = session.role === "admin";
 
@@ -80,8 +93,13 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
         }
       />
 
-      <div className="mb-6 sm:mb-8">
-        <PeriodPicker from={start} to={end} />
+      <div className="mb-6 flex flex-col gap-3 sm:mb-8 lg:flex-row lg:items-start">
+        <div className="lg:shrink-0">
+          <CompanyPicker options={companyOptions} value={companyId} />
+        </div>
+        <div className="flex-1">
+          <PeriodPicker from={start} to={end} />
+        </div>
       </div>
 
       <section
