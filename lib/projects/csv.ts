@@ -8,33 +8,23 @@
  *
  * Shape parallel to `lib/transactions/csv.ts` but for projects' simpler
  * money regime — `budgetInr` is whole rupees (no paise), so the Budget
- * column is a plain integer, not the decimal-rupees form. Resist the
- * temptation to lift a shared `lib/csv.ts` helper at the two-occurrence
- * mark: the projects export has different columns, different formatting,
- * and a different cascade-style. The third occurrence is when the
- * abstraction earns its keep.
- *
- * UTF-8 BOM prefix + CRLF line endings, same conventions as the
- * transactions exporter.
+ * column is a plain integer, not the decimal-rupees form. The shared
+ * RFC-4180 escape, BOM, CRLF, and date-stamp helper all come from
+ * `@/lib/csv`; the only projects-specific formatter is
+ * `formatTenderRef` (UUID truncation).
  *
  * @module lib/projects/csv
  */
 import type { Project } from "@/lib/db/schema";
+import { serialiseCsvRows } from "@/lib/csv";
+
+// Re-export the shared filename-stamp helper under the historical
+// `projectsCsvFilenameDateStamp` alias so the existing export route +
+// tests keep working without an import-path edit.
+export { csvFilenameDateStamp as projectsCsvFilenameDateStamp } from "@/lib/csv";
 
 export interface ProjectsCsvLookups {
   companyNames: Map<string, string>;
-}
-
-/**
- * Quote a single CSV field per RFC-4180. Wraps in double quotes when
- * the value contains a comma, double quote, CR, or LF, and escapes
- * internal double quotes by doubling them.
- */
-function csvCell(raw: string | null | undefined): string {
-  if (raw === null || raw === undefined || raw === "") return "";
-  const needsQuoting = /[",\r\n]/.test(raw);
-  if (!needsQuoting) return raw;
-  return `"${raw.replace(/"/g, '""')}"`;
 }
 
 /**
@@ -74,12 +64,9 @@ export function projectsToCsv(
   rows: Project[],
   lookups: ProjectsCsvLookups,
 ): string {
-  const lines: string[] = [];
-  lines.push(HEADER.map(csvCell).join(","));
-
-  for (const row of rows) {
+  const dataRows = rows.map((row) => {
     const company = lookups.companyNames.get(row.companyId) ?? "";
-    const cells = [
+    return [
       row.name,
       row.status,
       company,
@@ -91,19 +78,7 @@ export function projectsToCsv(
       formatTenderRef(row.tenderId),
       row.createdAt,
     ];
+  });
 
-    lines.push(cells.map(csvCell).join(","));
-  }
-
-  // UTF-8 BOM so Excel-on-Windows opens the file as UTF-8.
-  return "﻿" + lines.join("\r\n");
-}
-
-/**
- * YYYY-MM-DD date stamp for the export filename's `Content-Disposition`
- * header. Mirrors `lib/transactions/csv.ts::csvFilenameDateStamp` —
- * duplicated rather than shared at the two-occurrence mark.
- */
-export function projectsCsvFilenameDateStamp(now: Date = new Date()): string {
-  return now.toISOString().slice(0, 10);
+  return serialiseCsvRows(HEADER, dataRows);
 }

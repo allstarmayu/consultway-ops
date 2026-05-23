@@ -30,7 +30,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { Download, Plus } from "lucide-react";
 import { readSession } from "@/lib/auth/session";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -77,6 +77,8 @@ export default async function TendersPage({
   // matching the visual expectation.
   const suspenseKey = JSON.stringify(params);
 
+  const exportHref = canCreate ? buildExportHref(params) : null;
+
   return (
     <>
       <PageHeader
@@ -84,12 +86,22 @@ export default async function TendersPage({
         subtitle="Manage tender opportunities and applications"
         actions={
           canCreate ? (
-            <Button asChild>
-              <Link href="/dashboard/tenders/new">
-                <Plus className="h-4 w-4" aria-hidden />
-                Add Tender
-              </Link>
-            </Button>
+            <div className="flex items-center gap-2">
+              {exportHref && (
+                <Button asChild variant="outline">
+                  <Link href={exportHref}>
+                    <Download className="h-4 w-4" aria-hidden />
+                    Export CSV
+                  </Link>
+                </Button>
+              )}
+              <Button asChild>
+                <Link href="/dashboard/tenders/new">
+                  <Plus className="h-4 w-4" aria-hidden />
+                  Add Tender
+                </Link>
+              </Button>
+            </div>
           ) : undefined
         }
       />
@@ -113,4 +125,36 @@ export default async function TendersPage({
       </Card>
     </>
   );
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Build the CSV export URL by copying through the current filter params.
+ * Only the filter-relevant keys are forwarded — page / perPage / sort
+ * aren't meaningful for a full export, so they're dropped. Mirrors the
+ * transactions / projects list helpers (third occurrence — same precedent
+ * as the `lib/csv.ts` lift: two CSVs is fine, three earns abstraction).
+ */
+function buildExportHref(
+  params: Record<string, string | string[] | undefined>,
+): string {
+  const search = new URLSearchParams();
+  const forwarded = [
+    "status",
+    "publisherCompanyId",
+    "sector",
+    "geography",
+    "search",
+  ] as const;
+  for (const key of forwarded) {
+    const value = params[key];
+    if (typeof value === "string" && value !== "") {
+      search.set(key, value);
+    }
+  }
+  const qs = search.toString();
+  return qs
+    ? `/dashboard/tenders/export?${qs}`
+    : "/dashboard/tenders/export";
 }

@@ -16,10 +16,7 @@
  *     SUM / AVG formulas.
  *   - The Currency column carries the currency code explicitly.
  *
- * UTF-8 BOM prefix is included so Excel on Windows opens the file in
- * UTF-8 mode rather than guessing legacy code pages. Other tools
- * (`csv` Python module, Google Sheets, `cat`) strip or render the BOM
- * harmlessly.
+ * UTF-8 BOM + CRLF line endings are inherited from `@/lib/csv`.
  *
  * No streaming — at Phase-1 scale (single-digit thousands of rows)
  * the export fits in memory comfortably. When the table grows past
@@ -28,6 +25,12 @@
  * @module lib/transactions/csv
  */
 import type { Transaction } from "@/lib/db/schema";
+import { serialiseCsvRows } from "@/lib/csv";
+
+// Re-export the shared filename-stamp helper so existing call sites
+// (notably `app/dashboard/transactions/export/route.ts`) keep working
+// without an import-path edit.
+export { csvFilenameDateStamp } from "@/lib/csv";
 
 /**
  * Lookup maps the caller provides — same shape the list page builds
@@ -39,21 +42,10 @@ export interface CsvLookups {
 }
 
 /**
- * Quote a single CSV field per RFC-4180. Wraps in double quotes when
- * the value contains a comma, double quote, CR, or LF, and escapes
- * internal double quotes by doubling them.
- */
-function csvCell(raw: string | null | undefined): string {
-  if (raw === null || raw === undefined || raw === "") return "";
-  const needsQuoting = /[",\r\n]/.test(raw);
-  if (!needsQuoting) return raw;
-  return `"${raw.replace(/"/g, '""')}"`;
-}
-
-/**
  * Format a paise integer as `"NNNN.NN"` for the CSV's Amount column.
  * Plain decimal, no thousands separators (spreadsheet apps re-format
- * based on the user's locale).
+ * based on the user's locale). Transactions-specific — the rupees-only
+ * domains (projects) use a different formatter.
  */
 function formatPaiseForCsv(paise: number): string {
   const sign = paise < 0 ? "-" : "";
@@ -85,16 +77,12 @@ export function transactionsToCsv(
   rows: Transaction[],
   lookups: CsvLookups,
 ): string {
-  const lines: string[] = [];
-  lines.push(HEADER.map(csvCell).join(","));
-
-  for (const row of rows) {
+  const dataRows = rows.map((row) => {
     const company = lookups.companyNames.get(row.companyId) ?? "";
     const project = row.projectId
       ? (lookups.projectNames.get(row.projectId) ?? "")
       : "";
-
-    const cells = [
+    return [
       row.occurredOn,
       row.type,
       formatPaiseForCsv(row.amountPaise),
@@ -104,18 +92,7 @@ export function transactionsToCsv(
       row.referenceNumber ?? "",
       row.notes ?? "",
     ];
+  });
 
-    lines.push(cells.map(csvCell).join(","));
-  }
-
-  // UTF-8 BOM so Excel-on-Windows opens the file as UTF-8.
-  return "﻿" + lines.join("\r\n");
-}
-
-/**
- * Build the YYYY-MM-DD date stamp for use in the CSV filename's
- * `Content-Disposition` header.
- */
-export function csvFilenameDateStamp(now: Date = new Date()): string {
-  return now.toISOString().slice(0, 10);
+  return serialiseCsvRows(HEADER, dataRows);
 }
