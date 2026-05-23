@@ -97,6 +97,7 @@ import {
   createTenderSchema,
   updateTenderSchema,
   listTendersQuerySchema,
+  listTendersForExportQuerySchema,
   tenderIdSchema,
   applyToTenderSchema,
   updateApplicationStatusSchema,
@@ -1094,8 +1095,45 @@ export async function listTenders(
       field: first?.path.join(".") || undefined,
     };
   }
-  const query: ListTendersQuery = parsed.data;
+  return runListTendersForCaller(parsed.data, scope);
+}
 
+/**
+ * Export-only sibling of `listTenders`. Same shape, same visibility
+ * scope, but parses with `listTendersForExportQuerySchema` so the route
+ * handler's `perPage=1000` request gets through. The table-facing
+ * `listTenders` keeps the 100 cap intact for the list page.
+ */
+export async function listTendersForExport(
+  rawQuery: unknown,
+): Promise<ActionResult<ListTendersPayload>> {
+  const scope = await resolveReadScope();
+  if (!scope.ok) return scope;
+
+  const parsed = listTendersForExportQuerySchema.safeParse(rawQuery ?? {});
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid query",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  return runListTendersForCaller(parsed.data, scope);
+}
+
+/**
+ * Inner helper — actual listing logic, applied AFTER auth + scope + parse.
+ * Both `listTenders` (strict 100 cap) and `listTendersForExport`
+ * (1000 cap) call this once their respective Zod parse succeeds. The
+ * `query` type is the strict variant; the export schema extends it with
+ * a wider `perPage` ceiling but produces a structurally identical
+ * typed shape.
+ */
+async function runListTendersForCaller(
+  query: ListTendersQuery,
+  scope: Extract<Awaited<ReturnType<typeof resolveReadScope>>, { ok: true }>,
+): Promise<ActionResult<ListTendersPayload>> {
   // Build WHERE clauses additively.
   const filters: SQL[] = [];
 

@@ -55,6 +55,7 @@ import {
   createTransactionSchema,
   updateTransactionSchema,
   listTransactionsQuerySchema,
+  listTransactionsForExportQuerySchema,
   transactionIdSchema,
   type CreateTransactionInput,
   type UpdateTransactionInput,
@@ -559,8 +560,44 @@ export async function listTransactions(
       field: first?.path.join(".") || undefined,
     };
   }
-  const query: ListTransactionsQuery = parsed.data;
+  return runListTransactionsForCaller(parsed.data);
+}
 
+/**
+ * Export-only sibling of `listTransactions`. Same shape, same auth gate,
+ * but parses with `listTransactionsForExportQuerySchema` so the route
+ * handler's `perPage=1000` request gets through. The table-facing
+ * `listTransactions` keeps the 100 cap intact for the list page.
+ */
+export async function listTransactionsForExport(
+  rawQuery: unknown,
+): Promise<ActionResult<ListTransactionsPayload>> {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth;
+
+  const parsed = listTransactionsForExportQuerySchema.safeParse(rawQuery ?? {});
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid query",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  return runListTransactionsForCaller(parsed.data);
+}
+
+/**
+ * Inner helper — the actual listing logic, applied AFTER auth + parse.
+ * Both `listTransactions` (strict 100 cap) and `listTransactionsForExport`
+ * (1000 cap) call this once their respective Zod parse succeeds. The
+ * `query` type is the strict variant; the export schema extends it with
+ * a wider `perPage` ceiling but produces a structurally identical
+ * typed shape.
+ */
+async function runListTransactionsForCaller(
+  query: ListTransactionsQuery,
+): Promise<ActionResult<ListTransactionsPayload>> {
   const filters: SQL[] = [];
 
   if (query.type) filters.push(eq(transactions.type, query.type));

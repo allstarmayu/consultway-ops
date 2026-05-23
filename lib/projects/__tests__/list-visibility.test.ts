@@ -59,7 +59,7 @@ vi.mock("@/lib/auth/session", () => ({
 }));
 
 import { readSession } from "@/lib/auth/session";
-import { listProjects } from "../actions";
+import { listProjects, listProjectsForExport } from "../actions";
 
 const mockedReadSession = readSession as MockedFunction<typeof readSession>;
 
@@ -484,5 +484,26 @@ describe("listProjects pagination", () => {
     if (!result.ok) return;
     expect(result.total).toBe(3);
     expect(result.rows).toHaveLength(2);
+  });
+});
+
+// ── Day 20 — export-only perPage ceiling ──────────────────────────────────
+
+describe("listProjectsForExport — perPage cap", () => {
+  it("accepts perPage=1000 (the export route's cap)", async () => {
+    loginAs("admin", fixture);
+    const result = await listProjectsForExport({ perPage: 1000 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.perPage).toBe(1000);
+    expect(result.rows.length).toBe(6);
+  });
+
+  it("the table-facing listProjects still refuses perPage=1000", async () => {
+    loginAs("admin", fixture);
+    const result = await listProjects({ perPage: 1000 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("perPage");
   });
 });

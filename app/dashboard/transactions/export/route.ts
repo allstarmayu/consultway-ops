@@ -27,7 +27,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { companies, projects } from "@/lib/db/schema";
 import { readSession } from "@/lib/auth/session";
-import { listTransactions } from "@/lib/transactions/actions";
+import { listTransactionsForExport } from "@/lib/transactions/actions";
 import {
   transactionsToCsv,
   csvFilenameDateStamp,
@@ -66,7 +66,7 @@ export async function GET(request: NextRequest) {
     if (value && value !== "") query[key] = value;
   }
 
-  const result = await listTransactions(query);
+  const result = await listTransactionsForExport(query);
   if (!result.ok) {
     return new NextResponse(result.error, { status: 400 });
   }

@@ -361,6 +361,26 @@ export const listTendersQuerySchema = z.object({
 
 export type ListTendersQuery = z.infer<typeof listTendersQuerySchema>;
 
+// ── List query (export variant) ───────────────────────────────────────────
+
+/**
+ * Export-only sibling of `listTendersQuerySchema`. The CSV exporter
+ * passes `perPage=1000` (the hard cap defined on the route handler), but
+ * the standard list schema caps `perPage` at 100 to bound query cost on
+ * the dashboard table. Widening the cap here keeps the export route
+ * working while preserving the list page's 100 ceiling.
+ *
+ * Same filters, same sort, same defaults — only the `perPage` ceiling
+ * changes.
+ */
+export const listTendersForExportQuerySchema = listTendersQuerySchema.extend({
+  perPage: z.coerce.number().int().min(1).max(1000).default(20),
+});
+
+export type ListTendersForExportQuery = z.infer<
+  typeof listTendersForExportQuerySchema
+>;
+
 // ── ID param ──────────────────────────────────────────────────────────────
 
 /**

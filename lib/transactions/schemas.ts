@@ -228,6 +228,31 @@ export const listTransactionsQuerySchema = z.object({
 
 export type ListTransactionsQuery = z.infer<typeof listTransactionsQuerySchema>;
 
+// ── List query (export variant) ───────────────────────────────────────────
+
+/**
+ * Export-only sibling of `listTransactionsQuerySchema`. The CSV exporter
+ * passes `perPage=1000` (the hard cap defined on the route handler), but
+ * the standard list schema caps `perPage` at 100 to bound query cost on
+ * the dashboard table — a 1000-row paged table render would tank perf.
+ *
+ * Rather than widen the cap on the table-facing schema (and risk a URL
+ * like `?perPage=1000` tanking the list page), we extend here with the
+ * export-only cap. The export route uses this schema; the list route
+ * keeps the 100 cap intact.
+ *
+ * Same filters, same sort, same defaults — only the `perPage` ceiling
+ * changes.
+ */
+export const listTransactionsForExportQuerySchema =
+  listTransactionsQuerySchema.extend({
+    perPage: z.coerce.number().int().min(1).max(1000).default(20),
+  });
+
+export type ListTransactionsForExportQuery = z.infer<
+  typeof listTransactionsForExportQuerySchema
+>;
+
 // ── ID param ──────────────────────────────────────────────────────────────
 
 /**

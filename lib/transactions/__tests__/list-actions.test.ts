@@ -46,7 +46,7 @@ vi.mock("@/lib/auth/session", () => ({
 }));
 
 import { readSession } from "@/lib/auth/session";
-import { listTransactions } from "../actions";
+import { listTransactions, listTransactionsForExport } from "../actions";
 
 const mockedReadSession = readSession as MockedFunction<typeof readSession>;
 
@@ -387,5 +387,28 @@ describe("listTransactions — sorting + pagination", () => {
     expect(result.total).toBe(6);
     expect(result.page).toBe(1);
     expect(result.perPage).toBe(2);
+  });
+});
+
+// ── Day 20 — export-only perPage ceiling ──────────────────────────────────
+
+describe("listTransactionsForExport — perPage cap", () => {
+  it("accepts perPage=1000 (the export route's cap)", async () => {
+    loginAs("admin", fixture);
+    const result = await listTransactionsForExport({ perPage: 1000 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.perPage).toBe(1000);
+    // Only 6 rows seeded — but the page is sized to 1000, returning all 6.
+    expect(result.rows.length).toBe(6);
+  });
+
+  it("the table-facing listTransactions still refuses perPage=1000", async () => {
+    loginAs("admin", fixture);
+    const result = await listTransactions({ perPage: 1000 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // The Zod cap-violation surfaces with `perPage` as the field hint.
+    expect(result.field).toBe("perPage");
   });
 });

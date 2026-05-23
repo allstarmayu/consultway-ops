@@ -28,7 +28,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { companies } from "@/lib/db/schema";
 import { readSession } from "@/lib/auth/session";
-import { listProjects } from "@/lib/projects/actions";
+import { listProjectsForExport } from "@/lib/projects/actions";
 import {
   projectsToCsv,
   projectsCsvFilenameDateStamp,
@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
     if (value && value !== "") query[key] = value;
   }
 
-  const result = await listProjects(query);
+  const result = await listProjectsForExport(query);
   if (!result.ok) {
     return new NextResponse(result.error, { status: 400 });
   }

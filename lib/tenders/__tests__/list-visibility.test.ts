@@ -67,7 +67,7 @@ vi.mock("@/lib/auth/session", () => ({
 }));
 
 import { readSession } from "@/lib/auth/session";
-import { listTenders } from "../actions";
+import { listTenders, listTendersForExport } from "../actions";
 
 const mockedReadSession = readSession as MockedFunction<typeof readSession>;
 
@@ -546,5 +546,26 @@ describe("listTenders visibility composes with layered filters", () => {
     if (!result.ok) return;
     expect(result.total).toBe(6);
     expect(result.rows).toHaveLength(3);
+  });
+});
+
+// ── Day 20 — export-only perPage ceiling ──────────────────────────────────
+
+describe("listTendersForExport — perPage cap", () => {
+  it("accepts perPage=1000 (the export route's cap)", async () => {
+    loginAs("admin", fixture);
+    const result = await listTendersForExport({ perPage: 1000 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.perPage).toBe(1000);
+    expect(result.rows.length).toBe(8);
+  });
+
+  it("the table-facing listTenders still refuses perPage=1000", async () => {
+    loginAs("admin", fixture);
+    const result = await listTenders({ perPage: 1000 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("perPage");
   });
 });

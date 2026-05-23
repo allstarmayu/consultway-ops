@@ -30,7 +30,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { companies } from "@/lib/db/schema";
 import { readSession } from "@/lib/auth/session";
-import { listTenders } from "@/lib/tenders/actions";
+import { listTendersForExport } from "@/lib/tenders/actions";
 import { tendersToCsv, csvFilenameDateStamp } from "@/lib/tenders/csv";
 
 const FORWARDED_QUERY_KEYS = [
@@ -66,7 +66,7 @@ export async function GET(request: NextRequest) {
     if (value && value !== "") query[key] = value;
   }
 
-  const result = await listTenders(query);
+  const result = await listTendersForExport(query);
   if (!result.ok) {
     return new NextResponse(result.error, { status: 400 });
   }
