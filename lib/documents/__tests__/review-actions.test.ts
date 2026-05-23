@@ -117,6 +117,14 @@ interface Fixture {
   docARejectedId: string;
   /** Company B document, status pending_review (cross-company tests). */
   docBPendingReviewId: string;
+  /**
+   * `reviewedAt` value used by both docAVerifiedId and docARejectedId.
+   * Recomputed each seed call so it stays well within the
+   * REVIEW_REVERT_WINDOW_MINUTES window — keeps the
+   * revertDocumentReview happy-path tests passing against the
+   * server's time-window guard.
+   */
+  recentReviewedAt: string;
 }
 
 let fixture: Fixture;
@@ -127,6 +135,10 @@ async function seedFixture(): Promise<Fixture> {
   const adminUserId = newId();
   const staffUserId = newId();
   const companyAUserId = newId();
+
+  // 1 minute ago: comfortably inside the 15-minute revert window.
+  // Recomputed per seed so the value is fresh on every test.
+  const recentReviewedAt = new Date(Date.now() - 60_000).toISOString();
 
   await db.insert(companies).values([
     {
@@ -207,7 +219,7 @@ async function seedFixture(): Promise<Fixture> {
       sizeBytes: 150_000,
       status: "verified" as DocumentStatus,
       reviewedBy: staffUserId,
-      reviewedAt: "2026-05-21T11:00:00.000Z",
+      reviewedAt: recentReviewedAt,
       uploadedBy: companyAUserId,
     },
     {
@@ -221,7 +233,7 @@ async function seedFixture(): Promise<Fixture> {
       status: "rejected" as DocumentStatus,
       reviewNotes: "Illegible",
       reviewedBy: staffUserId,
-      reviewedAt: "2026-05-22T10:00:00.000Z",
+      reviewedAt: recentReviewedAt,
       uploadedBy: companyAUserId,
     },
     {
@@ -248,6 +260,7 @@ async function seedFixture(): Promise<Fixture> {
     docAVerifiedId,
     docARejectedId,
     docBPendingReviewId,
+    recentReviewedAt,
   };
 }
 
@@ -1060,7 +1073,7 @@ describe("revertDocumentReview", () => {
     const before = revertEvent?.before as Record<string, unknown>;
     expect(before?.status).toBe("rejected");
     expect(before?.reviewedBy).toBe(fixture.staffUserId);
-    expect(before?.reviewedAt).toBe("2026-05-22T10:00:00.000Z");
+    expect(before?.reviewedAt).toBe(fixture.recentReviewedAt);
     expect(before?.reviewNotes).toBe("Illegible");
 
     const metadata = revertEvent?.metadata as Record<string, unknown>;
@@ -1095,5 +1108,35 @@ describe("revertDocumentReview", () => {
     const row = await getDocumentById(fixture.docAPendingReviewId);
     expect(row?.status).toBe("pending_review");
     expect(row?.reviewedBy).toBeNull();
+  });
+
+  it("refuses revert when the review window has expired (>15 minutes ago)", async () => {
+    // Backdate the verified row's reviewedAt to 30 minutes ago - well
+    // outside the 15-minute REVIEW_REVERT_WINDOW_MINUTES window.
+    const wellPastWindow = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    await db
+      .update(documents)
+      .set({ reviewedAt: wellPastWindow })
+      .where(eq(documents.id, fixture.docAVerifiedId));
+
+    mockedReadSession.mockResolvedValue({
+      userId: fixture.adminUserId,
+      role: "admin",
+      companyId: null,
+      email: "admin@test.local",
+    });
+
+    const result = await revertDocumentReview({
+      documentId: fixture.docAVerifiedId,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/window has expired/i);
+
+    // Row unchanged.
+    const row = await getDocumentById(fixture.docAVerifiedId);
+    expect(row?.status).toBe("verified");
+    expect(row?.reviewedAt).toBe(wellPastWindow);
   });
 });

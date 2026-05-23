@@ -57,6 +57,10 @@ import {
   revertDocumentReviewSchema,
   type InitiateDocumentUploadInput,
 } from "./schemas";
+import {
+  REVIEW_REVERT_WINDOW_MINUTES,
+  reviewRevertEligibility,
+} from "./constants";
 import { deleteR2Object } from "@/lib/r2/client";
 
 const log = logger.child({ module: "documents-actions" });
@@ -937,6 +941,20 @@ export async function revertDocumentReview(
     return {
       ok: false,
       error: `Cannot undo - document is ${existing.status}, not verified or rejected`,
+    };
+  }
+
+  // 4b. Time-window guard. Authoritative server-side check that the
+  //     review happened recently enough to be undone. The inline row
+  //     button auto-hides at expiry but a tab-left-open or a direct
+  //     action call could still reach here past the window - this
+  //     refuses those cleanly. See `lib/documents/constants.ts` for
+  //     the window length + rationale.
+  const eligibility = reviewRevertEligibility(existing.reviewedAt);
+  if (!eligibility.withinWindow) {
+    return {
+      ok: false,
+      error: `Undo window has expired (${REVIEW_REVERT_WINDOW_MINUTES} minutes after review)`,
     };
   }
 

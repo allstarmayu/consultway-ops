@@ -38,7 +38,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, XCircle, Trash2 } from "lucide-react";
+import { CheckCircle2, RotateCcw, Trash2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -48,13 +48,24 @@ import {
   deleteDocument,
   revertDocumentReview,
 } from "@/lib/documents/actions";
+import {
+  REVIEW_REVERT_WINDOW_MINUTES,
+  reviewRevertEligibility,
+} from "@/lib/documents/constants";
 import type { Document, UserRole } from "@/lib/db/schema";
 
 // ── Props ──────────────────────────────────────────────────────────────────
 
 export interface DocumentRowActionsProps {
-  /** Row this action cluster belongs to. */
-  document: Pick<Document, "id" | "status" | "fileName" | "documentType">;
+  /**
+   * Row this action cluster belongs to. Includes `reviewedAt` so the
+   * inline Undo affordance can compute whether the review-revert
+   * window is still open.
+   */
+  document: Pick<
+    Document,
+    "id" | "status" | "fileName" | "documentType" | "reviewedAt"
+  >;
 
   /**
    * Session role for visibility gating. The page resolves this once
@@ -83,11 +94,53 @@ export function DocumentRowActions({
     (viewerRole === "company" &&
       (document.status === "pending" || document.status === "rejected"));
 
+  // ── Inline Undo eligibility. Visible to reviewers (admin/staff) on
+  //    verified/rejected rows whose `reviewedAt` is still within the
+  //    15-minute revert window. The window value is the source of
+  //    truth in lib/documents/constants.ts and is also enforced
+  //    server-side in revertDocumentReview.
+  const reviewedRecently =
+    document.status === "verified" || document.status === "rejected";
+  const initialEligibility = React.useMemo(
+    () => reviewRevertEligibility(document.reviewedAt),
+    [document.reviewedAt],
+  );
+
+  // Local state that flips to false when the setTimeout below fires
+  // at window-expiry, so the button disappears without a manual
+  // refresh. Re-syncs whenever reviewedAt changes (e.g. after a
+  // re-review on the same row).
+  const [withinWindow, setWithinWindow] = React.useState(
+    initialEligibility.withinWindow,
+  );
+
+  React.useEffect(() => {
+    setWithinWindow(initialEligibility.withinWindow);
+    if (!initialEligibility.withinWindow) return;
+
+    const t = setTimeout(
+      () => setWithinWindow(false),
+      initialEligibility.msRemaining,
+    );
+    return () => clearTimeout(t);
+  }, [initialEligibility.withinWindow, initialEligibility.msRemaining]);
+
+  const canInlineUndo = isReviewer && reviewedRecently && withinWindow;
+
   // Nothing to show? Render nothing - keeps the row's right-side
   // cluster from leaving an empty gap.
-  if (!canVerifyOrReject && !canDelete) {
+  if (!canVerifyOrReject && !canDelete && !canInlineUndo) {
     return null;
   }
+
+  // Tooltip text for the inline Undo button. Rendered once at mount;
+  // we don't tick the countdown live (would re-render every second
+  // for cosmetics). The static "Nm left" is enough signal.
+  const undoMinutesLeft = Math.max(
+    1,
+    Math.ceil(initialEligibility.msRemaining / 60000),
+  );
+  const undoTooltip = `Undo review — ${undoMinutesLeft}m left (window: ${REVIEW_REVERT_WINDOW_MINUTES}m)`;
 
   /**
    * Fire `revertDocumentReview` and report. Used by the "Undo" toast
@@ -243,6 +296,28 @@ export function DocumentRowActions({
             }
           />
         </>
+      )}
+
+      {/* Inline Undo affordance. Visible to reviewers on verified /
+          rejected rows for `REVIEW_REVERT_WINDOW_MINUTES` after the
+          decision. Disappears automatically when the setTimeout in the
+          useEffect above fires at window expiry. Click flows through
+          the same `handleUndo` as the toast-button undo — server
+          enforces the same window guard, so a stale tab racing past
+          expiry refuses cleanly. */}
+      {canInlineUndo && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={isPending}
+          onClick={handleUndo}
+          aria-label={`Undo review of ${document.fileName}`}
+          title={undoTooltip}
+          className="text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <RotateCcw className="h-4 w-4" aria-hidden />
+        </Button>
       )}
 
       {canDelete && (
