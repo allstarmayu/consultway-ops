@@ -1,16 +1,12 @@
 /**
  * EmptyState — generic empty-state pane used across the dashboard.
  *
- * Same visual language as `<ActivityFeedEmpty>`: an icon disc on top,
- * a title, an optional description, and an optional action button.
- * Lifts the repeating "table empty / list empty / card empty" pattern
- * into one place so future surfaces can reach for a single primitive.
- *
- * **Intentionally not refactoring existing call sites this session.**
- * Companies, tenders, projects, transactions, and the audit feed all
- * have their own bespoke empty states. Sweeping them onto this primitive
- * is its own cleanup pass — touching five table-empty + one feed-empty
- * in one chunk would inflate the diff and bury the rest of the work.
+ * Same visual language as the original `<ActivityFeedEmpty>`: an icon
+ * disc on top, a title, an optional description, and an optional action
+ * button. The single primitive that the table-empty pane on every list
+ * page (companies / tenders / projects / transactions) and the audit
+ * feed reach for — landed in Day 18, swept onto the existing call
+ * sites in Day 19.
  *
  * Server-Component-compatible. No hooks, no state.
  *

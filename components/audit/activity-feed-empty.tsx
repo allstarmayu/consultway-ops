@@ -15,13 +15,19 @@
  * needing a parallel component. Falls back to a generic phrase when
  * not supplied.
  *
+ * Day-19 sweep: chrome (icon disc + spacing + text hierarchy) now lives
+ * inside `<EmptyState>`. This component keeps its own callers + the
+ * default copy + the Clock icon, so existing call sites in the audit
+ * module don't have to change. The dashboard activity feed picks up
+ * the consolidated visual automatically.
+ *
  * Server-Component-compatible. No hooks, no state.
  *
  * @module components/audit/activity-feed-empty
  */
 import { Clock } from "lucide-react";
 
-import { cn } from "@/lib/utils";
+import { EmptyState } from "@/components/ui/empty-state";
 
 export interface ActivityFeedEmptyProps {
   /**
@@ -38,26 +44,11 @@ export function ActivityFeedEmpty({
   className,
 }: ActivityFeedEmptyProps) {
   return (
-    <div
-      className={cn(
-        "flex flex-col items-center justify-center gap-3 py-10 text-center",
-        className,
-      )}
-    >
-      {/* Match the icon-disc geometry of feed rows so empty and populated
-          states feel like the same component family. Muted tone here -
-          there's nothing to draw the eye toward. */}
-      <div
-        className="flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground"
-        aria-hidden
-      >
-        <Clock className="h-5 w-5" />
-      </div>
-
-      <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">No activity yet</p>
-        <p className="max-w-xs text-xs text-muted-foreground">{description}</p>
-      </div>
-    </div>
+    <EmptyState
+      icon={Clock}
+      title="No activity yet"
+      description={description}
+      className={className}
+    />
   );
 }

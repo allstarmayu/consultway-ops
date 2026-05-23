@@ -9,7 +9,7 @@
 
 Tables grouped by domain:
 
-- **Identity:** `users`
+- **Identity:** `users`, `email_verification_tokens`, `password_reset_tokens`
 - **Companies:** `companies`, `company_contacts`, `company_sectors`
 - **Documents:** `documents`, `reminders_sent`
 - **Tenders:** `tenders`, `tender_applications`, `tender_eligibility_rules`
@@ -63,6 +63,80 @@ Indexes:
 - `idx_users_company_id` on `company_id`
 - `idx_users_role` on `role`
 
+### `email_verification_tokens`
+
+Single-use tokens for the post-registration "verify your email" flow.
+Landed Day 15. The raw token (32 bytes, hex-encoded — see
+`lib/auth/tokens.ts`) is sent in the verification email link; the DB
+stores only its SHA-256 hash, so a database leak does not expose
+still-valid verification links.
+
+Lifecycle:
+
+- `mintEmailVerificationToken(userId)` inserts a row with
+  `expires_at = now + 24h` and `used_at = NULL`. Returns the raw token
+  to the caller — the only time the raw value exists outside the user's
+  inbox.
+- `consumeEmailVerificationToken(rawToken)` re-hashes the URL-supplied
+  raw token, looks it up by hash, checks not-yet-used + not-yet-expired,
+  stamps `used_at`, and flips the user's `email_verified_at`.
+
+Validation is app-side; SQLite has no native enums and there's no
+column whose values benefit from a CHECK constraint.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY | UUID v7 |
+| `user_id` | TEXT | NOT NULL, FK → users.id ON DELETE CASCADE | Pending tokens go with the user |
+| `token_hash` | TEXT | NOT NULL | SHA-256 hex of the raw token. NEVER store the raw value |
+| `expires_at` | TEXT | NOT NULL | ISO-8601 UTC, 24h after mint by convention |
+| `created_at` | TEXT | NOT NULL DEFAULT `(datetime('now'))` |  |
+| `used_at` | TEXT | NULLABLE | Stamped by `consumeEmailVerificationToken` |
+
+Indexes:
+- `email_verification_tokens_token_hash_unique_idx` — UNIQUE on
+  `token_hash`. Every consume query hits this; the uniqueness also
+  protects against accidental hash collisions at insert time.
+- `email_verification_tokens_user_id_idx` on `user_id` — "show me this
+  user's outstanding tokens" for the resend flow and housekeeping.
+
+### `password_reset_tokens`
+
+Single-use tokens for the "forgot password" flow. Landed Day 15. Same
+column shape as `email_verification_tokens` (the doc above mirrors this
+spec) with a much shorter default expiry (1 hour) — a stolen
+password-reset link is a higher-stakes outcome than a stolen
+verification link.
+
+Lives in its own table rather than sharing one with
+`email_verification_tokens` because the two flows differ in expiry,
+downstream effect, and audit categorisation; a shared table with a
+`kind` discriminator would obscure that.
+
+Lifecycle:
+
+- `mintPasswordResetToken(userId)` inserts a row, returns the raw
+  URL-safe token for embedding in the email link.
+- `consumePasswordResetToken(rawToken, newHash)` validates by hash +
+  expiry, writes the new password hash on `users`, stamps `used_at`,
+  AND invalidates every OTHER unused reset token for the same user
+  (sibling-invalidation — defence in depth; limits blast radius if the
+  user requested two resets and the first link was intercepted).
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `user_id` | TEXT | NOT NULL, FK → users.id ON DELETE CASCADE |
+| `token_hash` | TEXT | NOT NULL | SHA-256 hex of the raw token |
+| `expires_at` | TEXT | NOT NULL | ISO-8601 UTC, 1h after mint by convention |
+| `created_at` | TEXT | NOT NULL DEFAULT `(datetime('now'))` |  |
+| `used_at` | TEXT | NULLABLE | Stamped at consume time AND by sibling-invalidation on the user's other unused rows |
+
+Indexes:
+- `password_reset_tokens_token_hash_unique_idx` — UNIQUE on
+  `token_hash`. Same role as on the email_verification table.
+- `password_reset_tokens_user_id_idx` on `user_id`.
+
 ---
 
 ## Schema — Companies
@@ -86,7 +160,7 @@ Indexes:
 | `pincode` | TEXT | NOT NULL |  |
 | `website` | TEXT | NULLABLE |  |
 | `years_in_business` | INTEGER | NULLABLE | For eligibility checks |
-| `annual_turnover_paise` | INTEGER | NULLABLE | For eligibility checks |
+| `annual_turnover` | INTEGER | NULLABLE | Whole-rupees stated turnover (Day 8). Compared directly against `tenders.min_annual_turnover_inr` by the turnover-eligibility gate in `applyToTender`. NULL means "not stated" — a hard refusal for tenders that set a minimum, since the value can't be verified. Note: the legacy `annual_turnover_paise` row above is doc-historical; the implemented column is rupees-only (matches the rest of the projects/tenders whole-rupee regime). Code wins. |
 | `verified_at` | TEXT | NULLABLE |  |
 | `verified_by` | TEXT | NULLABLE, FK → users.id |  |
 | `registered_at` | TEXT | NOT NULL |  |
@@ -275,25 +349,86 @@ Indexes:
 
 ### `projects`
 
+Landed Day 16. Projects the Consultway team is consulting on for a
+registered company. A project may be (a) created from scratch via
+`createProject`, or (b) born out of a tender that was awarded to a
+company via `createProjectFromTender` — in which case `tender_id`
+carries the link back to the originating tender row.
+
+Cascade semantics:
+
+- `tender_id` → `tenders.id` **ON DELETE SET NULL**. Losing the
+  tender doesn't lose the project; the project survives as "orphaned
+  from tender". The originating tender is helpful context, but the
+  project's value is its own audit + financial trail. (In practice
+  tenders aren't deletable past `draft`, but the SET NULL is the
+  right default semantically.)
+- `company_id` → `companies.id` **ON DELETE RESTRICT**. Same
+  precedent as `tenders.publisher_company_id`: losing the owning
+  company would break the audit trail. Admins must clean up projects
+  before deleting their owning company.
+
+Five-status union (`ProjectStatus`):
+
+- `planning` — initial state on create. Fields are still being
+  negotiated; budgets / dates may move.
+- `active` — execution is underway. The day-to-day state.
+- `on_hold` — paused for external reasons (client decision, funding
+  delay, regulatory hold). Reversible to active.
+- `completed` — wrapped successfully. Terminal — no further
+  transitions from here.
+- `cancelled` — terminated before completion (client withdrawal,
+  force majeure, etc.). Terminal.
+
+Validated app-side via Zod + TypeScript union — SQLite has no native
+enums. Transitions are gated by `lib/projects/state-machine.ts`.
+
+Budget regime: `budget_inr` is **whole rupees** (no paise). Same
+INTEGER-not-REAL shape as `tenders.min_annual_turnover_inr`. NULL means
+"budget not set". Distinct from the transactions module's paise
+precision regime — see the `transactions` section below for the
+rationale.
+
+`internal_notes` is staff-only; stripped on company-role reads at the
+action layer (same convention as `companies.internal_notes` and
+`tenders.internal_notes`).
+
 | Column | Type | Constraints |
 |---|---|---|
-| `id` | TEXT | PRIMARY KEY |
-| `code` | TEXT | UNIQUE NOT NULL |
-| `name` | TEXT | NOT NULL |
-| `company_id` | TEXT | NOT NULL, FK → companies.id |
-| `tender_id` | TEXT | NULLABLE, FK → tenders.id |
-| `sector` | TEXT | NOT NULL |
-| `status` | TEXT | NOT NULL DEFAULT 'planning' CHECK (status IN ('planning','active','on-hold','completed','cancelled')) |
-| `budget_paise` | INTEGER | NULLABLE |
-| `start_date` | TEXT | NULLABLE |
-| `target_end_date` | TEXT | NULLABLE |
-| `actual_end_date` | TEXT | NULLABLE |
-| `description` | TEXT | NULLABLE |
-| `created_by` | TEXT | NOT NULL, FK → users.id |
-| `created_at` | TEXT | NOT NULL |
-| `updated_at` | TEXT | NOT NULL |
+| `id` | TEXT | PRIMARY KEY | UUID v7 |
+| `name` | TEXT | NOT NULL | Display name; indexed for search |
+| `description` | TEXT | NULLABLE | Long-form, plain text |
+| `tender_id` | TEXT | NULLABLE, FK → tenders.id ON DELETE SET NULL ON UPDATE NO ACTION |  |
+| `company_id` | TEXT | NOT NULL, FK → companies.id ON DELETE RESTRICT ON UPDATE NO ACTION |  |
+| `status` | TEXT | NOT NULL DEFAULT 'planning' | Validated app-side against `ProjectStatus` |
+| `start_date` | TEXT | NULLABLE | ISO-8601 date-only |
+| `end_date` | TEXT | NULLABLE | ISO-8601 date-only; cross-validated start_date ≤ end_date at action layer |
+| `budget_inr` | INTEGER | NULLABLE | Whole rupees, NOT paise |
+| `internal_notes` | TEXT | NULLABLE | Staff-only; stripped on company-role reads |
+| `created_at` | TEXT | NOT NULL DEFAULT `(datetime('now'))` |  |
+| `updated_at` | TEXT | NOT NULL | Updated app-side via Drizzle `$onUpdate` |
 
-### `milestones`
+Indexes:
+- `projects_company_id_idx` on `company_id` — "all projects for this
+  company" lookups on company detail + company-role list page.
+- `projects_status_idx` on `status` — status filter on the list page.
+- `projects_tender_id_idx` on `tender_id` — "was this tender already
+  turned into a project?" for the tender-detail bridge button.
+- `projects_company_status_idx` on `(company_id, status)` — composite
+  for the "active projects for this company" panels; company narrows
+  first, status sub-filters.
+
+Note: the pre-Day-16 spec above this section listed columns like
+`code`, `sector`, `budget_paise`, `target_end_date`, `actual_end_date`
+that DON'T exist in the implemented schema. The implemented column set
+is the one above. Code wins.
+
+### `milestones` (DEFERRED — Phase 3+)
+
+Originally specced for Day 18. Not implemented as of Day 19; the
+projects module today doesn't model milestones. The spec below is
+retained for the future implementation pass but currently does not
+match any code.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -308,7 +443,13 @@ Indexes:
 | `created_at` | TEXT | NOT NULL |
 | `updated_at` | TEXT | NOT NULL |
 
-### `project_activity`
+### `project_activity` (DEFERRED — covered by `audit_log`)
+
+Originally specced as a dedicated table. The implementation uses the
+cross-cutting `audit_log` (with `target_type = "project"`) instead, so
+a separate `project_activity` table doesn't exist as of Day 19. The
+spec below is retained for reference; same convention as elsewhere in
+the doc — code wins.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -325,24 +466,122 @@ Indexes:
 
 ### `transactions`
 
-**Admin-only access.** Enforced at Payload `access` level AND at query level.
+Landed Day 17. Admin-only financial ledger. Each row records a single
+recorded monetary event against a company (always) and a project
+(sometimes — company-level overheads like office rent don't belong to
+any project).
+
+**Admin-only forever.** Staff and company-role users cannot read or
+write this table — enforced at the action layer (`requireAdmin`) AND
+at the page/route-handler layer (page-level redirect / 403). See
+`docs/08-rbac-matrix.md § Transactions`.
+
+Five-value `TransactionType` union (no DB CHECK; validated app-side):
+
+- `invoice`  — money the company owes us (or owes the project's
+                counterparty). Recorded when an invoice is issued.
+- `payment`  — money received against an invoice.
+- `expense`  — money out: vendor bills, costs incurred on the
+                project, office overheads at the company level.
+- `advance`  — money out, against work yet to be performed
+                (advance to a contractor, retainer payment, etc.).
+- `refund`   — money out, against work already paid for and now
+                being reversed.
+
+Money column shape:
+
+- `amount_paise` is an **INTEGER** count of **paise** (1 INR = 100
+  paise). NEVER use REAL/FLOAT for money — IEEE-754 loses precision
+  on rupees-and-paise arithmetic. INTEGER paise gives exact arithmetic
+  up to ~9.2 quintillion paise = ~92 trillion crore.
+- `currency` is fixed at `'INR'` for Phase 1 / Phase 2 (the action
+  layer Zod-refuses anything else). The column exists for forward-
+  compat with multi-currency in Phase 3+.
+- Always positive at the action layer — a refund or expense is encoded
+  by `type`, not by a negative sign. Zod-refuses `amount_paise <= 0`.
+
+Two precision regimes intentionally co-exist:
+
+- `projects.budget_inr` stores BUDGETS in **whole rupees** (planning
+  figures — 50 paise is noise on a multi-crore budget).
+- `transactions.amount_paise` stores ACTUALS in **paise** (where
+  50 paise matters for reconciliation against invoices).
+
+The formatter in `lib/format/inr.ts` is the boundary between the two.
+
+Cascade semantics:
+
+- `company_id` → `companies.id` **ON DELETE RESTRICT**. Losing the
+  counterparty out from under outstanding transactions would break
+  the ledger. Same shape as `tenders.publisher_company_id`.
+- `project_id` → `projects.id` **ON DELETE RESTRICT**. Asymmetric
+  with `users.company_id` (SET NULL) — a transaction exists because
+  of the project; losing the project out from under it would orphan a
+  row whose semantics depend on the project context. Forces a
+  deliberate cleanup before project deletion.
+
+Cross-FK invariant (enforced at the action layer, NOT the DB):
+
+- When `project_id` is set, the referenced project's `company_id` MUST
+  equal this row's `company_id`. A transaction "on" project X for
+  company Y must have Y own X. The DB can't express the join-key
+  equality as a constraint; the action checks it on every
+  create / update.
+
+`reference_number` semantics:
+
+- Optional invoice number / payment reference / cheque number etc.
+- UNIQUE when present (SQLite NULL-distinct semantics; multiple NULLs
+  coexist, any non-null value must be unique across the table). Same
+  shape as `tenders.reference_number` and `companies.gst_number`.
+
+`occurred_on` vs `created_at`:
+
+- `occurred_on` is the business date the transaction is dated to
+  (invoice date, payment date, etc.). ISO-8601 date-only, no time
+  component — transactions don't have a clock-time of day.
+- `created_at` is when the row was inserted into the platform. Could
+  be days or weeks after `occurred_on` for back-dated entries.
+
+`audit_log` integration: every create / update / delete writes an
+`audit_log` row with `target_type = "transaction"`. `updateTransaction`
+captures `metadata.typeChange = { from, to }` when the type changes
+(Day 18); same convention as `metadata.statusChange` on the tender +
+project transition actions.
 
 | Column | Type | Constraints |
 |---|---|---|
-| `id` | TEXT | PRIMARY KEY |
-| `type` | TEXT | NOT NULL CHECK (type IN ('invoice','payment','expense','advance','refund')) |
-| `amount_paise` | INTEGER | NOT NULL |
-| `currency` | TEXT | NOT NULL DEFAULT 'INR' |
-| `direction` | TEXT | NOT NULL CHECK (direction IN ('in','out')) |
-| `company_id` | TEXT | NULLABLE, FK → companies.id |
-| `project_id` | TEXT | NULLABLE, FK → projects.id |
-| `reference_number` | TEXT | NULLABLE |
-| `occurred_on` | TEXT | NOT NULL |
-| `notes` | TEXT | NULLABLE |
-| `attachments` | TEXT | NOT NULL DEFAULT '[]' |
-| `recorded_by` | TEXT | NOT NULL, FK → users.id |
-| `created_at` | TEXT | NOT NULL |
-| `updated_at` | TEXT | NOT NULL |
+| `id` | TEXT | PRIMARY KEY | UUID v7 |
+| `type` | TEXT | NOT NULL | Validated app-side against `TransactionType` |
+| `amount_paise` | INTEGER | NOT NULL | Paise; always positive |
+| `currency` | TEXT | NOT NULL DEFAULT 'INR' | Action layer refuses non-INR today |
+| `company_id` | TEXT | NOT NULL, FK → companies.id ON DELETE RESTRICT |  |
+| `project_id` | TEXT | NULLABLE, FK → projects.id ON DELETE RESTRICT | Cross-FK invariant: must share company_id with this row when set |
+| `occurred_on` | TEXT | NOT NULL | ISO-8601 date-only |
+| `reference_number` | TEXT | UNIQUE (NULL-distinct) |  |
+| `notes` | TEXT | NULLABLE | Free-form, visible to admin viewers on detail |
+| `internal_notes` | TEXT | NULLABLE | Staff-only by convention; module is admin-only so the distinction is moot today |
+| `created_at` | TEXT | NOT NULL DEFAULT `(datetime('now'))` |  |
+| `updated_at` | TEXT | NOT NULL | Updated app-side via Drizzle `$onUpdate` |
+
+Indexes:
+- `transactions_company_id_idx` on `company_id` — per-company rollups
+  + the company filter on the list page.
+- `transactions_project_id_idx` on `project_id` — per-project rollups
+  + the project filter on the list page.
+- `transactions_type_idx` on `type` — type filter on the list page.
+- `transactions_occurred_on_idx` on `occurred_on` — sort + date-range
+  filter (default list sort is newest first; the report's period
+  bounds use this).
+- `transactions_company_type_idx` on `(company_id, type)` — composite
+  for the per-company-by-type rollup query.
+- `transactions_project_type_idx` on `(project_id, type)` — composite
+  for the per-project-by-type rollup query.
+
+Note: the pre-Day-17 spec above this section listed columns that
+DON'T exist in the implemented schema (`direction`, `attachments`,
+`recorded_by`). The implemented column set is the one above. Code
+wins.
 
 ---
 
@@ -499,9 +738,19 @@ companies ──many── company_sectors
 tenders ──many── tender_applications
 tenders ──0..1── projects
 
-projects ──many── milestones
-projects ──many── project_activity
+projects ──many── milestones        (DEFERRED — not implemented)
+projects ──many── project_activity  (DEFERRED — covered by audit_log)
 projects ──many── transactions
 
 documents ──many── reminders_sent
+
+users ──many── email_verification_tokens
+users ──many── password_reset_tokens
 ```
+
+---
+
+_Last synced through migration **0012** (Day 19 rebaseline pass).
+The code in `lib/db/schema.ts` is the source of truth; when this doc
+disagrees with the schema, the code wins. Run
+`pnpm exec ls drizzle/*.sql | tail -1` to confirm the active head._

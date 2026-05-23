@@ -40,6 +40,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Pagination } from "@/components/dashboard/pagination";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ComplianceBadge, JvBadge, BooleanBadge } from "./badges";
 
 // ── Props ─────────────────────────────────────────────────────────────────
@@ -69,19 +70,12 @@ export function CompaniesTable({
   // applied or the database is genuinely empty.
   if (rows.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 px-6 py-16 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-          <Inbox className="h-6 w-6 text-muted-foreground" aria-hidden />
-        </div>
-        <div className="space-y-1">
-          <p className="text-base font-medium text-foreground">
-            No companies found
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Try adjusting your filters, or add a new company to get started.
-          </p>
-        </div>
-      </div>
+      <EmptyState
+        icon={Inbox}
+        title="No companies found"
+        description="Try adjusting your filters, or add a new company to get started."
+        className="px-6 py-16"
+      />
     );
   }
 

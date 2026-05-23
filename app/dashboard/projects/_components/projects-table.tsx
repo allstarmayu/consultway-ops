@@ -30,6 +30,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Pagination } from "@/components/dashboard/pagination";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ProjectStatusBadge } from "./badges";
 
 // ── Props ─────────────────────────────────────────────────────────────────
@@ -64,21 +65,16 @@ export function ProjectsTable({
 }: ProjectsTableProps) {
   if (rows.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 px-6 py-16 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-          <Inbox className="h-6 w-6 text-muted-foreground" aria-hidden />
-        </div>
-        <div className="space-y-1">
-          <p className="text-base font-medium text-foreground">
-            No projects yet
-          </p>
-          <p className="text-sm text-muted-foreground">
-            {canCreate
-              ? "Adjust filters, or create a new project to get started."
-              : "Adjust your filters — there are no projects in this view."}
-          </p>
-        </div>
-      </div>
+      <EmptyState
+        icon={Inbox}
+        title="No projects yet"
+        description={
+          canCreate
+            ? "Adjust filters, or create a new project to get started."
+            : "Adjust your filters — there are no projects in this view."
+        }
+        className="px-6 py-16"
+      />
     );
   }
 
