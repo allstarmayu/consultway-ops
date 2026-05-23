@@ -94,6 +94,8 @@ import {
   retractAwardSchema,
   reinstateApplicationSchema,
   recallApplicationSchema,
+  // -- Day 14: markAwarded gains a required winner ------------------------
+  markAwardedSchema,
   type CreateTenderInput,
   type UpdateTenderInput,
   type ListTendersQuery,
@@ -614,12 +616,18 @@ type TenderTransitionAuditAction = Extract<
 /**
  * Internal helper used by all status-transition actions. Loads the
  * row, checks the transition is legal via the state machine, applies any
- * extra side-effects (publishedAt, application count guard), writes the
- * update, and records the audit event.
+ * extra side-effects (publishedAt, application count guard,
+ * awardedCompanyId for award/retract), writes the update, and records
+ * the audit event.
  *
  * `auditMetadata` is optional and merged into the audit event's
  * `metadata` field - used by the reversal actions to capture a `reason`
  * provided by the actor.
+ *
+ * `patchOverrides` (Day 14) is folded into the DB patch alongside the
+ * status flip. Used by `markAwarded` to write the winning company id
+ * and by `retractAward` to null it back out. Status itself can't be
+ * overridden through this hook - that's controlled by `nextStatus`.
  *
  * Not exported - callers should use the named wrappers below so the
  * intent is explicit in the UI code.
@@ -630,6 +638,7 @@ async function transitionTenderStatus(
   session: Session,
   auditAction: TenderTransitionAuditAction,
   auditMetadata?: Record<string, unknown>,
+  patchOverrides?: Partial<typeof tenders.$inferInsert>,
 ): Promise<ActionResult> {
   // Validate id
   const parsed = tenderIdSchema.safeParse({ id: tenderId });
@@ -701,6 +710,23 @@ async function transitionTenderStatus(
     patch.publishedAt = new Date().toISOString();
   }
 
+  // Day 14: caller-supplied patch overrides for award / retract
+  // (writes/clears the awardedCompanyId column). Merged AFTER the
+  // status-and-publishedAt computation so callers can't accidentally
+  // override the status flip itself - the explicit `nextStatus` always
+  // wins.
+  if (patchOverrides) {
+    Object.assign(patch, patchOverrides, { status: nextStatus });
+  }
+
+  // Capture before-snapshot fields that the patch touches, for the
+  // audit log. status is always touched; awardedCompanyId is touched
+  // when the override sets it.
+  const beforeSnapshot: Record<string, unknown> = { status: existing.status };
+  if (patch.awardedCompanyId !== undefined) {
+    beforeSnapshot.awardedCompanyId = existing.awardedCompanyId;
+  }
+
   // Apply
   try {
     await db.update(tenders).set(patch).where(eq(tenders.id, existing.id));
@@ -717,17 +743,19 @@ async function transitionTenderStatus(
   // Audit. Status transitions are important events - record from/to
   // explicitly in the snapshot, plus any caller-supplied metadata
   // (e.g. reversal reason).
+  const afterSnapshot: Record<string, unknown> = { status: nextStatus };
+  if (patch.publishedAt) afterSnapshot.publishedAt = patch.publishedAt;
+  if (patch.awardedCompanyId !== undefined) {
+    afterSnapshot.awardedCompanyId = patch.awardedCompanyId;
+  }
   await recordAuditEvent({
     actorId: session.userId,
     actorRole: session.role,
     action: auditAction,
     targetType: "tender",
     targetId: existing.id,
-    before: { status: existing.status },
-    after: {
-      status: nextStatus,
-      ...(patch.publishedAt ? { publishedAt: patch.publishedAt } : {}),
-    },
+    before: beforeSnapshot,
+    after: afterSnapshot,
     ...(auditMetadata ? { metadata: auditMetadata } : {}),
   });
 
@@ -783,23 +811,104 @@ export async function closeTender(rawId: unknown): Promise<ActionResult> {
 /**
  * Mark a closed tender as awarded. Admin/staff only.
  *
- * As of Day 5, `awarded` is no longer a strictly-terminal state -
- * `retractAward` can move it back to `closed`. But `markAwarded` still
- * represents the procurement decision; retraction is the explicit
- * recovery path for accidental clicks.
+ * Day 14: input shape changed from a bare tender id to
+ * `{ tenderId, awardedCompanyId }`. Old call sites that passed a string
+ * will now fail Zod validation - that's deliberate; recording the
+ * winner is no longer optional.
  *
- * NOTE: this action does not yet record the winning company. The
- * `awardedCompanyId` column will land when Phase 2 (project tracking)
- * starts and we need the link for tender -> project conversion. For now,
- * staff record the winner in `internalNotes`.
+ * Gate order:
+ *   1. AuthZ (admin/staff)
+ *   2. Schema (both ids well-formed)
+ *   3. Tender exists + is in `closed` status
+ *   4. There IS an application from the named company on this tender
+ *      AND it is in `shortlisted` status. Submitted-not-yet-decided,
+ *      rejected, and withdrawn applicants cannot be awarded - staff
+ *      have to reinstate / shortlist first if the decision lands on a
+ *      previously-rejected bid.
+ *   5. Status flip to awarded + write `awardedCompanyId` in one patch.
+ *
+ * As of Day 5, `awarded` is no longer a strictly-terminal state -
+ * `retractAward` can move it back to `closed` and clears the column.
  */
-export async function markAwarded(rawId: unknown): Promise<ActionResult> {
+export async function markAwarded(rawInput: unknown): Promise<ActionResult> {
   const auth = await requireAdminOrStaff();
   if (!auth.ok) return auth;
-  if (typeof rawId !== "string") {
-    return { ok: false, error: "Invalid tender id" };
+
+  const parsed = markAwardedSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
   }
-  return transitionTenderStatus(rawId, "awarded", auth.session, "updated");
+  const input = parsed.data;
+
+  // Confirm the tender exists + is in `closed` status before touching
+  // the application. transitionTenderStatus will check again, but the
+  // explicit check here gives a cleaner error and lets us bail before
+  // the eligibility query.
+  const tenderRow = await db
+    .select({ id: tenders.id, status: tenders.status })
+    .from(tenders)
+    .where(eq(tenders.id, input.tenderId))
+    .limit(1)
+    .then((rows) => rows[0]);
+  if (!tenderRow) {
+    return { ok: false, error: "Tender not found" };
+  }
+  if (tenderRow.status !== "closed") {
+    return {
+      ok: false,
+      error: `Cannot award - tender is ${tenderRow.status}, not closed`,
+    };
+  }
+
+  // Application gate. Use the composite (tenderId, companyId) index for
+  // a single-row lookup.
+  const application = await db
+    .select({
+      id: tenderApplications.id,
+      status: tenderApplications.status,
+    })
+    .from(tenderApplications)
+    .where(
+      and(
+        eq(tenderApplications.tenderId, input.tenderId),
+        eq(tenderApplications.companyId, input.awardedCompanyId),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!application) {
+    return {
+      ok: false,
+      field: "awardedCompanyId",
+      error:
+        "Cannot award - the named company has no application on this tender",
+    };
+  }
+  if (application.status !== "shortlisted") {
+    return {
+      ok: false,
+      field: "awardedCompanyId",
+      error: `Cannot award - applicant must be shortlisted first (current status: ${application.status})`,
+    };
+  }
+
+  return transitionTenderStatus(
+    input.tenderId,
+    "awarded",
+    auth.session,
+    "updated",
+    {
+      awardedCompanyId: input.awardedCompanyId,
+      applicationId: application.id,
+    },
+    { awardedCompanyId: input.awardedCompanyId },
+  );
 }
 
 // -- deleteTender ----------------------------------------------------------
@@ -2009,13 +2118,16 @@ export async function retractAward(
   }
 
   // 4. Delegate to the shared transition helper with the reversal audit
-  //    verb and required reason metadata.
+  //    verb and required reason metadata. Day 14: also null the
+  //    awardedCompanyId so the column stays symmetric with the status
+  //    flip - a retracted tender genuinely has no winner anymore.
   return transitionTenderStatus(
     input.tenderId,
     "closed",
     auth.session,
     "tender_award_retracted",
     { reason: input.reason },
+    { awardedCompanyId: null },
   );
 }
 

@@ -369,6 +369,34 @@ export type ListTendersQuery = z.infer<typeof listTendersQuerySchema>;
  */
 export const tenderIdSchema = z.object({ id: uuidSchema });
 
+// ── Mark awarded (Day 14) ─────────────────────────────────────────────────
+
+/**
+ * Input schema for `markAwarded` — admin/staff record the winning
+ * company on a closed tender. As of Day 14 the winning company is a
+ * required input; pre-Day-14 the action was a zero-arg id-only call.
+ *
+ * The action enforces beyond what this schema can:
+ *   - tender must be in `closed` status (illegal transition otherwise)
+ *   - `awardedCompanyId` must correspond to an existing application
+ *     on this tender that is in `shortlisted` status (refuses if the
+ *     company never applied, or if its application is in any other
+ *     status — submitted, rejected, withdrawn)
+ *
+ * Why we restrict the winner to shortlisted applicants: awarding to a
+ * company that wasn't shortlisted skips the evaluation checkpoint that
+ * shortlist represents. If the procurement decision genuinely lands on
+ * a non-shortlisted bid, staff can reinstate the rejected application
+ * to submitted, shortlist it, and then award — leaving the audit trail
+ * intact.
+ */
+export const markAwardedSchema = z.object({
+  tenderId: uuidSchema,
+  awardedCompanyId: uuidSchema,
+});
+
+export type MarkAwardedInput = z.infer<typeof markAwardedSchema>;
+
 // ── Apply to tender ───────────────────────────────────────────────────────
 
 /**

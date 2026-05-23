@@ -473,6 +473,34 @@ export const tenders = sqliteTable(
      * NULL while the tender is still a draft.
      */
     publishedAt: text("published_at"),
+
+    /**
+     * The winning company once the tender lands in `awarded` status.
+     * NULL for tenders not yet awarded. Stamped by `markAwarded` and
+     * cleared by `retractAward` (the Day-5 reversal — keeping the column
+     * symmetric with the status flip avoids stale "winner" data on a
+     * retracted tender).
+     *
+     * FK uses ON DELETE RESTRICT — once a company has won a tender, it
+     * cannot be deleted out from under that record. Same rationale as
+     * `publisherCompanyId` above: losing the identity of the awardee
+     * would break the audit trail (the audit log preserves the historical
+     * fact of the award, but the foreign key keeps the live tender row
+     * consistent). Admins must move the tender away from awarded — or
+     * delete the tender itself, which is illegal at this status anyway —
+     * before they can delete the winning company.
+     *
+     * Phase 3 (project tracking) uses this column as the bridge: a
+     * project record is created from a tender by reading
+     * `awardedCompanyId` to know who the project belongs to.
+     */
+    awardedCompanyId: text("awarded_company_id").references(
+      () => companies.id,
+      {
+        onDelete: "restrict",
+        onUpdate: "no action",
+      },
+    ),
   },
   (table) => [
     // Free-text search by title (LIKE) and ordering.
@@ -485,6 +513,10 @@ export const tenders = sqliteTable(
     index("tenders_sector_idx").on(table.sector),
     // Sort + "closing soon" widgets.
     index("tenders_closing_date_idx").on(table.closingDate),
+    // "What did Acme win?" reverse lookup. Used by Phase 3's
+    // tender → project creation flow and by the company detail page's
+    // "won tenders" panel when it lands.
+    index("tenders_awarded_company_id_idx").on(table.awardedCompanyId),
   ],
 );
 

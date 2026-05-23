@@ -215,6 +215,7 @@ was updated in Day 12 to match.
 | `status` | TEXT | NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published','closed','archived')) |  |
 | `published_at` | TEXT | NULLABLE |  |
 | `closes_at` | TEXT | NULLABLE |  |
+| `awarded_company_id` | TEXT | NULLABLE, FK → companies.id ON DELETE RESTRICT | Day 14 — populated by `markAwarded`, cleared by `retractAward` |
 | `created_by` | TEXT | NOT NULL, FK → users.id |  |
 | `created_at` | TEXT | NOT NULL |  |
 | `updated_at` | TEXT | NOT NULL |  |
@@ -233,6 +234,16 @@ was updated in Day 12 to match.
 Indexes:
 - `idx_tenders_status` on `status`
 - `idx_tenders_closes_at` on `closes_at`
+- `tenders_awarded_company_id_idx` on `awarded_company_id` — Day 14;
+  reverse lookups for "what did Acme win" + Phase 3's tender → project
+  bridge
+
+Note: this table's column list is partially out of sync with
+`lib/db/schema.ts` (the code uses `closing_date` / `publisher_company_id`
+/ `eligible_sector` etc., not `closes_at` / `created_by` / per-column
+`sector_tags`). Per the doc-vs-code rule in `CLAUDE.md`, the code wins —
+this section is a Phase-1 spec snapshot that hasn't been re-baselined.
+The new `awarded_company_id` row above matches the implemented column.
 
 ### `tender_applications`
 

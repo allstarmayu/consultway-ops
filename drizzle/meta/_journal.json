@@ -57,6 +57,13 @@
       "when": 1779530699673,
       "tag": "0007_rare_mastermind",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1779560773571,
+      "tag": "0008_luxuriant_doorman",
+      "breakpoints": true
     }
   ]
 }

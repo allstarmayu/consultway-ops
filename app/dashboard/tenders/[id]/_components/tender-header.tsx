@@ -64,9 +64,28 @@ import type { Tender } from "@/lib/db/schema";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { TenderStatusBadge } from "../../_components/badges";
 
 // ── Props ─────────────────────────────────────────────────────────────────
+
+/**
+ * Slim shape of a shortlisted application surfaced to the awardee picker.
+ * Sourced from `listApplicationsForTender` rows, filtered to
+ * `status === "shortlisted"`. The companyId is the value the action
+ * needs; the companyName is what the user sees.
+ */
+export interface ShortlistedApplicantOption {
+  applicationId: string;
+  companyId: string;
+  companyName: string;
+}
 
 export interface TenderHeaderProps {
   tender: Tender;
@@ -81,6 +100,14 @@ export interface TenderHeaderProps {
   canDelete: boolean;
   /** True when the tender has at least one application — affects Unpublish copy. */
   hasApplications: boolean;
+  /**
+   * Shortlisted applicants on this tender — the candidate pool for the
+   * Day-14 awardee picker. Empty array on a tender with no shortlisted
+   * applications; the Mark-awarded button stays disabled with a helper
+   * tooltip in that case (the only path forward is to shortlist
+   * someone first).
+   */
+  shortlistedApplicants: ShortlistedApplicantOption[];
 }
 
 // ── Component ─────────────────────────────────────────────────────────────
@@ -90,10 +117,16 @@ export function TenderHeader({
   canManage,
   canDelete,
   hasApplications,
+  shortlistedApplicants,
 }: TenderHeaderProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  // Day 14: tracks the user's pick in the awardee select. Reset every
+  // time the tender row changes or the user retracts the award.
+  const [selectedAwardCompanyId, setSelectedAwardCompanyId] = useState<
+    string | null
+  >(null);
 
   /**
    * Wrap a Server-Action call in a transition + error surface.
@@ -129,10 +162,20 @@ export function TenderHeader({
   }
 
   function handleAward() {
-    // No window.confirm — the ConfirmDialog wrapping the Mark-awarded
-    // button below gates this call. By the time we reach this handler,
-    // the user has already confirmed.
-    runTransition("mark awarded", () => markAwarded(tender.id));
+    // Day 14: markAwarded now requires the winning companyId. The
+    // ConfirmDialog only opens when the Select has a value (the button
+    // is disabled otherwise) so the non-null assertion is safe in
+    // practice. The schema double-checks server-side.
+    if (!selectedAwardCompanyId) {
+      setError("Pick a shortlisted applicant before awarding");
+      return;
+    }
+    runTransition("mark awarded", () =>
+      markAwarded({
+        tenderId: tender.id,
+        awardedCompanyId: selectedAwardCompanyId,
+      }),
+    );
   }
 
   /**
@@ -250,20 +293,66 @@ export function TenderHeader({
           )}
 
           {canAward && (
-            <ConfirmDialog
-              trigger={
-                <Button disabled={isPending} aria-label="Mark tender as awarded">
-                  <Trophy className="h-4 w-4" aria-hidden />
-                  Mark awarded
-                </Button>
-              }
-              title={`Mark "${tender.title}" as awarded?`}
-              description="This records the procurement decision. The tender can still be reverted to closed via Retract award if needed."
-              confirmLabel="Mark awarded"
-              confirmVariant="default"
-              onConfirm={handleAward}
-              pending={isPending}
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Awardee picker — only renders meaningful options when
+                  there's at least one shortlisted applicant. When the
+                  list is empty, the Select shows a disabled placeholder
+                  and the button stays disabled with a hint. */}
+              {shortlistedApplicants.length > 0 ? (
+                <Select
+                  value={selectedAwardCompanyId ?? undefined}
+                  onValueChange={(v) => setSelectedAwardCompanyId(v)}
+                  disabled={isPending}
+                >
+                  <SelectTrigger
+                    className="w-[220px]"
+                    aria-label="Choose the winning applicant"
+                  >
+                    <SelectValue placeholder="Pick a shortlisted applicant" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {shortlistedApplicants.map((opt) => (
+                      <SelectItem key={opt.companyId} value={opt.companyId}>
+                        {opt.companyName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  Shortlist an applicant first to award this tender
+                </span>
+              )}
+              <ConfirmDialog
+                trigger={
+                  <Button
+                    disabled={
+                      isPending ||
+                      !selectedAwardCompanyId ||
+                      shortlistedApplicants.length === 0
+                    }
+                    aria-label="Mark tender as awarded"
+                  >
+                    <Trophy className="h-4 w-4" aria-hidden />
+                    Mark awarded
+                  </Button>
+                }
+                title={`Mark "${tender.title}" as awarded?`}
+                description={
+                  selectedAwardCompanyId
+                    ? `This records the award going to ${
+                        shortlistedApplicants.find(
+                          (a) => a.companyId === selectedAwardCompanyId,
+                        )?.companyName ?? "the selected applicant"
+                      }. The tender can still be reverted to closed via Retract award if needed.`
+                    : "Pick a shortlisted applicant first."
+                }
+                confirmLabel="Mark awarded"
+                confirmVariant="default"
+                onConfirm={handleAward}
+                pending={isPending}
+              />
+            </div>
           )}
 
           {/* ── Day 5: Reopen (closed → published, admin only) ──────── */}

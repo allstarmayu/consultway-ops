@@ -134,6 +134,15 @@ export default async function TenderDetailPage({
   const canDelete = session.role === "admin";
   const isCompanyRole = session.role === "company";
   const hasApplications = applications.length > 0;
+  // Day 14: candidate pool for the awardee picker. Derived from the
+  // applications already loaded above — no extra DB roundtrip.
+  const shortlistedApplicants = applications
+    .filter((a) => a.status === "shortlisted")
+    .map((a) => ({
+      applicationId: a.id,
+      companyId: a.company.id,
+      companyName: a.company.name,
+    }));
 
   // 5. For company-role viewers: fetch their own row + their existing
   //    application on this tender (if any) to drive the ApplyButton.
@@ -187,6 +196,7 @@ export default async function TenderDetailPage({
           canManage={canManage}
           canDelete={canDelete}
           hasApplications={hasApplications}
+          shortlistedApplicants={shortlistedApplicants}
         />
       ) : (
         // Company role — still show the title + status, just with the

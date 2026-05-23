@@ -447,49 +447,130 @@ describe("closeTender", () => {
   });
 });
 
-// ── markAwarded ───────────────────────────────────────────────────────────
+// ── markAwarded (Day 14: requires winning company) ────────────────────────
+
+/**
+ * Helper - seeds a shortlisted application from the given company so
+ * markAwarded has a legal candidate. Returns the application id.
+ */
+async function insertShortlistedApplication(
+  tenderId: string,
+  companyId: string,
+): Promise<string> {
+  const appId = newId();
+  await db.insert(tenderApplications).values({
+    id: appId,
+    tenderId,
+    companyId,
+    status: "shortlisted",
+    decidedAt: new Date().toISOString(),
+  });
+  return appId;
+}
 
 describe("markAwarded", () => {
-  it("transitions closed → awarded (admin)", async () => {
+  it("awards a closed tender + populates awardedCompanyId (admin)", async () => {
     loginAs("admin", fixture);
-    const id = await insertTenderInStatus(fixture, "closed");
-    const result = await markAwarded(id);
+    const tenderId = await insertTenderInStatus(fixture, "closed");
+    await insertShortlistedApplication(tenderId, fixture.companyAId);
+
+    const result = await markAwarded({
+      tenderId,
+      awardedCompanyId: fixture.companyAId,
+    });
     expect(result.ok).toBe(true);
 
     const row = await db
       .select()
       .from(tenders)
-      .where(eq(tenders.id, id))
+      .where(eq(tenders.id, tenderId))
       .then((r) => r[0]);
     expect(row?.status).toBe("awarded");
+    expect(row?.awardedCompanyId).toBe(fixture.companyAId);
   });
 
-  it("refuses awarding a draft tender (illegal transition)", async () => {
+  it("refuses awarding a draft tender (status gate fires before app lookup)", async () => {
     loginAs("admin", fixture);
-    const id = await insertTenderInStatus(fixture, "draft");
-    const result = await markAwarded(id);
+    const tenderId = await insertTenderInStatus(fixture, "draft");
+    // No application needed — the status gate refuses first.
+    const result = await markAwarded({
+      tenderId,
+      awardedCompanyId: fixture.companyAId,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toMatch(/draft|publish/i);
+    expect(result.error).toMatch(/draft|closed/i);
+  });
+
+  it("refuses when the named company has no application on this tender", async () => {
+    loginAs("admin", fixture);
+    const tenderId = await insertTenderInStatus(fixture, "closed");
+    // No application seeded — companyA never applied.
+    const result = await markAwarded({
+      tenderId,
+      awardedCompanyId: fixture.companyAId,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("awardedCompanyId");
+    expect(result.error).toMatch(/no application/i);
+  });
+
+  it("refuses when the named application is not in shortlisted status", async () => {
+    loginAs("admin", fixture);
+    const tenderId = await insertTenderInStatus(fixture, "closed");
+    // companyA applied but is in `rejected` status — not eligible to win.
+    await db.insert(tenderApplications).values({
+      id: newId(),
+      tenderId,
+      companyId: fixture.companyAId,
+      status: "rejected",
+      decidedAt: new Date().toISOString(),
+    });
+    const result = await markAwarded({
+      tenderId,
+      awardedCompanyId: fixture.companyAId,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("awardedCompanyId");
+    expect(result.error).toMatch(/shortlisted/i);
+  });
+
+  it("refuses zero-arg legacy input shape (Day 14 schema rejection)", async () => {
+    loginAs("admin", fixture);
+    const tenderId = await insertTenderInStatus(fixture, "closed");
+    // Day 14: action signature stayed `(rawInput: unknown)`, so TS
+    // accepts a string here, but Zod refuses at runtime - old call
+    // sites that passed a bare id surface as an ok:false result.
+    const result = await markAwarded(tenderId);
+    expect(result.ok).toBe(false);
   });
 
   it("supports the close-then-award pipeline (published → closed → awarded)", async () => {
     loginAs("staff", fixture);
-    const id = await insertTenderInStatus(fixture, "published", {
+    const tenderId = await insertTenderInStatus(fixture, "published", {
       publishedAt: new Date().toISOString(),
     });
+    // Application has to come from a published tender; seed it before
+    // closing so the application is in scope.
+    await insertShortlistedApplication(tenderId, fixture.companyAId);
 
-    const closed = await closeTender(id);
+    const closed = await closeTender(tenderId);
     expect(closed.ok).toBe(true);
-    const awarded = await markAwarded(id);
+    const awarded = await markAwarded({
+      tenderId,
+      awardedCompanyId: fixture.companyAId,
+    });
     expect(awarded.ok).toBe(true);
 
     const row = await db
       .select()
       .from(tenders)
-      .where(eq(tenders.id, id))
+      .where(eq(tenders.id, tenderId))
       .then((r) => r[0]);
     expect(row?.status).toBe("awarded");
+    expect(row?.awardedCompanyId).toBe(fixture.companyAId);
   });
 });
 
@@ -597,7 +678,11 @@ describe("reopenTender", () => {
 describe("retractAward", () => {
   it("transitions awarded → closed with tender_award_retracted audit (admin)", async () => {
     loginAs("admin", fixture);
-    const id = await insertTenderInStatus(fixture, "awarded");
+    // Day 14: seed with awardedCompanyId already populated so the
+    // retract test can assert the column clears.
+    const id = await insertTenderInStatus(fixture, "awarded", {
+      awardedCompanyId: fixture.companyAId,
+    });
 
     const result = await retractAward({
       tenderId: id,
@@ -611,6 +696,9 @@ describe("retractAward", () => {
       .where(eq(tenders.id, id))
       .then((r) => r[0]);
     expect(row?.status).toBe("closed");
+    // Day 14: column must clear back to NULL on retract so a retracted
+    // tender genuinely has no winner anymore. Symmetric with markAwarded.
+    expect(row?.awardedCompanyId).toBeNull();
 
     const events = await db
       .select()
@@ -624,6 +712,12 @@ describe("retractAward", () => {
     expect(metadata?.reason).toBe(
       "Awarded company withdrew their offer post-award",
     );
+    // The audit before/after snapshots should capture both the status
+    // and the awardedCompanyId transitions for forensic clarity.
+    const before = retracted?.before as Record<string, unknown> | null;
+    const after = retracted?.after as Record<string, unknown> | null;
+    expect(before?.awardedCompanyId).toBe(fixture.companyAId);
+    expect(after?.awardedCompanyId).toBeNull();
   });
 
   it("refuses staff (admin-only)", async () => {
@@ -718,8 +812,24 @@ describe("tender lifecycle (end-to-end)", () => {
     const id = create.id;
 
     expect((await publishTender(id)).ok).toBe(true);
+    // Seed an application + shortlist it before the close-and-award
+    // hop. Day 14 requires the winning company at award time.
+    await insertShortlistedApplication(id, fixture.companyAId);
     expect((await closeTender(id)).ok).toBe(true);
-    expect((await markAwarded(id)).ok).toBe(true);
+    expect(
+      (await markAwarded({
+        tenderId: id,
+        awardedCompanyId: fixture.companyAId,
+      })).ok,
+    ).toBe(true);
+
+    // Confirm the column populated mid-pipeline.
+    const awardedRow = await db
+      .select()
+      .from(tenders)
+      .where(eq(tenders.id, id))
+      .then((r) => r[0]);
+    expect(awardedRow?.awardedCompanyId).toBe(fixture.companyAId);
 
     const retract = await retractAward({
       tenderId: id,
@@ -733,6 +843,7 @@ describe("tender lifecycle (end-to-end)", () => {
       .where(eq(tenders.id, id))
       .then((r) => r[0]);
     expect(row?.status).toBe("closed");
+    expect(row?.awardedCompanyId).toBeNull();
   });
 });
 
