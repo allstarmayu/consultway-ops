@@ -34,13 +34,21 @@ import { newId } from "@/lib/db/ids";
 import { recordAuditEvent, SYSTEM_ACTOR_ID } from "@/lib/audit/log";
 import { sendEmail, type SendEmailFn } from "@/lib/email/client";
 import { renderEmailVerificationEmail } from "@/lib/email/templates/email-verification";
-import { mintEmailVerificationToken } from "./tokens";
+import { renderPasswordResetRequestEmail } from "@/lib/email/templates/password-reset-request";
+import { renderPasswordResetConfirmationEmail } from "@/lib/email/templates/password-reset-confirmation";
+import {
+  mintEmailVerificationToken,
+  mintPasswordResetToken,
+  consumePasswordResetToken,
+} from "./tokens";
 import { verifyPassword, hashPassword } from "./password";
 import { createSession, destroySession } from "./session";
 import {
   loginSchema,
   registerCompanySchema,
   resendVerificationSchema,
+  requestPasswordResetSchema,
+  resetPasswordSchema,
 } from "./schemas";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
@@ -585,6 +593,185 @@ export async function resendVerificationEmailInternal(
 
   // Always return ok:true to the caller — see enumeration-defence note
   // in the docstring above.
+  return { ok: true };
+}
+
+// -- Public: requestPasswordReset (Day 15) ---------------------------------
+
+/**
+ * Trigger a password reset email for the given account.
+ *
+ * Enumeration-defended: always returns ok:true. The caller-facing UI
+ * (the /forgot-password page) shows the same "if your account exists,
+ * we sent a link" copy on every response.
+ *
+ *   - Unknown email -> log at info, no mint, no send, return ok:true
+ *   - Known email   -> mint a 1h-expiry token, send the request email,
+ *                      return ok:true (regardless of send outcome)
+ */
+export async function requestPasswordReset(
+  rawInput: unknown,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  return requestPasswordResetInternal(rawInput, { sendEmail });
+}
+
+/** Email-DI variant for tests. */
+export async function requestPasswordResetInternal(
+  rawInput: unknown,
+  deps: { sendEmail: SendEmailFn },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const parsed = requestPasswordResetSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "Invalid input",
+    };
+  }
+  const { email } = parsed.data;
+
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+
+  if (!user) {
+    log.info("requestPasswordReset: unknown email (silently ok)", { email });
+    return { ok: true };
+  }
+
+  try {
+    const { token } = await mintPasswordResetToken(user.id);
+    const resetUrl = `${env.NEXT_PUBLIC_APP_URL}/reset-password?token=${encodeURIComponent(token)}`;
+    const rendered = renderPasswordResetRequestEmail({
+      user: { name: user.name, email: user.email },
+      resetUrl,
+      expiresInMinutes: 60,
+    });
+    const result = await deps.sendEmail({
+      to: user.email,
+      subject: rendered.subject,
+      html: rendered.html,
+      text: rendered.text,
+    });
+    if (!result.ok) {
+      log.warn("password reset request email send failed", {
+        userId: user.id,
+        error: result.error,
+      });
+    }
+  } catch (err) {
+    log.error("password reset request pipeline threw", {
+      err,
+      userId: user.id,
+    });
+  }
+
+  return { ok: true };
+}
+
+// -- Public: resetPassword (Day 15) ----------------------------------------
+
+/**
+ * Apply a new password using a previously-minted reset token.
+ *
+ * Pipeline:
+ *   1. Validate input (token shape + new-password policy)
+ *   2. Hash the new password via lib/auth/password (pepper-aware)
+ *   3. Consume the token + write the hash atomically via tokens.ts
+ *   4. Send the confirmation email (fail-soft)
+ *
+ * Session-invalidation stub:
+ *   Sessions are stateless JWTs today (lib/auth/session.ts). A reset
+ *   does NOT revoke outstanding JWTs — a stolen token issued before the
+ *   reset stays valid until its natural expiry. The proper fix is to add
+ *   a `passwordChangedAt` column on users and reject JWTs issued earlier
+ *   than that timestamp at proxy.ts. Tracked as a Day-15 followup; see
+ *   the report. The stub below is a deliberate audit log entry naming
+ *   the gap so it doesn't get lost.
+ */
+export async function resetPassword(
+  rawInput: unknown,
+): Promise<{ ok: true } | { ok: false; error: string; field?: string }> {
+  return resetPasswordInternal(rawInput, { sendEmail });
+}
+
+/** Email-DI variant for tests. */
+export async function resetPasswordInternal(
+  rawInput: unknown,
+  deps: { sendEmail: SendEmailFn },
+): Promise<{ ok: true } | { ok: false; error: string; field?: string }> {
+  const parsed = resetPasswordSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const { token, newPassword } = parsed.data;
+
+  const newPasswordHash = await hashPassword(newPassword);
+  const consumeResult = await consumePasswordResetToken(
+    token,
+    newPasswordHash,
+  );
+
+  if (!consumeResult.ok) {
+    const messageMap = {
+      not_found: "This reset link is no longer valid. Request a fresh one.",
+      expired: "This reset link has expired. Request a fresh one.",
+      already_used:
+        "This reset link has already been used. Request a fresh one if you still need to reset your password.",
+    } as const;
+    return {
+      ok: false,
+      error: messageMap[consumeResult.reason],
+      field: "token",
+    };
+  }
+
+  // Look up the user for the confirmation email (consume only returned id).
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, consumeResult.userId))
+    .limit(1);
+
+  // Session-invalidation stub: log the gap so the followup is traceable.
+  // See action docstring for the full Phase-3 plan.
+  log.warn(
+    "password reset succeeded but outstanding JWT sessions are NOT revoked",
+    { userId: consumeResult.userId },
+  );
+
+  if (user) {
+    try {
+      const rendered = renderPasswordResetConfirmationEmail({
+        user: { name: user.name, email: user.email },
+        supportEmail: env.EMAIL_REPLY_TO ?? "ops@consultway.local",
+      });
+      const result = await deps.sendEmail({
+        to: user.email,
+        subject: rendered.subject,
+        html: rendered.html,
+        text: rendered.text,
+      });
+      if (!result.ok) {
+        log.warn("password reset confirmation email send failed", {
+          userId: user.id,
+          error: result.error,
+        });
+      }
+    } catch (err) {
+      log.error("password reset confirmation pipeline threw", {
+        err,
+        userId: user.id,
+      });
+    }
+  }
+
   return { ok: true };
 }
 

@@ -151,6 +151,10 @@ function LoginForm() {
   // input plays better with stringy defaults than nullish ones.
   const searchParams = useSearchParams();
   const from = searchParams.get("from") ?? "";
+  // /reset-password redirects here with ?reset=success after a successful
+  // password change. Surfaced as a small inline success notice — much
+  // cheaper UX cost than wiring a global toast for one event.
+  const resetSuccess = searchParams.get("reset") === "success";
 
   const {
     register,
@@ -215,6 +219,17 @@ function LoginForm() {
           className="space-y-4"
           noValidate
         >
+          {/* Post-reset success notice (only on first render, until the
+              user types) */}
+          {resetSuccess && !serverError && (
+            <Alert>
+              <AlertTitle>Password updated</AlertTitle>
+              <AlertDescription>
+                Your password has been changed. Sign in with the new one.
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Server-side / credential error */}
           {serverError && (
             <Alert variant="destructive">
@@ -267,7 +282,15 @@ function LoginForm() {
 
           {/* Password */}
           <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
+            <div className="flex items-baseline justify-between">
+              <Label htmlFor="password">Password</Label>
+              <Link
+                href="/forgot-password"
+                className="text-xs font-medium text-primary underline-offset-4 hover:underline"
+              >
+                Forgot password?
+              </Link>
+            </div>
             <Input
               id="password"
               type="password"

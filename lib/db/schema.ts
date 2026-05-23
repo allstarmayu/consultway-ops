@@ -1213,3 +1213,71 @@ export type NewEmailVerificationToken =
 /** Inferred select type. */
 export type EmailVerificationToken =
   typeof emailVerificationTokens.$inferSelect;
+
+// -- password_reset_tokens (Day 15) -----------------------------------------
+/**
+ * Single-use tokens for the "forgot password" flow.
+ *
+ * Same shape as `email_verification_tokens` (column-for-column) but with
+ * a much shorter default expiry (1 hour) — a stolen password-reset link
+ * is a higher-stakes outcome than a stolen verification link. Lives in
+ * its own table rather than sharing one with `email_verification_tokens`
+ * because the two flows differ in expiry, downstream effect, and audit
+ * categorisation; a shared table with a `kind` discriminator would
+ * obscure that.
+ *
+ * Lifecycle:
+ *   - `mintPasswordResetToken(userId)` inserts a row, returns the raw
+ *     URL-safe token for embedding in the email link.
+ *   - `consumePasswordResetToken(rawToken, newHash)` looks up by hash,
+ *     validates not-used + not-expired, writes the new password hash on
+ *     `users`, stamps `used_at`, AND invalidates every other unused
+ *     reset token for the same user (defence in depth — limits blast
+ *     radius if a user requested two resets and the first link was
+ *     intercepted).
+ *
+ * Cascade: ON DELETE CASCADE on `userId`, same as email_verification.
+ */
+export const passwordResetTokens = sqliteTable(
+  "password_reset_tokens",
+  {
+    /** UUID v7. Generated app-side via `newId()`. */
+    id: text("id").primaryKey().$defaultFn(newId),
+
+    /** Cascade-delete with the user. */
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, {
+        onDelete: "cascade",
+        onUpdate: "no action",
+      }),
+
+    /** SHA-256 hex of the raw token. NEVER store raw. */
+    tokenHash: text("token_hash").notNull(),
+
+    /** ISO-8601 UTC expiry. 1 hour after mint by convention. */
+    expiresAt: text("expires_at").notNull(),
+
+    /** ISO-8601 UTC. Set by SQLite default on insert. */
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+
+    /**
+     * ISO-8601 UTC. Stamped at consume time. Sibling invalidation also
+     * writes this column — see consume helper docstring.
+     */
+    usedAt: text("used_at"),
+  },
+  (table) => [
+    uniqueIndex("password_reset_tokens_token_hash_unique_idx").on(
+      table.tokenHash,
+    ),
+    index("password_reset_tokens_user_id_idx").on(table.userId),
+  ],
+);
+
+/** Inferred insert type. */
+export type NewPasswordResetToken = typeof passwordResetTokens.$inferInsert;
+/** Inferred select type. */
+export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
