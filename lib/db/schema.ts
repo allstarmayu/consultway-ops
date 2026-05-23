@@ -1281,3 +1281,174 @@ export const passwordResetTokens = sqliteTable(
 export type NewPasswordResetToken = typeof passwordResetTokens.$inferInsert;
 /** Inferred select type. */
 export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
+
+// -- Shared types: projects -------------------------------------------------
+/**
+ * Lifecycle state of a project. The five values cover the operational
+ * arc Consultway tracks for the projects they consult on:
+ *
+ *   - `planning`  — project record exists, work hasn't started.
+ *                   Initial state on create. Fields are still being
+ *                   negotiated; budgets / dates may move.
+ *   - `active`    — execution is underway. The day-to-day state.
+ *   - `on_hold`   — paused for external reasons (client decision,
+ *                   funding delay, regulatory hold). Reversible to
+ *                   active.
+ *   - `completed` — wrapped successfully. Terminal — no further
+ *                   transitions from here.
+ *   - `cancelled` — terminated before completion (client withdrawal,
+ *                   force majeure, etc.). Terminal.
+ *
+ * Validated app-side via Zod + TypeScript union — SQLite has no native
+ * enums. Transitions are gated by `lib/projects/state-machine.ts`
+ * (Chunk 3).
+ */
+export type ProjectStatus =
+  | "planning"
+  | "active"
+  | "on_hold"
+  | "completed"
+  | "cancelled";
+
+// -- projects ---------------------------------------------------------------
+/**
+ * Projects the Consultway team is consulting on for a registered
+ * company. A project may be (a) created from scratch via
+ * `createProject`, or (b) born out of a tender that was awarded to a
+ * company via `createProjectFromTender` — in which case `tenderId`
+ * carries the link back to the originating tender row.
+ *
+ * Cascade semantics:
+ *
+ *   - `tenderId` → `tenders.id` ON DELETE SET NULL. Losing the tender
+ *     doesn't lose the project; the project survives as "orphaned from
+ *     tender". The originating tender is helpful context but the
+ *     project's value is its own audit + financial trail, which
+ *     continues to exist independently of whether the source tender
+ *     row is still around. (In practice tenders aren't deletable past
+ *     `draft`, but the SET NULL is the right default semantically.)
+ *
+ *   - `companyId` → `companies.id` ON DELETE RESTRICT. Same precedent
+ *     as `tenders.publisherCompanyId`: losing the owning company would
+ *     break the audit trail. Admins must clean up projects before
+ *     deleting their owning company.
+ *
+ * Internal notes:
+ *
+ *   - `internalNotes` is staff-only. The action layer strips this
+ *     field on company-role reads, same convention as
+ *     `companies.internalNotes` and `tenders.internalNotes`.
+ *
+ * Why `budgetInr` (and not `budgetAmount`):
+ *
+ *   - Mirrors `tenders.minAnnualTurnoverInr` exactly — same INTEGER
+ *     paise-less whole-rupees shape. Currency is fixed at INR for
+ *     Phase 2; multi-currency, when it lands, will be a Phase-3
+ *     follow-up that adds a `currency` column on the same table
+ *     rather than retrofitting the name.
+ */
+export const projects = sqliteTable(
+  "projects",
+  {
+    /** UUID v7. Generated app-side via `newId()`. */
+    id: text("id").primaryKey().$defaultFn(newId),
+
+    /** Display name. Indexed for search. */
+    name: text("name").notNull(),
+
+    /** Long-form description. Plain text. */
+    description: text("description"),
+
+    /**
+     * The tender this project was created from, when applicable. NULL
+     * for projects created directly via `createProject`. SET NULL on
+     * tender delete — the project's identity is its own; the tender is
+     * historical context.
+     */
+    tenderId: text("tender_id").references(() => tenders.id, {
+      onDelete: "set null",
+      onUpdate: "no action",
+    }),
+
+    /**
+     * Owning company. RESTRICT on delete so a company that owns
+     * projects can't be removed out from under them. Same shape as
+     * `tenders.publisherCompanyId`.
+     */
+    companyId: text("company_id")
+      .notNull()
+      .references(() => companies.id, {
+        onDelete: "restrict",
+        onUpdate: "no action",
+      }),
+
+    /**
+     * See `ProjectStatus`. Validated app-side with Zod. Default
+     * "planning" — every new project starts here regardless of what
+     * the caller sends (the action forces this).
+     */
+    status: text("status")
+      .notNull()
+      .$type<ProjectStatus>()
+      .default("planning"),
+
+    /**
+     * ISO-8601 date (YYYY-MM-DD) when the project starts. NULL means
+     * "not yet scheduled". Stored as TEXT — date-only, no time
+     * component (same convention as `tenders.openingDate`).
+     */
+    startDate: text("start_date"),
+
+    /**
+     * ISO-8601 date when the project is expected to end. NULL means
+     * "open-ended". Cross-validated against `startDate` at the action
+     * layer — startDate ≤ endDate when both present.
+     */
+    endDate: text("end_date"),
+
+    /**
+     * Budget in INR (whole rupees, no paise). Same INTEGER-not-REAL
+     * choice as `tenders.minAnnualTurnoverInr` — exact rupees up to
+     * ~9.2 quintillion, well above any realistic figure. NULL means
+     * "budget not set".
+     */
+    budgetInr: integer("budget_inr"),
+
+    /**
+     * Staff-only working notes. Never shown to company-role users —
+     * the action layer strips this field on company-scoped reads.
+     */
+    internalNotes: text("internal_notes"),
+
+    /** ISO-8601 UTC. Set by SQLite default on insert. */
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+
+    /** ISO-8601 UTC. Updated app-side via Drizzle $onUpdate hook. */
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(datetime('now'))`)
+      .$onUpdate(() => new Date().toISOString()),
+  },
+  (table) => [
+    // "All projects for this company" — the company detail page and
+    // the company-role list page both hit this index.
+    index("projects_company_id_idx").on(table.companyId),
+    // Status filter on the list page.
+    index("projects_status_idx").on(table.status),
+    // "Was this tender already turned into a project?" — the Chunk-3
+    // tender-detail bridge button consults this to decide between
+    // "Create project from this tender" and "View linked project".
+    index("projects_tender_id_idx").on(table.tenderId),
+    // Composite for the "active projects for this company" panels —
+    // company narrows first, status sub-filters.
+    index("projects_company_status_idx").on(table.companyId, table.status),
+  ],
+);
+
+/** Inferred insert type — use for Zod parsing / insert validation. */
+export type NewProject = typeof projects.$inferInsert;
+
+/** Inferred select type — what a row looks like when read from the DB. */
+export type Project = typeof projects.$inferSelect;
