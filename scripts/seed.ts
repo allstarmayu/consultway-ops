@@ -65,6 +65,21 @@ const log = logger.child({ module: "seed" });
  */
 export const CONSULTWAY_PUBLISHER_NAME = "Consultway Infotech";
 
+/**
+ * Deterministic `emailVerifiedAt` timestamp for seeded verified users.
+ *
+ * Using `new Date().toISOString()` would recompute on every seed run,
+ * which (with the Chunk-3 compare-and-update contract) would make
+ * every verified user look "updated" on every re-run. A stable
+ * constant means the column matches across runs and the diff is
+ * empty for identical fixtures.
+ *
+ * The specific date is arbitrary — only the non-null shape matters
+ * for "this account is verified" semantics. Picked early-2026 so the
+ * timestamp predates any realistic UAT activity.
+ */
+const SEED_VERIFIED_AT = "2026-01-01T00:00:00.000Z";
+
 // ── Seed data: Consultway staff users (no company link) ───────────────────
 
 interface StaffUserSeed {
@@ -83,7 +98,7 @@ const SEED_STAFF_USERS: StaffUserSeed[] = [
     role: "admin",
     name: "Consultway Admin",
     isActive: true,
-    emailVerifiedAt: new Date().toISOString(),
+    emailVerifiedAt: SEED_VERIFIED_AT,
   },
   {
     email: "staff@consultway.local",
@@ -91,7 +106,7 @@ const SEED_STAFF_USERS: StaffUserSeed[] = [
     role: "staff",
     name: "Consultway Staff",
     isActive: true,
-    emailVerifiedAt: new Date().toISOString(),
+    emailVerifiedAt: SEED_VERIFIED_AT,
   },
   {
     // Second staff user — gives role-collision / "two staff workflows
@@ -102,7 +117,7 @@ const SEED_STAFF_USERS: StaffUserSeed[] = [
     role: "staff",
     name: "Consultway Staff (Ops)",
     isActive: true,
-    emailVerifiedAt: new Date().toISOString(),
+    emailVerifiedAt: SEED_VERIFIED_AT,
   },
 ];
 
@@ -134,7 +149,7 @@ const SEED_COMPANY_USERS: CompanyUserSeed[] = [
     name: "Rajesh Patel (Acme)",
     companyName: "Acme Construction Pvt Ltd",
     isActive: true,
-    emailVerifiedAt: new Date().toISOString(),
+    emailVerifiedAt: SEED_VERIFIED_AT,
   },
   {
     // Second company-role user on a different company — exercises the
@@ -145,7 +160,7 @@ const SEED_COMPANY_USERS: CompanyUserSeed[] = [
     name: "Priya Iyer (BuildRight)",
     companyName: "BuildRight Engineers",
     isActive: true,
-    emailVerifiedAt: new Date().toISOString(),
+    emailVerifiedAt: SEED_VERIFIED_AT,
   },
   {
     // Third company-role user, on yet another company, with
@@ -171,7 +186,7 @@ const SEED_COMPANY_USERS: CompanyUserSeed[] = [
     name: "Disabled User (Nimbus)",
     companyName: "Nimbus Infraworks",
     isActive: false,
-    emailVerifiedAt: new Date().toISOString(),
+    emailVerifiedAt: SEED_VERIFIED_AT,
   },
 ];
 
@@ -1361,38 +1376,115 @@ const SEED_TRANSACTIONS: TransactionSeed[] = [
 // ── Seeding helpers ───────────────────────────────────────────────────────
 
 /**
- * Seed one Consultway staff user (admin or staff role, no company link).
- * Returns whether it was created or skipped.
+ * Per-seeder return value. The seed used to be a two-state machine
+ * ("created" | "skipped") with idempotency-by-skip. Day 21 Chunk 3
+ * adds the third state by adopting compare-and-update on the
+ * documented safe-to-update field set:
+ *
+ *   - `inserted`  — natural-key lookup missed; full row inserted.
+ *   - `updated`   — natural-key matched but at least one safe-to-
+ *                   update field differs; row UPDATEd in place.
+ *   - `unchanged` — natural-key matched and every safe-to-update
+ *                   field equals the spec. Replaces the old "skipped".
+ *
+ * Frozen fields (primary keys, natural-key columns, FK columns,
+ * audit timestamps, password hashes) are EXCLUDED from the diff and
+ * from the UPDATE set. Each seeder documents its frozen set inline.
+ *
+ * The contract is now: idempotent on identical fixtures, self-healing
+ * on changed fixtures — bump a company's annualTurnover in the spec
+ * and re-run `pnpm db:seed`, the column updates rather than skipping.
  */
-async function seedStaffUser(
+export type SeedResult = "inserted" | "updated" | "unchanged";
+
+export interface SeedTally {
+  inserted: number;
+  updated: number;
+  unchanged: number;
+}
+
+function newTally(): SeedTally {
+  return { inserted: 0, updated: 0, unchanged: 0 };
+}
+
+function bumpTally(t: SeedTally, r: SeedResult): void {
+  t[r]++;
+}
+
+/**
+ * Compare a current DB row against the spec-derived "intended" column
+ * values, returning the list of field names that differ. Empty result
+ * = no UPDATE needed.
+ *
+ * Arrays are compared by JSON-serialised value (handles
+ * `parentCompanyIds` and other `mode: 'json'` columns). Everything
+ * else is strict-equality (booleans, nullables, scalars).
+ */
+function diffFields<T extends Record<string, unknown>>(
+  current: T,
+  intended: Partial<T>,
+): Array<keyof T & string> {
+  const changed: Array<keyof T & string> = [];
+  for (const key of Object.keys(intended) as Array<keyof T & string>) {
+    const c = current[key];
+    const i = intended[key];
+    if (Array.isArray(c) || Array.isArray(i)) {
+      if (JSON.stringify(c) !== JSON.stringify(i)) changed.push(key);
+    } else if (c !== i) {
+      changed.push(key);
+    }
+  }
+  return changed;
+}
+
+/**
+ * Seed one Consultway staff user (admin or staff role, no company link).
+ *
+ * Frozen on update: `id`, `email` (natural key), `passwordHash`
+ * (re-hashing on every seed run would be expensive and pointless —
+ * to rotate a password, delete the row), `companyId` (admin/staff
+ * have none; never moves), `createdAt`, `updatedAt`.
+ *
+ * Updatable: `role`, `name`, `isActive`, `emailVerifiedAt`.
+ */
+export async function seedStaffUser(
   spec: StaffUserSeed,
-): Promise<"created" | "skipped"> {
+): Promise<SeedResult> {
   const existing = await db
-    .select({ id: users.id })
+    .select()
     .from(users)
     .where(eq(users.email, spec.email))
-    .limit(1);
+    .limit(1)
+    .then((rows) => rows[0]);
 
-  if (existing.length > 0) {
-    log.info("user already exists, skipping", { email: spec.email });
-    return "skipped";
-  }
-
-  const passwordHash = await hashPassword(spec.plaintextPassword);
-
-  await db.insert(users).values({
-    id: newId(),
-    email: spec.email,
-    passwordHash,
+  const updatable = {
     role: spec.role,
-    companyId: null,
     name: spec.name,
     isActive: spec.isActive,
     emailVerifiedAt: spec.emailVerifiedAt,
-  });
+  };
 
-  log.info("seeded user", { email: spec.email, role: spec.role });
-  return "created";
+  if (!existing) {
+    const passwordHash = await hashPassword(spec.plaintextPassword);
+    await db.insert(users).values({
+      id: newId(),
+      email: spec.email,
+      passwordHash,
+      companyId: null,
+      ...updatable,
+    });
+    log.info("user inserted", { email: spec.email, role: spec.role });
+    return "inserted";
+  }
+
+  const changed = diffFields(existing, updatable);
+  if (changed.length === 0) {
+    log.info("user unchanged", { email: spec.email });
+    return "unchanged";
+  }
+  await db.update(users).set(updatable).where(eq(users.id, existing.id));
+  log.info("user updated", { email: spec.email, changed });
+  return "updated";
 }
 
 /**
@@ -1401,51 +1493,62 @@ async function seedStaffUser(
  * company doesn't exist — that would mean the standalone-companies
  * step didn't run first, which is a bug worth surfacing loudly.
  */
-async function seedCompanyUser(
+export async function seedCompanyUser(
   spec: CompanyUserSeed,
-): Promise<"created" | "skipped"> {
+): Promise<SeedResult> {
   const existing = await db
-    .select({ id: users.id })
+    .select()
     .from(users)
     .where(eq(users.email, spec.email))
-    .limit(1);
-
-  if (existing.length > 0) {
-    log.info("company user already exists, skipping", { email: spec.email });
-    return "skipped";
-  }
-
-  const company = await db
-    .select({ id: companies.id })
-    .from(companies)
-    .where(eq(companies.name, spec.companyName))
     .limit(1)
     .then((rows) => rows[0]);
 
-  if (!company) {
-    throw new Error(
-      `Company-role user "${spec.email}" references company "${spec.companyName}" but no such company exists. Did the standalone seeds run first?`,
-    );
-  }
-
-  const passwordHash = await hashPassword(spec.plaintextPassword);
-
-  await db.insert(users).values({
-    id: newId(),
-    email: spec.email,
-    passwordHash,
-    role: "company",
-    companyId: company.id,
+  // Updatable shape for the compare-and-update path.
+  // Frozen: id, email, passwordHash, companyId (moves between companies
+  // are real-world audit events, not seed-time corrections), createdAt,
+  // updatedAt. Updatable: name, isActive, emailVerifiedAt.
+  const updatable = {
     name: spec.name,
     isActive: spec.isActive,
     emailVerifiedAt: spec.emailVerifiedAt,
-  });
+  };
 
-  log.info("seeded company user", {
-    email: spec.email,
-    companyName: spec.companyName,
-  });
-  return "created";
+  if (!existing) {
+    const company = await db
+      .select({ id: companies.id })
+      .from(companies)
+      .where(eq(companies.name, spec.companyName))
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (!company) {
+      throw new Error(
+        `Company-role user "${spec.email}" references company "${spec.companyName}" but no such company exists. Did the standalone seeds run first?`,
+      );
+    }
+    const passwordHash = await hashPassword(spec.plaintextPassword);
+    await db.insert(users).values({
+      id: newId(),
+      email: spec.email,
+      passwordHash,
+      role: "company",
+      companyId: company.id,
+      ...updatable,
+    });
+    log.info("company user inserted", {
+      email: spec.email,
+      companyName: spec.companyName,
+    });
+    return "inserted";
+  }
+
+  const changed = diffFields(existing, updatable);
+  if (changed.length === 0) {
+    log.info("company user unchanged", { email: spec.email });
+    return "unchanged";
+  }
+  await db.update(users).set(updatable).where(eq(users.id, existing.id));
+  log.info("company user updated", { email: spec.email, changed });
+  return "updated";
 }
 
 /**
@@ -1463,48 +1566,64 @@ async function seedCompanyUser(
  * show it in the public company roster (we'll add a filter exclusion in
  * the companies list when the tender-publish flow lands).
  */
-async function seedConsultwayPublisher(): Promise<"created" | "skipped"> {
+export async function seedConsultwayPublisher(): Promise<SeedResult> {
   const existing = await db
-    .select({ id: companies.id })
+    .select()
     .from(companies)
     .where(eq(companies.name, CONSULTWAY_PUBLISHER_NAME))
-    .limit(1);
+    .limit(1)
+    .then((rows) => rows[0]);
 
-  if (existing.length > 0) {
-    log.info("Consultway publisher already exists, skipping", {
-      name: CONSULTWAY_PUBLISHER_NAME,
-    });
-    return "skipped";
-  }
-
-  await db.insert(companies).values({
-    id: newId(),
-    name: CONSULTWAY_PUBLISHER_NAME,
+  // Frozen: id, name (natural key), createdAt, updatedAt.
+  // The publisher is a singleton — most of these fields rarely move,
+  // but keeping internalNotes / contact info updatable means we can
+  // edit them in the seed and have changes take effect.
+  const updatable = {
     sector: "Consulting",
     geography: "Pan India",
-    // No GST/PAN — this is an internal sentinel, not a registered org row.
-    // Leaving these NULL avoids colliding with real company unique constraints.
-    gstNumber: null,
-    panNumber: null,
+    gstNumber: null as string | null,
+    panNumber: null as string | null,
     isMsme: false,
     isJv: false,
-    complianceStatus: "compliant",
-    parentCompanyIds: null,
-    contactEmail: "ops@consultway.local",
-    contactPhone: null,
-    contactPersonName: "Consultway Operations",
-    addressLine: null,
-    city: null,
-    state: null,
-    pincode: null,
+    complianceStatus: "compliant" as ComplianceStatus,
+    parentCompanyIds: null as string[] | null,
+    annualTurnover: null as number | null,
+    contactEmail: "ops@consultway.local" as string | null,
+    contactPhone: null as string | null,
+    contactPersonName: "Consultway Operations" as string | null,
+    addressLine: null as string | null,
+    city: null as string | null,
+    state: null as string | null,
+    pincode: null as string | null,
     internalNotes:
-      "Internal sentinel company. Used as the publisher of Consultway-run tenders. Do not delete.",
-  });
+      "Internal sentinel company. Used as the publisher of Consultway-run tenders. Do not delete." as string | null,
+  };
 
-  log.info("seeded Consultway publisher company", {
+  if (!existing) {
+    await db.insert(companies).values({
+      id: newId(),
+      name: CONSULTWAY_PUBLISHER_NAME,
+      ...updatable,
+    });
+    log.info("Consultway publisher inserted", {
+      name: CONSULTWAY_PUBLISHER_NAME,
+    });
+    return "inserted";
+  }
+
+  const changed = diffFields(existing, updatable);
+  if (changed.length === 0) {
+    log.info("Consultway publisher unchanged", {
+      name: CONSULTWAY_PUBLISHER_NAME,
+    });
+    return "unchanged";
+  }
+  await db.update(companies).set(updatable).where(eq(companies.id, existing.id));
+  log.info("Consultway publisher updated", {
     name: CONSULTWAY_PUBLISHER_NAME,
+    changed,
   });
-  return "created";
+  return "updated";
 }
 
 /**
@@ -1514,44 +1633,57 @@ async function seedConsultwayPublisher(): Promise<"created" | "skipped"> {
  * constraints instead, but those are nullable in seed data so name is
  * the better key here.
  */
-async function seedStandaloneCompany(
+export async function seedStandaloneCompany(
   spec: StandaloneSeed,
-): Promise<"created" | "skipped"> {
+): Promise<SeedResult> {
   const existing = await db
-    .select({ id: companies.id })
+    .select()
     .from(companies)
     .where(eq(companies.name, spec.name))
-    .limit(1);
+    .limit(1)
+    .then((rows) => rows[0]);
 
-  if (existing.length > 0) {
-    log.info("company already exists, skipping", { name: spec.name });
-    return "skipped";
-  }
-
-  await db.insert(companies).values({
-    id: newId(),
-    name: spec.name,
+  // Frozen: id, name (natural key), isJv (architectural — non-JV
+  // companies can't morph into JVs at seed time), createdAt, updatedAt.
+  // Everything else is fixture-driven and safe to update.
+  const updatable = {
     sector: spec.sector,
     geography: spec.geography,
-    gstNumber: spec.gstNumber,
-    panNumber: spec.panNumber,
+    gstNumber: spec.gstNumber ?? null,
+    panNumber: spec.panNumber ?? null,
     isMsme: spec.isMsme,
-    isJv: false,
     complianceStatus: spec.complianceStatus,
-    parentCompanyIds: null,
+    parentCompanyIds: null as string[] | null,
     annualTurnover: spec.annualTurnover ?? null,
-    contactEmail: spec.contactEmail,
-    contactPhone: spec.contactPhone,
-    contactPersonName: spec.contactPersonName,
-    addressLine: spec.addressLine,
-    city: spec.city,
-    state: spec.state,
-    pincode: spec.pincode,
-    internalNotes: spec.internalNotes,
-  });
+    contactEmail: spec.contactEmail ?? null,
+    contactPhone: spec.contactPhone ?? null,
+    contactPersonName: spec.contactPersonName ?? null,
+    addressLine: spec.addressLine ?? null,
+    city: spec.city ?? null,
+    state: spec.state ?? null,
+    pincode: spec.pincode ?? null,
+    internalNotes: spec.internalNotes ?? null,
+  };
 
-  log.info("seeded company", { name: spec.name, sector: spec.sector });
-  return "created";
+  if (!existing) {
+    await db.insert(companies).values({
+      id: newId(),
+      name: spec.name,
+      isJv: false,
+      ...updatable,
+    });
+    log.info("company inserted", { name: spec.name, sector: spec.sector });
+    return "inserted";
+  }
+
+  const changed = diffFields(existing, updatable);
+  if (changed.length === 0) {
+    log.info("company unchanged", { name: spec.name });
+    return "unchanged";
+  }
+  await db.update(companies).set(updatable).where(eq(companies.id, existing.id));
+  log.info("company updated", { name: spec.name, changed });
+  return "updated";
 }
 
 /**
@@ -1559,23 +1691,17 @@ async function seedStandaloneCompany(
  * partner doesn't exist (would mean the standalones didn't seed,
  * which is itself a bug worth surfacing).
  */
-async function seedJvCompany(
-  spec: JvSeed,
-): Promise<"created" | "skipped"> {
+export async function seedJvCompany(spec: JvSeed): Promise<SeedResult> {
   const existing = await db
-    .select({ id: companies.id })
+    .select()
     .from(companies)
     .where(eq(companies.name, spec.name))
-    .limit(1);
+    .limit(1)
+    .then((rows) => rows[0]);
 
-  if (existing.length > 0) {
-    log.info("JV already exists, skipping", { name: spec.name });
-    return "skipped";
-  }
-
-  // Resolve partner names → UUIDs. Use sequential awaits rather than
-  // Promise.all because we want clearer error messages if one partner
-  // is missing (knowing WHICH partner failed matters during debugging).
+  // Partner-id resolution happens for both paths — on update we
+  // re-resolve so a fixture that changes its partner list takes
+  // effect on re-seed.
   const partnerIds: string[] = [];
   for (const partnerName of spec.partnerNames) {
     const partner = await db
@@ -1584,7 +1710,6 @@ async function seedJvCompany(
       .where(eq(companies.name, partnerName))
       .limit(1)
       .then((rows) => rows[0]);
-
     if (!partner) {
       throw new Error(
         `JV "${spec.name}" references partner "${partnerName}" but no such company exists. Did the standalone seeds run first?`,
@@ -1593,32 +1718,49 @@ async function seedJvCompany(
     partnerIds.push(partner.id);
   }
 
-  await db.insert(companies).values({
-    id: newId(),
-    name: spec.name,
+  // Frozen: id, name (natural key), isJv (architectural), createdAt,
+  // updatedAt. Everything else is fixture-driven.
+  const updatable = {
     sector: spec.sector,
     geography: spec.geography,
-    gstNumber: spec.gstNumber,
-    panNumber: spec.panNumber,
+    gstNumber: spec.gstNumber ?? null,
+    panNumber: spec.panNumber ?? null,
     isMsme: spec.isMsme,
-    isJv: true,
     complianceStatus: spec.complianceStatus,
     parentCompanyIds: partnerIds,
-    contactEmail: spec.contactEmail,
-    contactPhone: spec.contactPhone,
-    contactPersonName: spec.contactPersonName,
-    addressLine: spec.addressLine,
-    city: spec.city,
-    state: spec.state,
-    pincode: spec.pincode,
-    internalNotes: spec.internalNotes,
-  });
+    annualTurnover: null as number | null,
+    contactEmail: spec.contactEmail ?? null,
+    contactPhone: spec.contactPhone ?? null,
+    contactPersonName: spec.contactPersonName ?? null,
+    addressLine: spec.addressLine ?? null,
+    city: spec.city ?? null,
+    state: spec.state ?? null,
+    pincode: spec.pincode ?? null,
+    internalNotes: spec.internalNotes ?? null,
+  };
 
-  log.info("seeded JV", {
-    name: spec.name,
-    partnerCount: partnerIds.length,
-  });
-  return "created";
+  if (!existing) {
+    await db.insert(companies).values({
+      id: newId(),
+      name: spec.name,
+      isJv: true,
+      ...updatable,
+    });
+    log.info("JV inserted", {
+      name: spec.name,
+      partnerCount: partnerIds.length,
+    });
+    return "inserted";
+  }
+
+  const changed = diffFields(existing, updatable);
+  if (changed.length === 0) {
+    log.info("JV unchanged", { name: spec.name });
+    return "unchanged";
+  }
+  await db.update(companies).set(updatable).where(eq(companies.id, existing.id));
+  log.info("JV updated", { name: spec.name, changed });
+  return "updated";
 }
 
 /**
@@ -1642,11 +1784,11 @@ function isoDateOffset(daysFromNow: number | null): string | null {
  *
  * Returns the per-company tally of created and skipped rows.
  */
-async function seedDocumentsForCompany(
+export async function seedDocumentsForCompany(
   companyName: string,
   specs: DocumentSeed[],
-): Promise<{ created: number; skipped: number }> {
-  const tally = { created: 0, skipped: 0 };
+): Promise<SeedTally> {
+  const tally = newTally();
 
   // Resolve the company id once per company.
   const company = await db
@@ -1687,11 +1829,10 @@ async function seedDocumentsForCompany(
   }
 
   for (const spec of specs) {
-    // Idempotency check: (companyId, fileName) is unique enough for the
-    // fixture set (we control these names; production rows can clash on
-    // filename across companies but never within one).
+    // Natural key: (companyId, fileName) — fileName is unique within
+    // a company in the fixture set.
     const existing = await db
-      .select({ id: documents.id })
+      .select()
       .from(documents)
       .where(
         and(
@@ -1699,58 +1840,79 @@ async function seedDocumentsForCompany(
           eq(documents.fileName, spec.fileName),
         ),
       )
-      .limit(1);
+      .limit(1)
+      .then((rows) => rows[0]);
 
-    if (existing.length > 0) {
-      tally.skipped++;
-      continue;
-    }
-
-    const documentId = newId();
     const uploadedById = emailToId.get(spec.uploaderEmail)!;
     const reviewedById = spec.reviewerEmail
       ? emailToId.get(spec.reviewerEmail)!
       : null;
 
-    // The reviewed_at stamp is only meaningful for terminal-review states.
-    // `verified` / `rejected` always carry a reviewer + a timestamp;
-    // `expired` rows are flipped by the cron from `verified`, so they
-    // keep the original reviewer + add a (notional) review timestamp.
-    const isReviewed =
-      spec.status === "verified" ||
-      spec.status === "rejected" ||
-      spec.status === "expired";
-    const reviewedAt = isReviewed ? new Date().toISOString() : null;
-
-    await db.insert(documents).values({
-      id: documentId,
-      companyId: company.id,
+    // Frozen on update: id, companyId, fileKey (depends on documentId
+    // in its path), fileName (natural key with companyId), uploadedBy,
+    // uploadedAt, reviewedAt (preserves the original review timestamp
+    // even if status changes — re-stamping every re-seed would make
+    // identical fixtures look "changed"), createdAt, updatedAt.
+    // Updatable: documentType, mimeType, sizeBytes, status, reviewNotes,
+    // reviewedBy, issuedOn, expiresAt.
+    const updatable = {
       documentType: spec.documentType,
-      // Demo metadata - bytes don't actually exist in R2. The fileKey
-      // shape matches what `lib/r2/keys.ts::buildDocumentKey` produces
-      // so the action layer's RBAC checks behave identically against
-      // these rows.
-      fileKey: `companies/${company.id}/${documentId}/${spec.fileName}`,
-      fileName: spec.fileName,
       mimeType: spec.mimeType,
       sizeBytes: spec.sizeBytes,
       status: spec.status,
-      reviewNotes: spec.reviewNotes,
+      reviewNotes: spec.reviewNotes ?? null,
       reviewedBy: reviewedById,
-      reviewedAt,
-      issuedOn: spec.issuedOn,
+      issuedOn: spec.issuedOn ?? null,
       expiresAt: isoDateOffset(spec.expiresInDays),
-      uploadedBy: uploadedById,
-      uploadedAt: new Date().toISOString(),
-    });
+    };
 
-    tally.created++;
+    if (!existing) {
+      const documentId = newId();
+      const isReviewed =
+        spec.status === "verified" ||
+        spec.status === "rejected" ||
+        spec.status === "expired";
+      const reviewedAt = isReviewed ? new Date().toISOString() : null;
+      await db.insert(documents).values({
+        id: documentId,
+        companyId: company.id,
+        // Demo metadata - bytes don't actually exist in R2. The fileKey
+        // shape matches what `lib/r2/keys.ts::buildDocumentKey` produces
+        // so the action layer's RBAC checks behave identically against
+        // these rows.
+        fileKey: `companies/${company.id}/${documentId}/${spec.fileName}`,
+        fileName: spec.fileName,
+        ...updatable,
+        reviewedAt,
+        uploadedBy: uploadedById,
+        uploadedAt: new Date().toISOString(),
+      });
+      bumpTally(tally, "inserted");
+      continue;
+    }
+
+    const changed = diffFields(existing, updatable);
+    if (changed.length === 0) {
+      bumpTally(tally, "unchanged");
+      continue;
+    }
+    await db
+      .update(documents)
+      .set(updatable)
+      .where(eq(documents.id, existing.id));
+    log.info("document updated", {
+      companyName,
+      fileName: spec.fileName,
+      changed,
+    });
+    bumpTally(tally, "updated");
   }
 
   log.info("seeded documents for company", {
     companyName,
-    created: tally.created,
-    skipped: tally.skipped,
+    inserted: tally.inserted,
+    updated: tally.updated,
+    unchanged: tally.unchanged,
   });
 
   return tally;
@@ -1784,55 +1946,71 @@ async function lookupCompanyId(name: string): Promise<string> {
  * the publisher (Consultway sentinel) + optional awarded company by
  * name at insert time so the file stays readable.
  */
-async function seedTender(spec: TenderSeed): Promise<"created" | "skipped"> {
+export async function seedTender(spec: TenderSeed): Promise<SeedResult> {
   const existing = await db
-    .select({ id: tenders.id })
+    .select()
     .from(tenders)
     .where(eq(tenders.referenceNumber, spec.referenceNumber))
-    .limit(1);
+    .limit(1)
+    .then((rows) => rows[0]);
 
-  if (existing.length > 0) {
-    log.info("tender already exists, skipping", {
-      referenceNumber: spec.referenceNumber,
-    });
-    return "skipped";
-  }
-
-  const publisherId = await lookupCompanyId(CONSULTWAY_PUBLISHER_NAME);
   const awardedCompanyId = spec.awardedCompanyName
     ? await lookupCompanyId(spec.awardedCompanyName)
     : null;
 
-  await db.insert(tenders).values({
-    id: newId(),
+  // Frozen: id, referenceNumber (natural key), publisherCompanyId
+  // (a publisher change is a real-world event, not a seed-time edit),
+  // publishedAt (the original publish timestamp matters for the audit
+  // chain — re-stamping every re-seed would make identical fixtures
+  // look "changed"), createdAt, updatedAt. Updatable: everything else.
+  const updatable = {
     title: spec.title,
-    description: spec.description,
-    referenceNumber: spec.referenceNumber,
+    description: spec.description ?? null,
     status: spec.status,
-    publisherCompanyId: publisherId,
     sector: spec.sector,
     geography: spec.geography,
-    eligibleSector: spec.eligibleSector,
-    eligibleGeography: spec.eligibleGeography,
-    minAnnualTurnoverInr: spec.minAnnualTurnoverInr,
+    eligibleSector: spec.eligibleSector ?? null,
+    eligibleGeography: spec.eligibleGeography ?? null,
+    minAnnualTurnoverInr: spec.minAnnualTurnoverInr ?? null,
     msmeOnly: spec.msmeOnly,
     openingDate: isoDateOffset(spec.openingInDays),
     closingDate: isoDateOffset(spec.closingInDays),
-    publishedAt:
-      spec.publishedInDays !== null
-        ? new Date(
-            Date.now() + spec.publishedInDays * 24 * 60 * 60 * 1000,
-          ).toISOString()
-        : null,
     awardedCompanyId,
-    internalNotes: spec.internalNotes,
-  });
+    internalNotes: spec.internalNotes ?? null,
+  };
 
-  log.info("seeded tender", {
+  if (!existing) {
+    const publisherId = await lookupCompanyId(CONSULTWAY_PUBLISHER_NAME);
+    await db.insert(tenders).values({
+      id: newId(),
+      referenceNumber: spec.referenceNumber,
+      publisherCompanyId: publisherId,
+      publishedAt:
+        spec.publishedInDays !== null
+          ? new Date(
+              Date.now() + spec.publishedInDays * 24 * 60 * 60 * 1000,
+            ).toISOString()
+          : null,
+      ...updatable,
+    });
+    log.info("tender inserted", {
+      referenceNumber: spec.referenceNumber,
+      status: spec.status,
+    });
+    return "inserted";
+  }
+
+  const changed = diffFields(existing, updatable);
+  if (changed.length === 0) {
+    log.info("tender unchanged", { referenceNumber: spec.referenceNumber });
+    return "unchanged";
+  }
+  await db.update(tenders).set(updatable).where(eq(tenders.id, existing.id));
+  log.info("tender updated", {
     referenceNumber: spec.referenceNumber,
-    status: spec.status,
+    changed,
   });
-  return "created";
+  return "updated";
 }
 
 /**
@@ -1841,9 +2019,9 @@ async function seedTender(spec: TenderSeed): Promise<"created" | "skipped"> {
  * checking ahead lets us log the skip cleanly instead of surfacing a
  * UNIQUE failure.
  */
-async function seedTenderApplication(
+export async function seedTenderApplication(
   spec: TenderApplicationSeed,
-): Promise<"created" | "skipped"> {
+): Promise<SeedResult> {
   const tender = await db
     .select({ id: tenders.id })
     .from(tenders)
@@ -1858,7 +2036,7 @@ async function seedTenderApplication(
   const companyId = await lookupCompanyId(spec.companyName);
 
   const existing = await db
-    .select({ id: tenderApplications.id })
+    .select()
     .from(tenderApplications)
     .where(
       and(
@@ -1866,65 +2044,87 @@ async function seedTenderApplication(
         eq(tenderApplications.companyId, companyId),
       ),
     )
-    .limit(1);
+    .limit(1)
+    .then((rows) => rows[0]);
 
-  if (existing.length > 0) {
-    log.info("tender application already exists, skipping", {
+  // Frozen: id, tenderId, companyId (composite natural key — moving an
+  // application between tenders or companies is not a meaningful
+  // operation), submittedAt (write-once; the original submission
+  // timestamp is load-bearing for the audit chain), createdAt,
+  // updatedAt. Updatable: status, coverNote, internalNotes, decidedAt.
+  const updatable = {
+    status: spec.status,
+    coverNote: spec.coverNote ?? null,
+    internalNotes: spec.internalNotes ?? null,
+    decidedAt:
+      spec.decidedInDays !== null
+        ? new Date(
+            Date.now() + spec.decidedInDays * 24 * 60 * 60 * 1000,
+          ).toISOString()
+        : null,
+  };
+
+  if (!existing) {
+    const submittedAt = new Date(
+      Date.now() + spec.submittedInDays * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    await db.insert(tenderApplications).values({
+      id: newId(),
+      tenderId: tender.id,
+      companyId,
+      submittedAt,
+      ...updatable,
+    });
+    log.info("tender application inserted", {
+      tenderReferenceNumber: spec.tenderReferenceNumber,
+      companyName: spec.companyName,
+      status: spec.status,
+    });
+    return "inserted";
+  }
+
+  // decidedAt is a derived timestamp — exclude it from the diff so
+  // identical fixtures don't show as "updated" on every re-seed. If
+  // status changes we still want to update decidedAt; that's covered
+  // because the UPDATE set always includes the freshly-computed value.
+  const updatableForDiff = {
+    status: updatable.status,
+    coverNote: updatable.coverNote,
+    internalNotes: updatable.internalNotes,
+  };
+  const changed = diffFields(existing, updatableForDiff);
+  if (changed.length === 0) {
+    log.info("tender application unchanged", {
       tenderReferenceNumber: spec.tenderReferenceNumber,
       companyName: spec.companyName,
     });
-    return "skipped";
+    return "unchanged";
   }
-
-  const submittedAt = new Date(
-    Date.now() + spec.submittedInDays * 24 * 60 * 60 * 1000,
-  ).toISOString();
-  const decidedAt =
-    spec.decidedInDays !== null
-      ? new Date(
-          Date.now() + spec.decidedInDays * 24 * 60 * 60 * 1000,
-        ).toISOString()
-      : null;
-
-  await db.insert(tenderApplications).values({
-    id: newId(),
-    tenderId: tender.id,
-    companyId,
-    status: spec.status,
-    coverNote: spec.coverNote,
-    internalNotes: spec.internalNotes,
-    submittedAt,
-    decidedAt,
-  });
-
-  log.info("seeded tender application", {
+  await db
+    .update(tenderApplications)
+    .set(updatable)
+    .where(eq(tenderApplications.id, existing.id));
+  log.info("tender application updated", {
     tenderReferenceNumber: spec.tenderReferenceNumber,
     companyName: spec.companyName,
-    status: spec.status,
+    changed,
   });
-  return "created";
+  return "updated";
 }
 
 /**
  * Seed one project. Idempotency by `(companyId, name)`. Resolves
  * the optional tender link by `referenceNumber`.
  */
-async function seedProject(spec: ProjectSeed): Promise<"created" | "skipped"> {
+export async function seedProject(spec: ProjectSeed): Promise<SeedResult> {
   const companyId = await lookupCompanyId(spec.companyName);
 
   const existing = await db
-    .select({ id: projects.id })
+    .select()
     .from(projects)
     .where(and(eq(projects.companyId, companyId), eq(projects.name, spec.name)))
-    .limit(1);
-
-  if (existing.length > 0) {
-    log.info("project already exists, skipping", {
-      companyName: spec.companyName,
-      name: spec.name,
-    });
-    return "skipped";
-  }
+    .limit(1)
+    .then((rows) => rows[0]);
 
   let tenderId: string | null = null;
   if (spec.tenderReferenceNumber) {
@@ -1942,25 +2142,51 @@ async function seedProject(spec: ProjectSeed): Promise<"created" | "skipped"> {
     tenderId = tender.id;
   }
 
-  await db.insert(projects).values({
-    id: newId(),
-    name: spec.name,
-    description: spec.description,
+  // Frozen: id, companyId (cross-FK with transactions — moving a
+  // project between companies is a real-world event, not a seed
+  // edit), name (natural key with companyId), createdAt, updatedAt.
+  // Updatable: description, tenderId, status, startDate, endDate,
+  // budgetInr, internalNotes.
+  const updatable = {
+    description: spec.description ?? null,
     tenderId,
-    companyId,
     status: spec.status,
     startDate: isoDateOffset(spec.startInDays),
     endDate: isoDateOffset(spec.endInDays),
-    budgetInr: spec.budgetInr,
-    internalNotes: spec.internalNotes,
-  });
+    budgetInr: spec.budgetInr ?? null,
+    internalNotes: spec.internalNotes ?? null,
+  };
 
-  log.info("seeded project", {
+  if (!existing) {
+    await db.insert(projects).values({
+      id: newId(),
+      name: spec.name,
+      companyId,
+      ...updatable,
+    });
+    log.info("project inserted", {
+      companyName: spec.companyName,
+      name: spec.name,
+      status: spec.status,
+    });
+    return "inserted";
+  }
+
+  const changed = diffFields(existing, updatable);
+  if (changed.length === 0) {
+    log.info("project unchanged", {
+      companyName: spec.companyName,
+      name: spec.name,
+    });
+    return "unchanged";
+  }
+  await db.update(projects).set(updatable).where(eq(projects.id, existing.id));
+  log.info("project updated", {
     companyName: spec.companyName,
     name: spec.name,
-    status: spec.status,
+    changed,
   });
-  return "created";
+  return "updated";
 }
 
 /**
@@ -1971,13 +2197,13 @@ async function seedProject(spec: ProjectSeed): Promise<"created" | "skipped"> {
  * re-asserts this defensively because a typo in the fixture would
  * silently corrupt the ledger.
  */
-async function seedTransaction(
+export async function seedTransaction(
   spec: TransactionSeed,
-): Promise<"created" | "skipped"> {
+): Promise<SeedResult> {
   const companyId = await lookupCompanyId(spec.companyName);
 
   const existing = await db
-    .select({ id: transactions.id })
+    .select()
     .from(transactions)
     .where(
       and(
@@ -1985,15 +2211,8 @@ async function seedTransaction(
         eq(transactions.referenceNumber, spec.referenceNumber),
       ),
     )
-    .limit(1);
-
-  if (existing.length > 0) {
-    log.info("transaction already exists, skipping", {
-      companyName: spec.companyName,
-      referenceNumber: spec.referenceNumber,
-    });
-    return "skipped";
-  }
+    .limit(1)
+    .then((rows) => rows[0]);
 
   let projectId: string | null = null;
   if (spec.projectName) {
@@ -2016,126 +2235,127 @@ async function seedTransaction(
     projectId = project.id;
   }
 
-  const occurredOn = isoDateOffset(spec.occurredInDays)!;
-
-  await db.insert(transactions).values({
-    id: newId(),
+  // Frozen: id, companyId (cross-FK with project), referenceNumber
+  // (natural key with companyId), createdAt, updatedAt. Updatable:
+  // type, amountPaise, currency, projectId, occurredOn, notes,
+  // internalNotes.
+  const updatable = {
     type: spec.type,
     amountPaise: spec.amountPaise,
     currency: "INR",
-    companyId,
     projectId,
-    occurredOn,
-    referenceNumber: spec.referenceNumber,
-    notes: spec.notes,
-    internalNotes: null,
-  });
+    occurredOn: isoDateOffset(spec.occurredInDays)!,
+    notes: spec.notes ?? null,
+    internalNotes: null as string | null,
+  };
 
-  log.info("seeded transaction", {
+  if (!existing) {
+    await db.insert(transactions).values({
+      id: newId(),
+      companyId,
+      referenceNumber: spec.referenceNumber,
+      ...updatable,
+    });
+    log.info("transaction inserted", {
+      companyName: spec.companyName,
+      referenceNumber: spec.referenceNumber,
+      type: spec.type,
+    });
+    return "inserted";
+  }
+
+  const changed = diffFields(existing, updatable);
+  if (changed.length === 0) {
+    log.info("transaction unchanged", {
+      companyName: spec.companyName,
+      referenceNumber: spec.referenceNumber,
+    });
+    return "unchanged";
+  }
+  await db
+    .update(transactions)
+    .set(updatable)
+    .where(eq(transactions.id, existing.id));
+  log.info("transaction updated", {
     companyName: spec.companyName,
     referenceNumber: spec.referenceNumber,
-    type: spec.type,
+    changed,
   });
-  return "created";
+  return "updated";
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   log.info("starting seed");
 
-  const stats = { created: 0, skipped: 0 };
-  const bump = (r: "created" | "skipped") => {
-    stats[r]++;
-  };
+  const coreStats = newTally();
 
   // 1. Consultway staff users first — independent of companies.
   for (const spec of SEED_STAFF_USERS) {
-    bump(await seedStaffUser(spec));
+    bumpTally(coreStats, await seedStaffUser(spec));
   }
 
   // 2. Consultway publisher sentinel — must exist before any tender seed
-  //    runs (when those land) since `tenders.publisherCompanyId` is NOT
-  //    NULL. Ordered before client companies so the publisher row reliably
-  //    has the lowest createdAt timestamp.
-  bump(await seedConsultwayPublisher());
+  //    runs since `tenders.publisherCompanyId` is NOT NULL.
+  bumpTally(coreStats, await seedConsultwayPublisher());
 
   // 3. Standalone companies — must exist before JVs that reference them.
   for (const spec of STANDALONE_COMPANIES) {
-    bump(await seedStandaloneCompany(spec));
+    bumpTally(coreStats, await seedStandaloneCompany(spec));
   }
 
   // 4. JVs — they look up their partners by name.
   for (const spec of JV_COMPANIES) {
-    bump(await seedJvCompany(spec));
+    bumpTally(coreStats, await seedJvCompany(spec));
   }
 
   // 5. Company-role users — they reference a client company by name,
   //    so the named companies must exist by this point.
   for (const spec of SEED_COMPANY_USERS) {
-    bump(await seedCompanyUser(spec));
+    bumpTally(coreStats, await seedCompanyUser(spec));
   }
 
   // 6. Document fixtures. Documents reference both a company
   //    (FK companyId) and users (FK uploadedBy, reviewedBy), so all
-  //    earlier steps must have run. Tracked under a separate tally
-  //    so the doc-level numbers are visible in the final log line.
-  const docStats = { created: 0, skipped: 0 };
+  //    earlier steps must have run.
+  const docStats = newTally();
   for (const [companyName, specs] of Object.entries(DOCUMENTS_PER_COMPANY)) {
     const tally = await seedDocumentsForCompany(companyName, specs);
-    docStats.created += tally.created;
-    docStats.skipped += tally.skipped;
+    docStats.inserted += tally.inserted;
+    docStats.updated += tally.updated;
+    docStats.unchanged += tally.unchanged;
   }
 
   // 7. Tenders — reference the Consultway publisher sentinel + an
   //    awarded company. All earlier company seeds must have landed.
-  const tenderStats = { created: 0, skipped: 0 };
+  const tenderStats = newTally();
   for (const spec of SEED_TENDERS) {
-    const r = await seedTender(spec);
-    tenderStats[r]++;
+    bumpTally(tenderStats, await seedTender(spec));
   }
 
   // 8. Tender applications — depend on both tenders and companies.
-  const applicationStats = { created: 0, skipped: 0 };
+  const applicationStats = newTally();
   for (const spec of SEED_TENDER_APPLICATIONS) {
-    const r = await seedTenderApplication(spec);
-    applicationStats[r]++;
+    bumpTally(applicationStats, await seedTenderApplication(spec));
   }
 
   // 9. Projects — may reference an awarded tender. Companies must exist.
-  const projectStats = { created: 0, skipped: 0 };
+  const projectStats = newTally();
   for (const spec of SEED_PROJECTS) {
-    const r = await seedProject(spec);
-    projectStats[r]++;
+    bumpTally(projectStats, await seedProject(spec));
   }
 
   // 10. Transactions — may reference a project; cross-FK invariant
   //     re-asserted inside the seeder. Projects must exist.
-  const transactionStats = { created: 0, skipped: 0 };
+  const transactionStats = newTally();
   for (const spec of SEED_TRANSACTIONS) {
-    const r = await seedTransaction(spec);
-    transactionStats[r]++;
+    bumpTally(transactionStats, await seedTransaction(spec));
   }
 
-  const total =
-    SEED_STAFF_USERS.length +
-    1 + // Consultway publisher
-    STANDALONE_COMPANIES.length +
-    JV_COMPANIES.length +
-    SEED_COMPANY_USERS.length;
-
-  const totalDocuments = Object.values(DOCUMENTS_PER_COMPANY).reduce(
-    (sum, specs) => sum + specs.length,
-    0,
-  );
-
   log.info("seed complete", {
-    created: stats.created,
-    skipped: stats.skipped,
-    total,
-    documentsCreated: docStats.created,
-    documentsSkipped: docStats.skipped,
-    totalDocuments,
+    core: coreStats,
+    documents: docStats,
     tenders: tenderStats,
     tenderApplications: applicationStats,
     projects: projectStats,
@@ -2152,7 +2372,15 @@ async function main(): Promise<void> {
   sqlite?.close();
 }
 
-main().catch((err) => {
-  log.error("seed failed", { err });
-  process.exit(1);
-});
+// Only run `main()` when invoked directly via `tsx scripts/seed.ts`.
+// Tests import the individual seeders from this module (see
+// `scripts/__tests__/seed.test.ts`) and must not trigger the full
+// pipeline on import. `VITEST` is set by Vitest itself; the env-var
+// signal is cleaner than ESM `import.meta`-vs-`process.argv[1]` URL
+// equality, which is finicky on Windows path separators.
+if (!process.env.VITEST) {
+  main().catch((err) => {
+    log.error("seed failed", { err });
+    process.exit(1);
+  });
+}

@@ -16,8 +16,14 @@ export default defineConfig({
   test: {
     // Node env - no DOM. Document upload actions don't need one.
     environment: "node",
-    // Pick up both co-located tests and __tests__ folders.
-    include: ["lib/**/*.test.ts", "lib/**/__tests__/**/*.test.ts"],
+    // Pick up both co-located tests and __tests__ folders. `scripts/`
+    // is included for the Day 21 self-healing seed tests, which exercise
+    // `scripts/seed.ts` directly.
+    include: [
+      "lib/**/*.test.ts",
+      "lib/**/__tests__/**/*.test.ts",
+      "scripts/**/__tests__/**/*.test.ts",
+    ],
     // Same TLS / system-CA workaround as the smoke test, in case any
     // test code path ends up making a real R2 call. Forks pool also gives
     // each test file its own worker process, which keeps the in-memory
