@@ -332,23 +332,23 @@ const DOCUMENTS_PER_COMPANY: Record<string, DocumentSeed[]> = {
       reviewNotes: null,
     },
     {
-      // Recently re-uploaded, awaiting staff review AND closing in on
-      // expiry - a realistic "act on this now" double-affordance for
-      // the reviewer. Kept as pending_review (not verified) so the
-      // expiry-sweep cron's verified-only reminder query doesn't pick
-      // it up, which would contaminate the cron test's reminder count.
-      // The list view's "Expires in N days" warning affordance still
-      // colours based on the date regardless of status.
+      // Verified document close to expiry — exercises the "renew soon"
+      // warning affordance in the list view AND lands inside the
+      // expiry-sweep cron's 30-day reminder window so the demo shows
+      // both the visual warning and (when the cron runs) the email-out
+      // path. The Day 11 workaround that kept this as `pending_review`
+      // is no longer necessary now that tests use an in-memory DB
+      // (Day 12 Chunk 1) and don't read the dev seed.
       documentType: "trade_license",
       fileName: "Acme-Mumbai-Trade-License.pdf",
-      status: "pending_review",
+      status: "verified",
       sizeBytes: 245_000,
       mimeType: "application/pdf",
       issuedOn: "2025-01-15",
       expiresInDays: 18, // near expiry - exercises the warning affordance
       uploaderEmail: "acme@example.local",
-      reviewerEmail: null,
-      reviewNotes: null,
+      reviewerEmail: "staff@consultway.local",
+      reviewNotes: "Mumbai municipal trade license - renewal due within 30 days.",
     },
     {
       documentType: "board_resolution",

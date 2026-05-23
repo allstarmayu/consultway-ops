@@ -19,8 +19,13 @@ export default defineConfig({
     // Pick up both co-located tests and __tests__ folders.
     include: ["lib/**/*.test.ts", "lib/**/__tests__/**/*.test.ts"],
     // Same TLS / system-CA workaround as the smoke test, in case any
-    // test code path ends up making a real R2 call.
+    // test code path ends up making a real R2 call. Forks pool also gives
+    // each test file its own worker process, which keeps the in-memory
+    // SQLite DB (set up in vitest.setup.ts) isolated per file.
     pool: "forks",
+    // Apply Drizzle migrations to the per-worker in-memory DB before any
+    // test runs. Without this, tests would hit "no such table" errors.
+    setupFiles: ["./vitest.setup.ts"],
   },
   resolve: {
     alias: {

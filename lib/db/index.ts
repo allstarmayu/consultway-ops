@@ -33,13 +33,26 @@ declare global {
 function getSqliteConnection(): Database.Database {
   if (globalThis.__sqlite) return globalThis.__sqlite;
 
-  log.info("opening sqlite connection", { path: env.DATABASE_URL });
-  const sqlite = new Database(env.DATABASE_URL);
+  // Tests run against an in-memory SQLite database so each worker process
+  // gets a clean schema and doesn't read/write the dev DB file. Migrations
+  // are applied once per worker by `vitest.setup.ts`. The branch keeps the
+  // test substrate independent of `pnpm db:seed` having been run (or not)
+  // against the file-backed dev DB — see Day 11 report's "Seed data
+  // contamination of the cron test" gotcha.
+  const path = env.NODE_ENV === "test" ? ":memory:" : env.DATABASE_URL;
+
+  log.info("opening sqlite connection", { path });
+  const sqlite = new Database(path);
 
   // Pragmas for correctness + performance. Safe defaults for our use case:
   //   - WAL gives us concurrent readers + one writer; better than default rollback journal
   //   - foreign_keys must be ON (SQLite leaves it OFF by default — footgun)
-  sqlite.pragma("journal_mode = WAL");
+  // WAL is meaningless on an in-memory DB (no file to journal), so skip
+  // setting it in tests; better-sqlite3 accepts the pragma silently on
+  // :memory: but the noise is avoidable.
+  if (env.NODE_ENV !== "test") {
+    sqlite.pragma("journal_mode = WAL");
+  }
   sqlite.pragma("foreign_keys = ON");
 
   globalThis.__sqlite = sqlite;
