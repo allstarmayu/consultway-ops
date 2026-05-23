@@ -85,6 +85,17 @@ const SEED_STAFF_USERS: StaffUserSeed[] = [
     isActive: true,
     emailVerifiedAt: new Date().toISOString(),
   },
+  {
+    // Second staff user — gives role-collision / "two staff workflows
+    // colliding on the same row" tests a peer to point at, and lets the
+    // audit feed show a non-singular actor on the staff side.
+    email: "staff2@consultway.local",
+    plaintextPassword: "ChangeMe123!",
+    role: "staff",
+    name: "Consultway Staff (Ops)",
+    isActive: true,
+    emailVerifiedAt: new Date().toISOString(),
+  },
 ];
 
 // ── Seed data: company-role test users (linked to a client company) ───────
@@ -115,6 +126,43 @@ const SEED_COMPANY_USERS: CompanyUserSeed[] = [
     name: "Rajesh Patel (Acme)",
     companyName: "Acme Construction Pvt Ltd",
     isActive: true,
+    emailVerifiedAt: new Date().toISOString(),
+  },
+  {
+    // Second company-role user on a different company — exercises the
+    // multi-company-user views (the audit feed, "all users at company X"
+    // queries, the staff-side companies-list row counts).
+    email: "buildright@example.local",
+    plaintextPassword: "ChangeMe123!",
+    name: "Priya Iyer (BuildRight)",
+    companyName: "BuildRight Engineers",
+    isActive: true,
+    emailVerifiedAt: new Date().toISOString(),
+  },
+  {
+    // Third company-role user, on yet another company, with
+    // emailVerifiedAt = null. Exercises the un-verified login gate
+    // (`lib/auth/actions.ts::login` refuses unverified accounts) and
+    // the "Resend verification email" affordance on the login surface
+    // without anyone having to register a fresh account at demo time.
+    email: "greentech@example.local",
+    plaintextPassword: "ChangeMe123!",
+    name: "Karthik Subramaniam (GreenTech)",
+    companyName: "GreenTech Solutions",
+    isActive: true,
+    emailVerifiedAt: null,
+  },
+  {
+    // Disabled account — exercises the deactivated-user UI affordance
+    // (the login flow surfaces "account disabled" copy) and gives the
+    // staff-side user roster a non-active row to render. Linked to a
+    // brand-new company (Nimbus) so toggling this user's `isActive`
+    // doesn't perturb any other test scenario.
+    email: "inactive@example.local",
+    plaintextPassword: "ChangeMe123!",
+    name: "Disabled User (Nimbus)",
+    companyName: "Nimbus Infraworks",
+    isActive: false,
     emailVerifiedAt: new Date().toISOString(),
   },
 ];
@@ -184,6 +232,57 @@ const STANDALONE_COMPANIES: StandaloneSeed[] = [
     pincode: "600119",
     internalNotes:
       "Onboarding paperwork in review. Awaiting GST verification callback.",
+  },
+  {
+    // Covers the `expired` complianceStatus value — that state is set
+    // automatically by the nightly cron when a company's mandatory
+    // documents lapse. Pairs with a stale GST document fixture below.
+    // Annual turnover is set deliberately LOW (~₹2 crore) so the
+    // turnover-eligibility gate (`applyToTender` vs
+    // `tenders.minAnnualTurnoverInr`) gates this company out of every
+    // realistically-sized tender in the Chunk 2 seed.
+    name: "Vertex Power Systems",
+    sector: "Solar EPC",
+    geography: "Rajasthan",
+    gstNumber: "08AAFCV4567D1Z2",
+    panNumber: "AAFCV4567D",
+    isMsme: false,
+    complianceStatus: "expired",
+    annualTurnover: 20_000_000, // ₹2 crore
+    contactEmail: "ops@vertexpower.example",
+    contactPhone: "+91 141 4040 5500",
+    contactPersonName: "Suresh Mehta",
+    addressLine: "Sitapura Industrial Area, Phase II",
+    city: "Jaipur",
+    state: "Rajasthan",
+    pincode: "302022",
+    internalNotes:
+      "Trade license lapsed Q4 2025; complianceStatus rolled to expired by the nightly cron. Renewal documents pending submission.",
+  },
+  {
+    // Covers the "well-resourced compliant company" axis. Annual
+    // turnover set deliberately HIGH (₹100 crore) so this company
+    // clears every reasonably-sized `minAnnualTurnoverInr` filter the
+    // Chunk 2 tender fixtures set. Pairs with a `pending` document
+    // fixture (the pre-confirm upload state) so the seed exercises
+    // every DocumentStatus value.
+    name: "Nimbus Infraworks",
+    sector: "Infrastructure",
+    geography: "Delhi NCR",
+    gstNumber: "07AAGCN7890E1Z1",
+    panNumber: "AAGCN7890E",
+    isMsme: false,
+    complianceStatus: "compliant",
+    annualTurnover: 1_000_000_000, // ₹100 crore
+    contactEmail: "ops@nimbusinfra.example",
+    contactPhone: "+91 11 4040 6600",
+    contactPersonName: "Aarav Khanna",
+    addressLine: "DLF Cyber City, Tower B",
+    city: "Gurugram",
+    state: "Haryana",
+    pincode: "122002",
+    internalNotes:
+      "Tier-1 EPC firm. Verified financials Q1 2026; turnover stated in audited filings. Cleared for high-value tender eligibility.",
   },
 ];
 
@@ -490,6 +589,86 @@ const DOCUMENTS_PER_COMPANY: Record<string, DocumentSeed[]> = {
       reviewNotes: null,
     },
   ],
+  "Vertex Power Systems": [
+    {
+      // Verified-but-close-to-expiry GST. expiresInDays sits inside the
+      // T-7 reminder window (2..7 days) so re-running the expiry-sweep
+      // cron after a fresh seed surfaces this row as a fresh T-7
+      // reminder. Pairs with the "Chunk 1 acceptance check: T-7
+      // reminders go up by one" verification step in the Day 21 prompt.
+      documentType: "gst_certificate",
+      fileName: "Vertex-GST.pdf",
+      status: "verified",
+      sizeBytes: 168_000,
+      mimeType: "application/pdf",
+      issuedOn: "2024-05-20",
+      expiresInDays: 5,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "staff@consultway.local",
+      reviewNotes: "Renewal window open; T-7 reminder scheduled.",
+    },
+    {
+      // The actual reason Vertex's complianceStatus is `expired` — the
+      // trade license lapsed and the nightly cron flipped the
+      // document's status. Exercises the "expired-but-not-deleted"
+      // edge case alongside BuildRight's similar row.
+      documentType: "trade_license",
+      fileName: "Vertex-Jaipur-Trade-License-EXPIRED.pdf",
+      status: "expired",
+      sizeBytes: 213_000,
+      mimeType: "application/pdf",
+      issuedOn: "2022-06-15",
+      expiresInDays: -85,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes:
+        "Rajasthan Industrial Area trade license expired Q4 2025; renewal blocked pending pollution clearance.",
+    },
+  ],
+  "Nimbus Infraworks": [
+    {
+      // Pre-confirm `pending` row — exercises the upload-initiated but
+      // not-yet-bytes-landed slot in the documents lifecycle. The
+      // seed-only artefact: in production this row would transition to
+      // `pending_review` within minutes (or get pending-cleanup-cron'd
+      // away). The seed-bound row sits indefinitely so the UI can
+      // render the status pill in isolation.
+      documentType: "gst_certificate",
+      fileName: "Nimbus-GST-Pending-Confirm.pdf",
+      status: "pending",
+      sizeBytes: 192_000,
+      mimeType: "application/pdf",
+      issuedOn: "2024-09-01",
+      expiresInDays: 365,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: null,
+      reviewNotes: null,
+    },
+    {
+      documentType: "pan_card",
+      fileName: "Nimbus-PAN.pdf",
+      status: "verified",
+      sizeBytes: 94_000,
+      mimeType: "application/pdf",
+      issuedOn: "2018-11-22",
+      expiresInDays: null,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes: null,
+    },
+    {
+      documentType: "incorporation_cert",
+      fileName: "Nimbus-CoI.pdf",
+      status: "verified",
+      sizeBytes: 402_000,
+      mimeType: "application/pdf",
+      issuedOn: "2018-11-15",
+      expiresInDays: null,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes: null,
+    },
+  ],
   "Modern-Alpha Alliance": [
     {
       documentType: "gst_certificate",
@@ -713,6 +892,7 @@ async function seedStandaloneCompany(
     isJv: false,
     complianceStatus: spec.complianceStatus,
     parentCompanyIds: null,
+    annualTurnover: spec.annualTurnover ?? null,
     contactEmail: spec.contactEmail,
     contactPhone: spec.contactPhone,
     contactPersonName: spec.contactPersonName,
