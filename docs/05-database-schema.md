@@ -160,15 +160,41 @@ Indexes:
 
 ### `reminders_sent`
 
-Dedup table — prevents sending the same reminder email twice.
+Dedup table — prevents sending the same reminder email twice. Landed
+Day 12 (Chunk 2). The cron buckets each in-window document into one of
+four slots based on days-to-expiry; the unique index makes each
+(document, slot) pair a one-shot.
 
 | Column | Type | Constraints |
 |---|---|---|
 | `id` | TEXT | PRIMARY KEY |
 | `document_id` | TEXT | NOT NULL, FK → documents.id ON DELETE CASCADE |
-| `reminder_type` | TEXT | NOT NULL CHECK (reminder_type IN ('T-30','T-14','T-7','T-1')) |
+| `reminder_kind` | TEXT | NOT NULL — `T-30` / `T-14` / `T-7` / `T-1` |
 | `sent_at` | TEXT | NOT NULL |
-| UNIQUE (`document_id`, `reminder_type`) |  |  |
+| `created_at` | TEXT | NOT NULL DEFAULT `(datetime('now'))` |
+| UNIQUE (`document_id`, `reminder_kind`) |  |  |
+
+Indexes:
+- `reminders_sent_document_kind_unique_idx` — UNIQUE on
+  `(document_id, reminder_kind)`. Doubles as the "already sent?"
+  lookup and as the race-protection conflict target.
+- `reminders_sent_document_id_idx` on `document_id` — "show all
+  reminders sent for this doc" lookups.
+
+**Reminder kinds** (slots tile the 30-day window without overlap):
+- `T-1`  — 0..1 days to expiry (last call)
+- `T-7`  — 2..7 days (urgent)
+- `T-14` — 8..14 days (renew now)
+- `T-30` — 15..30 days (heads up)
+
+Validation is app-side via `lib/db/schema.ts::ReminderKind`. SQLite has
+no native enums; same convention as `DocumentStatus`.
+
+Note: an earlier draft of this doc called the column `reminder_type`
+with a CHECK constraint. The implementation in `lib/db/schema.ts` uses
+`reminder_kind` with an app-validated Drizzle `$type<>` (no CHECK), to
+match the codebase-wide enum-via-text convention. Code wins; this spec
+was updated in Day 12 to match.
 
 ---
 
