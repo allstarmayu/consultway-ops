@@ -149,6 +149,70 @@ prefer explicit allow-lists at Phase 1.
 
 ---
 
+## 3.5 Resend Setup (transactional email)
+
+Transactional email (document expiry reminders today; verification / password
+reset later) is dispatched through Resend. `lib/email/client.ts` has a dual
+path: when `RESEND_API_KEY` is set it uses the Resend SDK; when unset it logs
+the rendered payload via the structured logger and returns `ok: true` so the
+calling cron / action treats the path uniformly. That fallback is what lets
+`pnpm cron:expiry-sweep` work on a freshly-cloned dev box and what protects
+preview deploys from sending while the domain isn't verified yet.
+
+### One-time domain verification
+
+1. Sign in to <https://resend.com/domains> and add the production sender
+   domain (e.g. `ops.consultway.info` — must match the `EMAIL_FROM` in
+   `wrangler.jsonc`'s `env.production.vars`).
+2. Resend prints two records: an `SPF` TXT and a `DKIM` CNAME. Add both to
+   the Cloudflare DNS for `consultway.info`. Propagation usually completes
+   inside ~15 minutes.
+3. Hit **Verify** in the Resend dashboard. Wait until both records show as
+   verified before pushing real sends — Resend silently drops unverified
+   sends on the free tier.
+4. (Optional but recommended) Add a second verified domain for staging
+   (`staging.ops.consultway.info`) so staging deploys can dispatch real
+   email without polluting the production sender reputation.
+
+### Per-environment configuration
+
+`EMAIL_FROM` and `EMAIL_REPLY_TO` are non-secret `vars` in `wrangler.jsonc`
+under the `env.staging.vars` / `env.production.vars` blocks. They're already
+populated with placeholder values pointing at the verified-sender shape; swap
+in the real verified addresses once step 3 above is green.
+
+`RESEND_API_KEY` is a **secret** — never put it in `wrangler.jsonc`. Set it
+per environment via the CLI:
+
+```bash
+# Mint a key at https://resend.com/api-keys (Sending Access scope is enough)
+wrangler secret put RESEND_API_KEY --env staging
+# Paste re_... at the prompt
+
+wrangler secret put RESEND_API_KEY --env production
+```
+
+### Fallback behaviour (no key)
+
+If `RESEND_API_KEY` is unset (the local dev default), `lib/email/client.ts`
+emits the rendered payload via the structured logger at info level and
+returns `{ ok: true, id: "stub:<timestamp>" }`. The expiry-sweep cron treats
+that as success and writes its `reminders_sent` dedup row — so a key flip
+mid-day doesn't double-send the same slot.
+
+This split is deliberate: it lets contributors verify cron output locally
+without a Resend account, and means staging deploys are visibly inert until
+the domain verification step is signed off.
+
+### Verification after rollout
+
+After setting the secret + verifying the domain, manually trigger the cron
+(`wrangler cron trigger consultway-ops --env production --cron "0 2 * * *"`)
+and confirm an actual email lands at a contact address. The Resend dashboard
+shows delivery status with a per-message ID matching the one logged.
+
+---
+
 ## 4. Push Secrets
 
 Secrets **never** go in `wrangler.jsonc` — they go via `wrangler secret`:

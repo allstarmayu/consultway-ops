@@ -65,6 +65,10 @@
   },
 
   // ── Public vars (non-secret) ────────────────────────
+  // Secrets (RESEND_API_KEY, JWT_SECRET, etc.) are NOT here — set via
+  //   wrangler secret put RESEND_API_KEY --env <environment>
+  // See docs/09-deployment.md § "Resend setup" for the email provider
+  // configuration steps.
   "vars": {
     "NODE_ENV": "production",
     "NEXT_PUBLIC_APP_NAME": "Consultway Ops",
@@ -72,7 +76,13 @@
     "R2_MAX_UPLOAD_BYTES": "20971520",
     "R2_PRESIGN_EXPIRY": "900",
     "RATE_LIMIT_PUBLIC_RPM": "20",
-    "RATE_LIMIT_AUTH_RPM": "120"
+    "RATE_LIMIT_AUTH_RPM": "120",
+    // Outbound sender identity for transactional email. Placeholder
+    // values stay on the unroutable `.local` TLD so a misconfigured
+    // dev/preview env can't accidentally send from a real domain.
+    // Per-environment overrides below replace these in staging/prod.
+    "EMAIL_FROM": "Consultway <noreply@consultway.local>",
+    "EMAIL_REPLY_TO": ""
   },
 
   // ── Environments ────────────────────────────────────
@@ -83,7 +93,14 @@
     "staging": {
       "name": "consultway-ops-staging",
       "vars": {
-        "NEXT_PUBLIC_APP_URL": "https://staging.ops.consultway.info"
+        "NEXT_PUBLIC_APP_URL": "https://staging.ops.consultway.info",
+        // Real sender for staging — once consultway.info (or a sub-
+        // domain) is verified in Resend, swap to the verified address.
+        // Until then, log-fallback in lib/email/client.ts kicks in
+        // because RESEND_API_KEY (a secret, set via `wrangler secret
+        // put`) won't be present on first deploy.
+        "EMAIL_FROM": "Consultway Staging <noreply@staging.ops.consultway.info>",
+        "EMAIL_REPLY_TO": "support@consultway.info"
       },
       "d1_databases": [
         {
@@ -104,7 +121,12 @@
         "zone_name": "consultway.info"
       },
       "vars": {
-        "NEXT_PUBLIC_APP_URL": "https://ops.consultway.info"
+        "NEXT_PUBLIC_APP_URL": "https://ops.consultway.info",
+        // Production sender. Domain must be verified in Resend (SPF +
+        // DKIM records on consultway.info) before sends will land —
+        // see docs/09-deployment.md § "Resend setup".
+        "EMAIL_FROM": "Consultway <noreply@ops.consultway.info>",
+        "EMAIL_REPLY_TO": "support@consultway.info"
       }
     }
   }
