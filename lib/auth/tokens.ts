@@ -26,7 +26,7 @@
  * @module lib/auth/tokens
  */
 import { randomBytes, createHash } from "node:crypto";
-import { eq, and, isNull, ne } from "drizzle-orm";
+import { eq, and, isNull, ne, lt } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   users,
@@ -234,4 +234,80 @@ export async function consumePasswordResetToken(
 
   log.info("password reset consumed", { userId: row.userId });
   return { ok: true, userId: row.userId };
+}
+
+// ── Token cleanup ────────────────────────────────────────────────────────
+
+/**
+ * Sweep result returned by `cleanupExpiredTokens` — per-table delete
+ * counts so the caller's log line is informative.
+ */
+export interface TokenCleanupResult {
+  verificationDeleted: number;
+  resetDeleted: number;
+}
+
+/**
+ * Delete every expired row from `email_verification_tokens` and
+ * `password_reset_tokens`. Expiry is `expiresAt < now` (the same
+ * comparison the consume helpers use to refuse a token).
+ *
+ * Why delete (not just mark used)?
+ *
+ *   - These rows have no audit value once expired — the audit-log
+ *     captures the verification / reset events; the token table is
+ *     pure machinery.
+ *   - The `usedAt` column lifecycle is already used for "consumed"
+ *     book-keeping; conflating "expired without being used" with
+ *     "expired after use" would muddle the signal for forensic
+ *     queries.
+ *   - Unbounded growth would eventually slow the `tokenHash` index;
+ *     hard-delete is the simplest answer.
+ *
+ * Used-but-still-pre-expiry rows are LEFT in place — they belong to
+ * the consume audit chain and only become eligible once the expiry
+ * window also passes. (Practically, that's `usedAt` + 24h for
+ * verification, `usedAt` + 1h for reset.) Past expiry both shapes are
+ * deleted on the same sweep.
+ *
+ * Caller passes `now` so the cron handler can supply an explicit
+ * timestamp for reproducibility in tests — same convention as the
+ * pending-cleanup cron.
+ */
+export async function cleanupExpiredTokens(
+  now: string = new Date().toISOString(),
+): Promise<TokenCleanupResult> {
+  // Select-then-delete (mirrors lib/documents/crons/pending-cleanup.ts).
+  // The driver-agnostic surface across better-sqlite3 + D1 doesn't expose
+  // changes counts on .delete() in a stable way, and a per-table count is
+  // load-bearing for the operator log line.
+  const verificationCandidates = await db
+    .select({ id: emailVerificationTokens.id })
+    .from(emailVerificationTokens)
+    .where(lt(emailVerificationTokens.expiresAt, now));
+
+  if (verificationCandidates.length > 0) {
+    await db
+      .delete(emailVerificationTokens)
+      .where(lt(emailVerificationTokens.expiresAt, now));
+  }
+
+  const resetCandidates = await db
+    .select({ id: passwordResetTokens.id })
+    .from(passwordResetTokens)
+    .where(lt(passwordResetTokens.expiresAt, now));
+
+  if (resetCandidates.length > 0) {
+    await db
+      .delete(passwordResetTokens)
+      .where(lt(passwordResetTokens.expiresAt, now));
+  }
+
+  const result: TokenCleanupResult = {
+    verificationDeleted: verificationCandidates.length,
+    resetDeleted: resetCandidates.length,
+  };
+
+  log.info("token cleanup complete", { now, ...result });
+  return result;
 }

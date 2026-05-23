@@ -60,7 +60,8 @@
   "triggers": {
     "crons": [
       "0 2 * * *", // 2 AM UTC daily — document expiry sweep
-      "0 3 * * *"  // 3 AM UTC daily — pending-upload row cleanup
+      "0 3 * * *", // 3 AM UTC daily — pending-upload row cleanup
+      "0 4 * * *"  // 4 AM UTC daily — expired-token cleanup (verification + reset)
     ]
   },
 

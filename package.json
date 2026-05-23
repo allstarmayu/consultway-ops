@@ -17,6 +17,7 @@
     "r2:smoke": "cross-env NODE_OPTIONS=--use-system-ca tsx scripts/r2-smoke-test.ts",
     "cron:expiry-sweep": "tsx scripts/cron-expiry-sweep.ts",
     "cron:pending-cleanup": "tsx scripts/cron-pending-cleanup.ts",
+    "cron:token-cleanup": "tsx scripts/cron-token-cleanup.ts",
     "test": "vitest"
   },
   "dependencies": {

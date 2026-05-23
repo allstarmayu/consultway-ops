@@ -34,10 +34,18 @@ import {
   users,
   companies,
   documents,
+  tenders,
+  tenderApplications,
+  projects,
+  transactions,
   type ComplianceStatus,
   type DocumentStatus,
   type DocumentType,
   type NewCompany,
+  type ProjectStatus,
+  type TenderApplicationStatus,
+  type TenderStatus,
+  type TransactionType,
   type UserRole,
 } from "@/lib/db/schema";
 import { newId } from "@/lib/db/ids";
@@ -711,6 +719,645 @@ const DOCUMENTS_PER_COMPANY: Record<string, DocumentSeed[]> = {
   ],
 };
 
+// ── Seed data: tenders ─────────────────────────────────────────────────────
+
+/**
+ * Tender fixtures cover every `TenderStatus` value plus the long-tail
+ * combinations the UI must render: msmeOnly mix, set/unset eligibility
+ * filters, the over-the-line state (published + closingDate past), the
+ * explicitly-closed state, and the awarded state with an
+ * `awardedCompanyId` populated.
+ *
+ * Every tender is published by the Consultway Infotech sentinel
+ * company (see CONSULTWAY_PUBLISHER_NAME). Subcontract tenders
+ * published by client companies are out of scope for the Phase-1
+ * seed — the publisher FK column is exercised either way.
+ *
+ * Idempotency: lookup by `referenceNumber` (every fixture sets one).
+ * Re-running the seed against an already-seeded DB skips every row.
+ */
+interface TenderSeed {
+  title: string;
+  referenceNumber: string;
+  status: TenderStatus;
+  description: string;
+  sector: string;
+  geography: string;
+  eligibleSector: string | null;
+  eligibleGeography: string | null;
+  minAnnualTurnoverInr: number | null;
+  msmeOnly: boolean;
+  /** Days offset from today. Null leaves the column NULL. */
+  openingInDays: number | null;
+  closingInDays: number | null;
+  /** Days offset from today for `publishedAt`. NULL for drafts. */
+  publishedInDays: number | null;
+  /** Name of the company that won an `awarded` tender. NULL otherwise. */
+  awardedCompanyName: string | null;
+  internalNotes: string | null;
+}
+
+const SEED_TENDERS: TenderSeed[] = [
+  {
+    // Draft — no publishing dates, no eligibility filters, no winner.
+    // Covers the pre-publish state where staff are still drafting.
+    title: "Metro Phase III Consulting Services (Draft)",
+    referenceNumber: "CW-2026-DRAFT-001",
+    status: "draft",
+    description:
+      "Draft scope for advisory + supervision on Metro Phase III civil works. Eligibility, dates, and turnover thresholds not yet finalised.",
+    sector: "Infrastructure",
+    geography: "Maharashtra",
+    eligibleSector: null,
+    eligibleGeography: null,
+    minAnnualTurnoverInr: null,
+    msmeOnly: false,
+    openingInDays: null,
+    closingInDays: null,
+    publishedInDays: null,
+    awardedCompanyName: null,
+    internalNotes: "Awaiting finalised TOR from PMC. Hold publish until L1 sign-off.",
+  },
+  {
+    // Published #1 — MSME-only, no turnover minimum, open today.
+    // Only BuildRight (the MSME-flagged standalone) qualifies.
+    title: "MSME Solar Rooftop Empanelment Drive 2026",
+    referenceNumber: "CW-2026-MSME-SOLAR-002",
+    status: "published",
+    description:
+      "MSME-reserved empanelment for rooftop solar installations under the Pan-India empanelment scheme. Standard scope, fixed-price contract.",
+    sector: "Solar EPC",
+    geography: "Pan India",
+    eligibleSector: null,
+    eligibleGeography: null,
+    minAnnualTurnoverInr: null,
+    msmeOnly: true,
+    openingInDays: -30,
+    closingInDays: 30,
+    publishedInDays: -30,
+    awardedCompanyName: null,
+    internalNotes: null,
+  },
+  {
+    // Published #2 — explicit sector + geography filters + high
+    // turnover minimum (₹50 cr). Only Nimbus clears every gate.
+    title: "Coastal Road Project — Phase 2 Civil Consortium Tender",
+    referenceNumber: "CW-2026-INFRA-COASTAL-003",
+    status: "published",
+    description:
+      "Phase-2 civil package for the Mumbai Coastal Road. Consortium bids welcome; lead partner must meet the stated turnover minimum.",
+    sector: "Infrastructure",
+    geography: "Maharashtra",
+    eligibleSector: "Infrastructure",
+    eligibleGeography: "Maharashtra",
+    minAnnualTurnoverInr: 500_000_000, // ₹50 crore
+    msmeOnly: false,
+    openingInDays: -14,
+    closingInDays: 45,
+    publishedInDays: -14,
+    awardedCompanyName: null,
+    internalNotes: null,
+  },
+  {
+    // Published #3 — over-the-line. closingDate already past but
+    // status still `published`; the UI renders "closed via deadline"
+    // rather than the explicit closed-by-staff state below.
+    title: "Bengaluru Trunk Sewer Rehabilitation Tender",
+    referenceNumber: "CW-2026-CIVIL-004",
+    status: "published",
+    description:
+      "Civil works rehabilitation of the Bengaluru East trunk sewer. Open to qualified civil works contractors with prior municipal experience.",
+    sector: "Civil Works",
+    geography: "Karnataka",
+    eligibleSector: "Civil Works",
+    eligibleGeography: null,
+    minAnnualTurnoverInr: null,
+    msmeOnly: false,
+    openingInDays: -60,
+    closingInDays: -5, // PAST — over the line
+    publishedInDays: -60,
+    awardedCompanyName: null,
+    internalNotes: "Closing date passed; pending status flip to `closed` by staff.",
+  },
+  {
+    // Closed — staff explicitly closed the window after evaluations.
+    // Has a high turnover minimum so only Nimbus could have qualified.
+    title: "Highway PMC Tender — Section 12",
+    referenceNumber: "CW-2026-ROADS-005",
+    status: "closed",
+    description:
+      "Project management consultancy for Section 12 of the Chennai-Bengaluru highway expansion. Two-stage evaluation: technical + financial.",
+    sector: "Roads & Highways",
+    geography: "Tamil Nadu",
+    eligibleSector: null,
+    eligibleGeography: null,
+    minAnnualTurnoverInr: 250_000_000, // ₹25 crore
+    msmeOnly: false,
+    openingInDays: -90,
+    closingInDays: -30,
+    publishedInDays: -90,
+    awardedCompanyName: null,
+    internalNotes: "Closed pending board evaluation; award decision deferred to Q3.",
+  },
+  {
+    // Awarded — terminal state with an `awardedCompanyId`. The winning
+    // company also gets a `shortlisted` application below as the
+    // state-machine precondition to the award.
+    title: "Andhra Solar Park Phase II — EPC Consulting",
+    referenceNumber: "CW-2026-SOLAR-006",
+    status: "awarded",
+    description:
+      "EPC advisory for the Andhra Pradesh 500MW solar park Phase II expansion. End-to-end consulting from design review through commissioning.",
+    sector: "Solar EPC",
+    geography: "Andhra Pradesh",
+    eligibleSector: null,
+    eligibleGeography: null,
+    minAnnualTurnoverInr: null,
+    msmeOnly: false,
+    openingInDays: -180,
+    closingInDays: -90,
+    publishedInDays: -180,
+    awardedCompanyName: "Nimbus Infraworks",
+    internalNotes: "Awarded post evaluation cycle Q1 2026. Project record created via Phase-3 promotion flow.",
+  },
+];
+
+// ── Seed data: tender applications ─────────────────────────────────────────
+
+/**
+ * Tender application fixtures. Covers every `TenderApplicationStatus`,
+ * gives the awarded tender its winning company's `shortlisted`
+ * precondition application, and puts one company (Nimbus) on three
+ * tenders so the per-company applications list has multiple rows.
+ *
+ * Lookup is keyed by `(tenderReferenceNumber, companyName)` —
+ * idempotent against the DB-level UNIQUE (tenderId, companyId).
+ *
+ * Note: seed-time inserts bypass the eligibility gate in
+ * `applyToTender`. Several rows below would not pass the runtime gate
+ * (e.g. Acme on a tender with a minimum turnover when Acme's stated
+ * turnover is NULL) but the seed represents historical applications
+ * staff later rejected — the rejected status carries that intent.
+ */
+interface TenderApplicationSeed {
+  tenderReferenceNumber: string;
+  companyName: string;
+  status: TenderApplicationStatus;
+  coverNote: string | null;
+  internalNotes: string | null;
+  /** Days offset from today for the submitted timestamp. */
+  submittedInDays: number;
+  /**
+   * Days offset for the decision timestamp. NULL for `submitted`
+   * rows (no decision yet); required for shortlisted/rejected/withdrawn.
+   */
+  decidedInDays: number | null;
+}
+
+const SEED_TENDER_APPLICATIONS: TenderApplicationSeed[] = [
+  // MSME Solar — BuildRight (MSME) qualifies, submitted recently.
+  {
+    tenderReferenceNumber: "CW-2026-MSME-SOLAR-002",
+    companyName: "BuildRight Engineers",
+    status: "submitted",
+    coverNote:
+      "BuildRight is MSME-certified with five years of rooftop solar deployment experience across South India.",
+    internalNotes: null,
+    submittedInDays: -7,
+    decidedInDays: null,
+  },
+  // MSME Solar — the Acme-BuildRight JV applied but staff rejected
+  // because the JV itself isn't MSME-flagged (only the BuildRight
+  // partner is).
+  {
+    tenderReferenceNumber: "CW-2026-MSME-SOLAR-002",
+    companyName: "Acme-BuildRight JV",
+    status: "rejected",
+    coverNote:
+      "Joint venture entity submitting on the back of BuildRight's MSME credentials.",
+    internalNotes:
+      "Rejected: MSME eligibility is at the applying-entity level, not the partner level. The JV row itself is not MSME-flagged.",
+    submittedInDays: -10,
+    decidedInDays: -5,
+  },
+  // Coastal Road — Nimbus (₹100 cr turnover, Maharashtra, Infrastructure)
+  // shortlisted after meeting every gate.
+  {
+    tenderReferenceNumber: "CW-2026-INFRA-COASTAL-003",
+    companyName: "Nimbus Infraworks",
+    status: "shortlisted",
+    coverNote:
+      "Tier-1 infrastructure firm with prior Mumbai coastal-zone project experience and audited turnover well above the stated minimum.",
+    internalNotes: "Strong technical fit; advancing to financial round.",
+    submittedInDays: -10,
+    decidedInDays: -3,
+  },
+  // Coastal Road — Acme submitted but was rejected for the stated
+  // turnover minimum (Acme's `annualTurnover` is NULL — couldn't
+  // verify they cleared the bar).
+  {
+    tenderReferenceNumber: "CW-2026-INFRA-COASTAL-003",
+    companyName: "Acme Construction Pvt Ltd",
+    status: "rejected",
+    coverNote:
+      "Acme submitted with intent to subcontract through a finance partner.",
+    internalNotes:
+      "Rejected: applicant did not provide audited turnover statement. The stated minimum is binding; finance-partner workarounds are not supported under this tender.",
+    submittedInDays: -12,
+    decidedInDays: -8,
+  },
+  // Bengaluru Trunk Sewer — BuildRight (Karnataka, Civil Works)
+  // submitted just before the deadline; sits as `submitted` even
+  // though the tender's closingDate is past (mirrors the production
+  // case where staff haven't run the close-via-deadline action yet).
+  {
+    tenderReferenceNumber: "CW-2026-CIVIL-004",
+    companyName: "BuildRight Engineers",
+    status: "submitted",
+    coverNote:
+      "BuildRight has prior municipal sewer rehabilitation experience in Bengaluru and Mysuru.",
+    internalNotes: null,
+    submittedInDays: -7,
+    decidedInDays: null,
+  },
+  // Highway PMC (closed) — Nimbus shortlisted before the close.
+  {
+    tenderReferenceNumber: "CW-2026-ROADS-005",
+    companyName: "Nimbus Infraworks",
+    status: "shortlisted",
+    coverNote: "PMC track record on three prior NHAI sections.",
+    internalNotes: "Awaiting Q3 board decision.",
+    submittedInDays: -85,
+    decidedInDays: -45,
+  },
+  // Highway PMC (closed) — Acme rejected.
+  {
+    tenderReferenceNumber: "CW-2026-ROADS-005",
+    companyName: "Acme Construction Pvt Ltd",
+    status: "rejected",
+    coverNote:
+      "Application from Acme via a finance-partner consortium.",
+    internalNotes: "Rejected for turnover documentation gaps; same pattern as Coastal Road application.",
+    submittedInDays: -80,
+    decidedInDays: -50,
+  },
+  // Andhra Solar (awarded) — Nimbus shortlisted (precondition to award).
+  {
+    tenderReferenceNumber: "CW-2026-SOLAR-006",
+    companyName: "Nimbus Infraworks",
+    status: "shortlisted",
+    coverNote: "End-to-end EPC consulting capability with prior solar park experience.",
+    internalNotes: "Winner — award processed Q1 2026.",
+    submittedInDays: -160,
+    decidedInDays: -100,
+  },
+  // Andhra Solar (awarded) — GreenTech withdrew before staff decision.
+  {
+    tenderReferenceNumber: "CW-2026-SOLAR-006",
+    companyName: "GreenTech Solutions",
+    status: "withdrawn",
+    coverNote: "Initial interest in EPC consulting role.",
+    internalNotes:
+      "Company-initiated withdrawal: GreenTech pulled the application after their compliance review surfaced gaps. (Doc fixtures reflect this — their GST upload is rejected.)",
+    submittedInDays: -170,
+    decidedInDays: -130,
+  },
+];
+
+// ── Seed data: projects ────────────────────────────────────────────────────
+
+/**
+ * Project fixtures cover every `ProjectStatus`, give the awarded
+ * tender a promoted project (`tenderId` set), and include one
+ * `active` project with an `endDate` in the past so the "overdue"
+ * affordance has a row to render.
+ *
+ * Lookup: `(companyId, name)`.
+ */
+interface ProjectSeed {
+  name: string;
+  companyName: string;
+  /** Optional reference to a tender by `referenceNumber`. Promoted-from-tender path. */
+  tenderReferenceNumber: string | null;
+  status: ProjectStatus;
+  description: string | null;
+  /** Days offset from today. Null = NULL column. */
+  startInDays: number | null;
+  endInDays: number | null;
+  /** Whole rupees. */
+  budgetInr: number | null;
+  internalNotes: string | null;
+}
+
+const SEED_PROJECTS: ProjectSeed[] = [
+  {
+    // planning — direct create, no tender link, dates in the future.
+    name: "Mumbai Coastal Stretch Survey",
+    companyName: "Acme Construction Pvt Ltd",
+    tenderReferenceNumber: null,
+    status: "planning",
+    description:
+      "Pre-tender baseline survey for the Mumbai coastal stretch project. Scope-finalisation pending PMC sign-off.",
+    startInDays: 30,
+    endInDays: 180,
+    budgetInr: 5_000_000, // ₹50 lakh
+    internalNotes: "Awaiting client confirmation on instrumentation budget.",
+  },
+  {
+    // active — direct create, in-flight today.
+    name: "BuildRight Bengaluru Trunk Sewer PMC",
+    companyName: "BuildRight Engineers",
+    tenderReferenceNumber: null,
+    status: "active",
+    description:
+      "Project management consultancy for the Bengaluru East trunk sewer rehabilitation. Phase 1 (mobilisation) complete; Phase 2 (excavation) underway.",
+    startInDays: -60,
+    endInDays: 120,
+    budgetInr: 12_000_000, // ₹1.2 crore
+    internalNotes: null,
+  },
+  {
+    // on_hold — paused mid-execution for external reasons.
+    name: "GreenTech Tamil Nadu Solar Park PMC",
+    companyName: "GreenTech Solutions",
+    tenderReferenceNumber: null,
+    status: "on_hold",
+    description:
+      "Solar park PMC engagement paused pending regulatory clearance for the land parcel.",
+    startInDays: -90,
+    endInDays: 90,
+    budgetInr: 18_000_000, // ₹1.8 crore
+    internalNotes:
+      "Hold pending TANGEDCO grid-connection clearance. ETA Q3 2026 per client.",
+  },
+  {
+    // completed — terminal state.
+    name: "Nimbus DLF Phase III Office Tower",
+    companyName: "Nimbus Infraworks",
+    tenderReferenceNumber: null,
+    status: "completed",
+    description:
+      "Civil + structural advisory for the DLF Phase III office tower. Handover completed Q1 2026.",
+    startInDays: -365,
+    endInDays: -30,
+    budgetInr: 80_000_000, // ₹8 crore
+    internalNotes: "Closeout complete; final certificate issued 2026-04-22.",
+  },
+  {
+    // cancelled — terminal state.
+    name: "Modern-Alpha Highway Maintenance",
+    companyName: "Modern-Alpha Alliance",
+    tenderReferenceNumber: null,
+    status: "cancelled",
+    description:
+      "Highway maintenance advisory cancelled after the client retracted scope. Project record retained for audit.",
+    startInDays: -180,
+    endInDays: 90,
+    budgetInr: 25_000_000, // ₹2.5 crore
+    internalNotes:
+      "Cancellation triggered by client. Refund processed against advances — see refund transaction.",
+  },
+  {
+    // active + overdue endDate + promoted from awarded tender.
+    // Covers two of the seed-plan's specific edge cases in one row:
+    // the tender-promoted path AND the overdue affordance.
+    name: "Andhra Solar Park Phase II EPC Consulting",
+    companyName: "Nimbus Infraworks",
+    tenderReferenceNumber: "CW-2026-SOLAR-006",
+    status: "active",
+    description:
+      "EPC advisory for the Andhra Pradesh 500MW solar park Phase II expansion. Awarded via tender CW-2026-SOLAR-006.",
+    startInDays: -90,
+    endInDays: -7, // OVERDUE — endDate already past, status still active
+    budgetInr: 150_000_000, // ₹15 crore
+    internalNotes:
+      "Endpoint slipped past planned close; pending CEO sign-off on a revised schedule extension.",
+  },
+];
+
+// ── Seed data: transactions ────────────────────────────────────────────────
+
+/**
+ * Transaction fixtures. ≥3 rows per `TransactionType`, spread across
+ * the last three months so both `getTransactionsSummaryThisMonth`
+ * and `getTransactionsSummaryForPeriod` (with arbitrary period
+ * windows) have non-trivial data. Each type also includes one
+ * company-level row (no `projectName`) to exercise the NULL-project
+ * branch.
+ *
+ * Cross-FK invariant: when `projectName` is set, the project's
+ * `companyName` MUST match this row's `companyName`. The seed
+ * helper re-asserts this at insert time and fails loudly if a
+ * fixture violates it.
+ *
+ * Lookup: `(companyName, referenceNumber)`. Every fixture sets a
+ * unique reference so re-running the seed skips correctly.
+ */
+interface TransactionSeed {
+  type: TransactionType;
+  /** Amount in PAISE (1 INR = 100 paise). */
+  amountPaise: number;
+  companyName: string;
+  /** Optional project link by name. NULL = company-level transaction. */
+  projectName: string | null;
+  /** Days offset from today for the `occurredOn` business date. */
+  occurredInDays: number;
+  referenceNumber: string;
+  notes: string | null;
+}
+
+const SEED_TRANSACTIONS: TransactionSeed[] = [
+  // ── invoices (4) ──────────────────────────────────────────────────
+  {
+    type: "invoice",
+    amountPaise: 50_000_000, // ₹5,00,000
+    companyName: "Acme Construction Pvt Ltd",
+    projectName: "Mumbai Coastal Stretch Survey",
+    occurredInDays: -13,
+    referenceNumber: "INV-2026-0501",
+    notes: "Phase-1 consulting invoice — Mumbai Coastal Stretch Survey.",
+  },
+  {
+    type: "invoice",
+    amountPaise: 120_000_000, // ₹12,00,000
+    companyName: "BuildRight Engineers",
+    projectName: "BuildRight Bengaluru Trunk Sewer PMC",
+    occurredInDays: -38,
+    referenceNumber: "INV-2026-0415",
+    notes: "Mobilisation invoice — Bengaluru Trunk Sewer PMC.",
+  },
+  {
+    type: "invoice",
+    amountPaise: 250_000_000, // ₹25,00,000
+    companyName: "Nimbus Infraworks",
+    projectName: "Andhra Solar Park Phase II EPC Consulting",
+    occurredInDays: -64,
+    referenceNumber: "INV-2026-0320",
+    notes: "Q1 EPC consulting invoice — Andhra Solar Park Phase II.",
+  },
+  {
+    type: "invoice",
+    amountPaise: 30_000_000, // ₹3,00,000
+    companyName: "Nimbus Infraworks",
+    projectName: null,
+    occurredInDays: -18,
+    referenceNumber: "INV-2026-0505",
+    notes: "Annual retainer invoice — Nimbus advisory (company-level).",
+  },
+
+  // ── payments (4) ──────────────────────────────────────────────────
+  {
+    type: "payment",
+    amountPaise: 25_000_000, // ₹2,50,000
+    companyName: "Acme Construction Pvt Ltd",
+    projectName: "Mumbai Coastal Stretch Survey",
+    occurredInDays: -8,
+    referenceNumber: "PMT-2026-0515",
+    notes: "Partial payment received against INV-2026-0501.",
+  },
+  {
+    type: "payment",
+    amountPaise: 80_000_000, // ₹8,00,000
+    companyName: "BuildRight Engineers",
+    projectName: "BuildRight Bengaluru Trunk Sewer PMC",
+    occurredInDays: -28,
+    referenceNumber: "PMT-2026-0425",
+    notes: "Payment received against INV-2026-0415.",
+  },
+  {
+    type: "payment",
+    amountPaise: 150_000_000, // ₹15,00,000
+    companyName: "Nimbus Infraworks",
+    projectName: "Andhra Solar Park Phase II EPC Consulting",
+    occurredInDays: -56,
+    referenceNumber: "PMT-2026-0328",
+    notes: "Partial payment against Q1 EPC invoice.",
+  },
+  {
+    type: "payment",
+    amountPaise: 5_000_000, // ₹50,000
+    companyName: "GreenTech Solutions",
+    projectName: null,
+    occurredInDays: -15,
+    referenceNumber: "PMT-2026-0508",
+    notes: "Onboarding fee — GreenTech (company-level).",
+  },
+
+  // ── expenses (4) ──────────────────────────────────────────────────
+  {
+    type: "expense",
+    amountPaise: 7_500_000, // ₹75,000
+    companyName: "Acme Construction Pvt Ltd",
+    projectName: "Mumbai Coastal Stretch Survey",
+    occurredInDays: -11,
+    referenceNumber: "EXP-2026-0512",
+    notes: "Site visit + topographic survey gear hire.",
+  },
+  {
+    type: "expense",
+    amountPaise: 15_000_000, // ₹1,50,000
+    companyName: "BuildRight Engineers",
+    projectName: "BuildRight Bengaluru Trunk Sewer PMC",
+    occurredInDays: -35,
+    referenceNumber: "EXP-2026-0418",
+    notes: "Drone survey contractor — Bengaluru East corridor.",
+  },
+  {
+    type: "expense",
+    amountPaise: 22_000_000, // ₹2,20,000
+    companyName: "Nimbus Infraworks",
+    projectName: "Andhra Solar Park Phase II EPC Consulting",
+    occurredInDays: -62,
+    referenceNumber: "EXP-2026-0322",
+    notes: "Geotechnical lab testing — Andhra Solar Park substation site.",
+  },
+  {
+    type: "expense",
+    amountPaise: 1_500_000, // ₹15,000
+    companyName: "Acme Construction Pvt Ltd",
+    projectName: null,
+    occurredInDays: -21,
+    referenceNumber: "EXP-2026-0502",
+    notes: "Annual GST filing fee (company-level).",
+  },
+
+  // ── advances (4) ──────────────────────────────────────────────────
+  {
+    type: "advance",
+    amountPaise: 50_000_000, // ₹5,00,000
+    companyName: "BuildRight Engineers",
+    projectName: "BuildRight Bengaluru Trunk Sewer PMC",
+    occurredInDays: -43,
+    referenceNumber: "ADV-2026-0410",
+    notes: "Vendor mobilisation advance — excavation contractor.",
+  },
+  {
+    type: "advance",
+    amountPaise: 100_000_000, // ₹10,00,000
+    companyName: "Nimbus Infraworks",
+    projectName: "Andhra Solar Park Phase II EPC Consulting",
+    occurredInDays: -69,
+    referenceNumber: "ADV-2026-0315",
+    notes: "Mobilisation advance — design consultant.",
+  },
+  {
+    type: "advance",
+    amountPaise: 50_000_000, // ₹5,00,000
+    companyName: "Nimbus Infraworks",
+    projectName: "Nimbus DLF Phase III Office Tower",
+    occurredInDays: -74,
+    referenceNumber: "ADV-2026-0310",
+    notes: "Final advance for DLF Phase III closeout.",
+  },
+  {
+    type: "advance",
+    amountPaise: 10_000_000, // ₹1,00,000
+    companyName: "BuildRight Engineers",
+    projectName: null,
+    occurredInDays: -17,
+    referenceNumber: "ADV-2026-0506",
+    notes: "Vendor retainer — company-level (cross-project advisory bench).",
+  },
+
+  // ── refunds (4) ───────────────────────────────────────────────────
+  {
+    type: "refund",
+    amountPaise: 2_500_000, // ₹25,000
+    companyName: "GreenTech Solutions",
+    projectName: "GreenTech Tamil Nadu Solar Park PMC",
+    occurredInDays: -5,
+    referenceNumber: "REF-2026-0518",
+    notes: "Overpayment refunded — GreenTech Tamil Nadu Solar Park PMC.",
+  },
+  {
+    type: "refund",
+    amountPaise: 12_500_000, // ₹1,25,000
+    companyName: "Modern-Alpha Alliance",
+    projectName: "Modern-Alpha Highway Maintenance",
+    occurredInDays: -31,
+    referenceNumber: "REF-2026-0422",
+    notes: "Cancellation refund — Modern-Alpha Highway Maintenance scope retracted.",
+  },
+  {
+    type: "refund",
+    amountPaise: 4_000_000, // ₹40,000
+    companyName: "Nimbus Infraworks",
+    projectName: "Nimbus DLF Phase III Office Tower",
+    occurredInDays: -48,
+    referenceNumber: "REF-2026-0405",
+    notes: "Refund of unused mobilisation advance after DLF Phase III closeout.",
+  },
+  {
+    type: "refund",
+    amountPaise: 1_000_000, // ₹10,000
+    companyName: "Acme Construction Pvt Ltd",
+    projectName: null,
+    occurredInDays: -3,
+    referenceNumber: "REF-2026-0520",
+    notes: "Refund of duplicate retainer payment (company-level).",
+  },
+];
+
 // ── Seeding helpers ───────────────────────────────────────────────────────
 
 /**
@@ -1109,6 +1756,289 @@ async function seedDocumentsForCompany(
   return tally;
 }
 
+// ── Phase-2/3 seeding helpers ─────────────────────────────────────────────
+
+/**
+ * Look up a company UUID by name. Fails loudly if the named company
+ * doesn't exist — used as a precondition guard in the tender / project /
+ * transaction seeders that all reference companies by name to keep the
+ * fixture file readable.
+ */
+async function lookupCompanyId(name: string): Promise<string> {
+  const row = await db
+    .select({ id: companies.id })
+    .from(companies)
+    .where(eq(companies.name, name))
+    .limit(1)
+    .then((rows) => rows[0]);
+  if (!row) {
+    throw new Error(
+      `Phase-2/3 seed references company "${name}" but no such company exists. Did the standalone/JV seeds run first?`,
+    );
+  }
+  return row.id;
+}
+
+/**
+ * Seed one tender. Idempotency check by `referenceNumber`. Resolves
+ * the publisher (Consultway sentinel) + optional awarded company by
+ * name at insert time so the file stays readable.
+ */
+async function seedTender(spec: TenderSeed): Promise<"created" | "skipped"> {
+  const existing = await db
+    .select({ id: tenders.id })
+    .from(tenders)
+    .where(eq(tenders.referenceNumber, spec.referenceNumber))
+    .limit(1);
+
+  if (existing.length > 0) {
+    log.info("tender already exists, skipping", {
+      referenceNumber: spec.referenceNumber,
+    });
+    return "skipped";
+  }
+
+  const publisherId = await lookupCompanyId(CONSULTWAY_PUBLISHER_NAME);
+  const awardedCompanyId = spec.awardedCompanyName
+    ? await lookupCompanyId(spec.awardedCompanyName)
+    : null;
+
+  await db.insert(tenders).values({
+    id: newId(),
+    title: spec.title,
+    description: spec.description,
+    referenceNumber: spec.referenceNumber,
+    status: spec.status,
+    publisherCompanyId: publisherId,
+    sector: spec.sector,
+    geography: spec.geography,
+    eligibleSector: spec.eligibleSector,
+    eligibleGeography: spec.eligibleGeography,
+    minAnnualTurnoverInr: spec.minAnnualTurnoverInr,
+    msmeOnly: spec.msmeOnly,
+    openingDate: isoDateOffset(spec.openingInDays),
+    closingDate: isoDateOffset(spec.closingInDays),
+    publishedAt:
+      spec.publishedInDays !== null
+        ? new Date(
+            Date.now() + spec.publishedInDays * 24 * 60 * 60 * 1000,
+          ).toISOString()
+        : null,
+    awardedCompanyId,
+    internalNotes: spec.internalNotes,
+  });
+
+  log.info("seeded tender", {
+    referenceNumber: spec.referenceNumber,
+    status: spec.status,
+  });
+  return "created";
+}
+
+/**
+ * Seed one tender application. Idempotency by `(tenderId, companyId)`
+ * — the DB-level unique index would refuse a duplicate anyway, but
+ * checking ahead lets us log the skip cleanly instead of surfacing a
+ * UNIQUE failure.
+ */
+async function seedTenderApplication(
+  spec: TenderApplicationSeed,
+): Promise<"created" | "skipped"> {
+  const tender = await db
+    .select({ id: tenders.id })
+    .from(tenders)
+    .where(eq(tenders.referenceNumber, spec.tenderReferenceNumber))
+    .limit(1)
+    .then((rows) => rows[0]);
+  if (!tender) {
+    throw new Error(
+      `Tender application references tender "${spec.tenderReferenceNumber}" but no such tender exists. Did the tenders seed run first?`,
+    );
+  }
+  const companyId = await lookupCompanyId(spec.companyName);
+
+  const existing = await db
+    .select({ id: tenderApplications.id })
+    .from(tenderApplications)
+    .where(
+      and(
+        eq(tenderApplications.tenderId, tender.id),
+        eq(tenderApplications.companyId, companyId),
+      ),
+    )
+    .limit(1);
+
+  if (existing.length > 0) {
+    log.info("tender application already exists, skipping", {
+      tenderReferenceNumber: spec.tenderReferenceNumber,
+      companyName: spec.companyName,
+    });
+    return "skipped";
+  }
+
+  const submittedAt = new Date(
+    Date.now() + spec.submittedInDays * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const decidedAt =
+    spec.decidedInDays !== null
+      ? new Date(
+          Date.now() + spec.decidedInDays * 24 * 60 * 60 * 1000,
+        ).toISOString()
+      : null;
+
+  await db.insert(tenderApplications).values({
+    id: newId(),
+    tenderId: tender.id,
+    companyId,
+    status: spec.status,
+    coverNote: spec.coverNote,
+    internalNotes: spec.internalNotes,
+    submittedAt,
+    decidedAt,
+  });
+
+  log.info("seeded tender application", {
+    tenderReferenceNumber: spec.tenderReferenceNumber,
+    companyName: spec.companyName,
+    status: spec.status,
+  });
+  return "created";
+}
+
+/**
+ * Seed one project. Idempotency by `(companyId, name)`. Resolves
+ * the optional tender link by `referenceNumber`.
+ */
+async function seedProject(spec: ProjectSeed): Promise<"created" | "skipped"> {
+  const companyId = await lookupCompanyId(spec.companyName);
+
+  const existing = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(eq(projects.companyId, companyId), eq(projects.name, spec.name)))
+    .limit(1);
+
+  if (existing.length > 0) {
+    log.info("project already exists, skipping", {
+      companyName: spec.companyName,
+      name: spec.name,
+    });
+    return "skipped";
+  }
+
+  let tenderId: string | null = null;
+  if (spec.tenderReferenceNumber) {
+    const tender = await db
+      .select({ id: tenders.id })
+      .from(tenders)
+      .where(eq(tenders.referenceNumber, spec.tenderReferenceNumber))
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (!tender) {
+      throw new Error(
+        `Project "${spec.name}" references tender "${spec.tenderReferenceNumber}" but no such tender exists.`,
+      );
+    }
+    tenderId = tender.id;
+  }
+
+  await db.insert(projects).values({
+    id: newId(),
+    name: spec.name,
+    description: spec.description,
+    tenderId,
+    companyId,
+    status: spec.status,
+    startDate: isoDateOffset(spec.startInDays),
+    endDate: isoDateOffset(spec.endInDays),
+    budgetInr: spec.budgetInr,
+    internalNotes: spec.internalNotes,
+  });
+
+  log.info("seeded project", {
+    companyName: spec.companyName,
+    name: spec.name,
+    status: spec.status,
+  });
+  return "created";
+}
+
+/**
+ * Seed one transaction. Idempotency by `(companyId, referenceNumber)`.
+ *
+ * Cross-FK invariant: when `projectName` is set, the referenced
+ * project's `companyId` MUST equal this row's `companyId`. The seed
+ * re-asserts this defensively because a typo in the fixture would
+ * silently corrupt the ledger.
+ */
+async function seedTransaction(
+  spec: TransactionSeed,
+): Promise<"created" | "skipped"> {
+  const companyId = await lookupCompanyId(spec.companyName);
+
+  const existing = await db
+    .select({ id: transactions.id })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.companyId, companyId),
+        eq(transactions.referenceNumber, spec.referenceNumber),
+      ),
+    )
+    .limit(1);
+
+  if (existing.length > 0) {
+    log.info("transaction already exists, skipping", {
+      companyName: spec.companyName,
+      referenceNumber: spec.referenceNumber,
+    });
+    return "skipped";
+  }
+
+  let projectId: string | null = null;
+  if (spec.projectName) {
+    const project = await db
+      .select({ id: projects.id, companyId: projects.companyId })
+      .from(projects)
+      .where(
+        and(
+          eq(projects.companyId, companyId),
+          eq(projects.name, spec.projectName),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (!project) {
+      throw new Error(
+        `Transaction ${spec.referenceNumber} references project "${spec.projectName}" on company "${spec.companyName}" but no such project exists. (Cross-FK invariant — the project's companyId must equal the transaction's companyId.)`,
+      );
+    }
+    projectId = project.id;
+  }
+
+  const occurredOn = isoDateOffset(spec.occurredInDays)!;
+
+  await db.insert(transactions).values({
+    id: newId(),
+    type: spec.type,
+    amountPaise: spec.amountPaise,
+    currency: "INR",
+    companyId,
+    projectId,
+    occurredOn,
+    referenceNumber: spec.referenceNumber,
+    notes: spec.notes,
+    internalNotes: null,
+  });
+
+  log.info("seeded transaction", {
+    companyName: spec.companyName,
+    referenceNumber: spec.referenceNumber,
+    type: spec.type,
+  });
+  return "created";
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -1146,7 +2076,7 @@ async function main(): Promise<void> {
     bump(await seedCompanyUser(spec));
   }
 
-  // 6. Document fixtures LAST. Documents reference both a company
+  // 6. Document fixtures. Documents reference both a company
   //    (FK companyId) and users (FK uploadedBy, reviewedBy), so all
   //    earlier steps must have run. Tracked under a separate tally
   //    so the doc-level numbers are visible in the final log line.
@@ -1155,6 +2085,36 @@ async function main(): Promise<void> {
     const tally = await seedDocumentsForCompany(companyName, specs);
     docStats.created += tally.created;
     docStats.skipped += tally.skipped;
+  }
+
+  // 7. Tenders — reference the Consultway publisher sentinel + an
+  //    awarded company. All earlier company seeds must have landed.
+  const tenderStats = { created: 0, skipped: 0 };
+  for (const spec of SEED_TENDERS) {
+    const r = await seedTender(spec);
+    tenderStats[r]++;
+  }
+
+  // 8. Tender applications — depend on both tenders and companies.
+  const applicationStats = { created: 0, skipped: 0 };
+  for (const spec of SEED_TENDER_APPLICATIONS) {
+    const r = await seedTenderApplication(spec);
+    applicationStats[r]++;
+  }
+
+  // 9. Projects — may reference an awarded tender. Companies must exist.
+  const projectStats = { created: 0, skipped: 0 };
+  for (const spec of SEED_PROJECTS) {
+    const r = await seedProject(spec);
+    projectStats[r]++;
+  }
+
+  // 10. Transactions — may reference a project; cross-FK invariant
+  //     re-asserted inside the seeder. Projects must exist.
+  const transactionStats = { created: 0, skipped: 0 };
+  for (const spec of SEED_TRANSACTIONS) {
+    const r = await seedTransaction(spec);
+    transactionStats[r]++;
   }
 
   const total =
@@ -1176,6 +2136,10 @@ async function main(): Promise<void> {
     documentsCreated: docStats.created,
     documentsSkipped: docStats.skipped,
     totalDocuments,
+    tenders: tenderStats,
+    tenderApplications: applicationStats,
+    projects: projectStats,
+    transactions: transactionStats,
   });
 
   // Close the SQLite connection so the script exits cleanly. Without
