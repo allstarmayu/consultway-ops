@@ -191,6 +191,81 @@ export async function getPresignedPutUrl(
 }
 
 /**
+ * Result type for `deleteR2Object`. The S3 (and therefore R2) DELETE
+ * verb is idempotent - the API returns 204 No Content whether the
+ * object existed or not - so we don't distinguish "deleted N bytes"
+ * from "key was already gone." A non-ok result means the request
+ * actually failed (network / auth / bucket misconfiguration).
+ */
+export interface DeleteR2ObjectResult {
+  ok: boolean;
+  /** HTTP status from R2. Undefined when the request never landed. */
+  status?: number;
+}
+
+/**
+ * Delete an R2 object by key.
+ *
+ * Unlike the presigned URL helpers above, this function signs AND
+ * executes the request - the bytes never round-trip through the
+ * browser. Server-only: callers are mutation actions like
+ * `deleteDocument` which need a guaranteed "the bytes are gone" return.
+ *
+ * Idempotency: S3 (and R2) treat DELETE as idempotent. Repeated calls
+ * for the same key return 204 each time, including when the object is
+ * already absent. Callers can re-run safely after a failure.
+ *
+ * Failure semantics: this function does NOT throw on a non-2xx
+ * response. The expected failure mode is "R2 is having a moment" and
+ * the caller (the documents-delete action) prefers to delete its DB
+ * row anyway, log the orphaned key, and let a future sweep clean it
+ * up. Throwing here would force every caller to wrap in try/catch and
+ * make rollback semantics murky.
+ *
+ * Network-level failures (TLS, DNS) DO throw - those are unrecoverable
+ * at this layer.
+ *
+ * @param key - R2 object key to delete. Same shape as the key used at
+ *              upload time.
+ * @returns `{ ok: true, status: 204 }` on success, `{ ok: false, status }`
+ *          on a non-2xx response.
+ */
+export async function deleteR2Object(
+  key: string,
+): Promise<DeleteR2ObjectResult> {
+  const client = getClient();
+  const url = `${getEndpoint()}/${env.R2_BUCKET_NAME}/${key}`;
+
+  // No `signQuery` here - this request executes server-side via
+  // aws4fetch's signed fetch, so the auth header form is fine.
+  // `client.fetch` is the one-call sign + execute path; identical to
+  // `await fetch(await client.sign(request))` but reads better.
+  const response = await client.fetch(url, { method: "DELETE" });
+
+  if (!response.ok) {
+    // Pull a short body excerpt for diagnostics (S3-style errors are
+    // small XML blobs). We deliberately don't log the full body on
+    // success because it's always empty for 204 anyway.
+    let bodyExcerpt: string | undefined;
+    try {
+      const text = await response.text();
+      bodyExcerpt = text.slice(0, 500);
+    } catch {
+      bodyExcerpt = undefined;
+    }
+    log.warn("r2 object delete failed", {
+      key,
+      status: response.status,
+      body: bodyExcerpt,
+    });
+    return { ok: false, status: response.status };
+  }
+
+  log.info("r2 object deleted", { key, status: response.status });
+  return { ok: true, status: response.status };
+}
+
+/**
  * Mint a presigned URL for downloading bytes from R2.
  *
  * Same shape as `getPresignedPutUrl` but for GETs. No content-type to

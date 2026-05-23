@@ -38,6 +38,7 @@ import {
   Trash2,
   Send,
   FileCheck2,
+  FileX2,
   Upload,
   AlertTriangle,
   RotateCcw,
@@ -128,6 +129,24 @@ const LABELS: Record<AuditAction, AuditLabel> = {
     verb: "document expired on",
     icon: AlertTriangle,
     tone: "neutral",
+  },
+  // Review outcomes (Day 10). Verified is a positive transition - same
+  // "create" tone as `tender_published`. Rejected and deleted share the
+  // destructive tone; the verb phrase carries the distinction.
+  document_verified: {
+    verb: "verified a document for",
+    icon: FileCheck2,
+    tone: "create",
+  },
+  document_rejected: {
+    verb: "rejected a document for",
+    icon: FileX2,
+    tone: "destructive",
+  },
+  document_deleted: {
+    verb: "deleted a document from",
+    icon: Trash2,
+    tone: "destructive",
   },
 
   // ── Tender lifecycle ─────────────────────────────────────────────────────

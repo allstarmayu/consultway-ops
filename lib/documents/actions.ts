@@ -50,8 +50,12 @@ import { buildDocumentKey } from "@/lib/r2/keys";
 import {
   initiateDocumentUploadSchema,
   confirmDocumentUploadSchema,
+  verifyDocumentSchema,
+  rejectDocumentSchema,
+  deleteDocumentSchema,
   type InitiateDocumentUploadInput,
 } from "./schemas";
+import { deleteR2Object } from "@/lib/r2/client";
 
 const log = logger.child({ module: "documents-actions" });
 
@@ -426,6 +430,448 @@ export async function confirmDocumentUpload(
   });
 
   return { ok: true, documentId };
+}
+
+// ── Review-action helper: admin/staff gate ──────────────────────────────────
+
+/**
+ * Role-gate for `verifyDocument` and `rejectDocument`. Both actions are
+ * admin/staff only - company-role users never review their own
+ * documents. Same pattern as `requireAdminOrStaff` in
+ * `lib/tenders/actions.ts`, redeclared locally because the tenders
+ * helper lives inside a `"use server"` file and can't be imported.
+ */
+type ReviewAuth =
+  | { ok: true; session: Session }
+  | { ok: false; error: string };
+
+async function requireReviewAuthority(): Promise<ReviewAuth> {
+  const session = await readSession();
+  if (!session) {
+    return { ok: false, error: "You must be signed in" };
+  }
+  if (session.role !== "admin" && session.role !== "staff") {
+    log.warn("documents: non-reviewer attempted review action", {
+      userId: session.userId,
+      role: session.role,
+    });
+    return { ok: false, error: "You don't have permission to do that" };
+  }
+  return { ok: true, session };
+}
+
+// ── verifyDocument ──────────────────────────────────────────────────────────
+
+/**
+ * Verify a document. **Admin/staff only.** Flips status
+ * `pending_review` -> `verified`, stamps `reviewedBy` + `reviewedAt`,
+ * and (optionally) captures reviewer notes in `reviewNotes`.
+ *
+ * Pipeline:
+ *   1. AuthZ: admin/staff
+ *   2. Validate input (documentId + optional notes)
+ *   3. Load row
+ *   4. Status gate: must be `pending_review`
+ *      Idempotency on `verified` is intentionally NOT supported - a
+ *      caller re-verifying an already-verified row would overwrite
+ *      reviewer + timestamp which is wrong on the audit trail.
+ *   5. Update row
+ *   6. Audit `document_verified`
+ *
+ * Failure modes:
+ *   - Invalid input              -> ok:false with the first Zod issue
+ *   - Not signed in / not staff  -> ok:false
+ *   - Document not found         -> ok:false
+ *   - Document in wrong status   -> ok:false with specific message
+ *   - DB write fails             -> rethrows (500)
+ */
+export async function verifyDocument(
+  rawInput: unknown,
+): Promise<ActionResult<{ documentId: string }>> {
+  // 1. AuthZ
+  const auth = await requireReviewAuthority();
+  if (!auth.ok) return auth;
+
+  // 2. Validate
+  const parsed = verifyDocumentSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const input = parsed.data;
+
+  // 3. Load row - we need companyId for the audit metadata, current
+  //    status for the gate, and the existing reviewNotes for the
+  //    before-snapshot if any.
+  const existing = await db
+    .select()
+    .from(documents)
+    .where(eq(documents.id, input.documentId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { ok: false, error: "Document not found" };
+  }
+
+  // 4. Status gate. Only `pending_review` rows can be verified. We
+  //    deliberately don't idempotently accept `verified` here - the
+  //    audit trail would double-count if we did.
+  if (existing.status !== "pending_review") {
+    return {
+      ok: false,
+      error: `Cannot verify - document is ${existing.status}, not pending_review`,
+    };
+  }
+
+  // 5. Update. Stamp reviewer + timestamp; optional notes captured
+  //    verbatim (already trimmed by the Zod schema). updatedAt is
+  //    refreshed by the $onUpdate hook in the schema.
+  const reviewedAt = new Date().toISOString();
+  const reviewNotes = input.notes ?? null;
+
+  try {
+    await db
+      .update(documents)
+      .set({
+        status: "verified",
+        reviewedBy: auth.session.userId,
+        reviewedAt,
+        reviewNotes,
+      })
+      .where(eq(documents.id, existing.id));
+  } catch (err) {
+    log.error("verifyDocument update failed", {
+      err,
+      documentId: existing.id,
+      actorId: auth.session.userId,
+    });
+    throw err;
+  }
+
+  // 6. Audit. companyId rides in metadata for cross-reference (same
+  //    convention as `document_uploaded`); notes only included when
+  //    present so the metadata stays lean.
+  await recordAuditEvent({
+    actorId: auth.session.userId,
+    actorRole: auth.session.role,
+    action: "document_verified",
+    targetType: "document",
+    targetId: existing.id,
+    before: { status: existing.status },
+    after: { status: "verified", reviewedAt },
+    metadata: {
+      companyId: existing.companyId,
+      documentType: existing.documentType,
+      fileName: existing.fileName,
+      ...(reviewNotes ? { notes: reviewNotes } : {}),
+    },
+  });
+
+  log.info("document verified", {
+    documentId: existing.id,
+    companyId: existing.companyId,
+    actorId: auth.session.userId,
+  });
+
+  return { ok: true, documentId: existing.id };
+}
+
+// ── rejectDocument ──────────────────────────────────────────────────────────
+
+/**
+ * Reject a document. **Admin/staff only.** Flips status
+ * `pending_review` -> `rejected`, stamps `reviewedBy` + `reviewedAt`,
+ * captures the REQUIRED reason in `reviewNotes`.
+ *
+ * Why the reason is required: rejections without context waste an
+ * upload cycle. The uploader needs to know what to fix on the
+ * re-upload. The schema enforces a 5-character minimum (matching the
+ * tender reversal pattern); rejection reasons longer than 500 chars
+ * are truncated by the schema.
+ *
+ * Pipeline:
+ *   1. AuthZ: admin/staff
+ *   2. Validate input (documentId + required reason)
+ *   3. Load row
+ *   4. Status gate: must be `pending_review`
+ *   5. Update row
+ *   6. Audit `document_rejected`
+ */
+export async function rejectDocument(
+  rawInput: unknown,
+): Promise<ActionResult<{ documentId: string }>> {
+  // 1. AuthZ
+  const auth = await requireReviewAuthority();
+  if (!auth.ok) return auth;
+
+  // 2. Validate
+  const parsed = rejectDocumentSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const input = parsed.data;
+
+  // 3. Load row
+  const existing = await db
+    .select()
+    .from(documents)
+    .where(eq(documents.id, input.documentId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { ok: false, error: "Document not found" };
+  }
+
+  // 4. Status gate
+  if (existing.status !== "pending_review") {
+    return {
+      ok: false,
+      error: `Cannot reject - document is ${existing.status}, not pending_review`,
+    };
+  }
+
+  // 5. Update. Reason is non-null by schema; lands in reviewNotes.
+  const reviewedAt = new Date().toISOString();
+
+  try {
+    await db
+      .update(documents)
+      .set({
+        status: "rejected",
+        reviewedBy: auth.session.userId,
+        reviewedAt,
+        reviewNotes: input.reason,
+      })
+      .where(eq(documents.id, existing.id));
+  } catch (err) {
+    log.error("rejectDocument update failed", {
+      err,
+      documentId: existing.id,
+      actorId: auth.session.userId,
+    });
+    throw err;
+  }
+
+  // 6. Audit. Reason carried both on the row and in metadata - the row
+  //    is the durable display surface; metadata makes the reason
+  //    queryable in the audit log feed.
+  await recordAuditEvent({
+    actorId: auth.session.userId,
+    actorRole: auth.session.role,
+    action: "document_rejected",
+    targetType: "document",
+    targetId: existing.id,
+    before: { status: existing.status },
+    after: { status: "rejected", reviewedAt },
+    metadata: {
+      companyId: existing.companyId,
+      documentType: existing.documentType,
+      fileName: existing.fileName,
+      reason: input.reason,
+    },
+  });
+
+  log.info("document rejected", {
+    documentId: existing.id,
+    companyId: existing.companyId,
+    actorId: auth.session.userId,
+  });
+
+  return { ok: true, documentId: existing.id };
+}
+
+// ── deleteDocument ──────────────────────────────────────────────────────────
+
+/**
+ * Result type for `requireDeleteAuthority`. Tighter than the
+ * upload/review gates because deletion has the broadest matrix:
+ *   - admin    -> any document, any status
+ *   - staff    -> NO direct delete (admin only per RBAC matrix)
+ *   - company  -> only own documents in `pending` or `rejected` status
+ *
+ * Notably staff is excluded from delete entirely. The RBAC matrix
+ * (docs/08-rbac-matrix.md) flags this - staff can verify/reject but
+ * deletions cascade R2 bytes and are admin-only by design.
+ */
+type DeleteAuth =
+  | { ok: true; session: Session }
+  | { ok: false; error: string };
+
+function checkDeleteAuthority(
+  session: Session,
+  document: Pick<Document, "companyId" | "status">,
+): DeleteAuth {
+  // Admin can delete anything, anytime.
+  if (session.role === "admin") {
+    return { ok: true, session };
+  }
+
+  // Company-role: only own documents in pending or rejected. The
+  // pending allowance lets a company abort a half-finished upload;
+  // the rejected allowance lets them clear out a doc the reviewer
+  // turned away. Verified documents can't be deleted by the company
+  // (would let them silently revoke compliance).
+  if (session.role === "company") {
+    if (!session.companyId || session.companyId !== document.companyId) {
+      // Not-found leak shape - don't confirm the document exists.
+      return { ok: false, error: "Document not found" };
+    }
+    if (document.status !== "pending" && document.status !== "rejected") {
+      return {
+        ok: false,
+        error: `You can only delete documents that are pending or rejected (this one is ${document.status})`,
+      };
+    }
+    return { ok: true, session };
+  }
+
+  // Staff falls through here - they can verify/reject but cannot
+  // delete per the RBAC matrix.
+  log.warn("documents: non-deleter attempted delete", {
+    userId: session.userId,
+    role: session.role,
+  });
+  return { ok: false, error: "You don't have permission to do that" };
+}
+
+/**
+ * Delete a document and its R2 object.
+ *
+ * Pipeline:
+ *   1. Validate input
+ *   2. Resolve session
+ *   3. Load the row (need companyId + status for AuthZ; fileKey for R2
+ *      delete; full row for audit before-snapshot)
+ *   4. Authority gate (admin always; company-role own pending|rejected)
+ *   5. Delete the DB row
+ *   6. Best-effort delete the R2 object - failure logged but does not
+ *      roll back the DB delete. An orphan key is preferable to a row
+ *      that references missing bytes.
+ *   7. Audit `document_deleted`
+ *
+ * Failure modes:
+ *   - Invalid input             -> ok:false
+ *   - Not signed in             -> ok:false
+ *   - Document not found        -> ok:false (covers cross-company)
+ *   - Wrong role / status       -> ok:false with specific message
+ *   - DB delete fails           -> rethrows (500). R2 untouched.
+ *   - R2 delete fails           -> ok:true, logged + audit notes the
+ *                                  orphan key for the eventual sweeper
+ */
+export async function deleteDocument(
+  rawInput: unknown,
+): Promise<ActionResult<{ documentId: string }>> {
+  // 1. Validate
+  const parsed = deleteDocumentSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: "Invalid document id" };
+  }
+  const { documentId } = parsed.data;
+
+  // 2. Session
+  const session = await readSession();
+  if (!session) {
+    return { ok: false, error: "You must be signed in" };
+  }
+
+  // 3. Load row. Full snapshot needed for the audit `before` payload.
+  const existing = await db
+    .select()
+    .from(documents)
+    .where(eq(documents.id, documentId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { ok: false, error: "Document not found" };
+  }
+
+  // 4. Authority. Mixes role-gate (staff blocked) with row-scope
+  //    (company-role own only) and status-gate (company-role can't
+  //    delete verified).
+  const auth = checkDeleteAuthority(session, existing);
+  if (!auth.ok) return auth;
+
+  // 5. Delete the DB row. ON DELETE CASCADE on the documents table
+  //    handles nothing here (documents have no dependents); the row
+  //    just disappears.
+  try {
+    await db.delete(documents).where(eq(documents.id, existing.id));
+  } catch (err) {
+    log.error("deleteDocument db delete failed", {
+      err,
+      documentId: existing.id,
+      actorId: session.userId,
+    });
+    throw err;
+  }
+
+  // 6. Best-effort R2 delete. `pending` rows may never have had bytes
+  //    in R2 (the client could abort before the PUT lands), but the
+  //    DELETE verb is idempotent so a delete against an absent key is
+  //    a no-op. A non-2xx response here is logged but does NOT roll
+  //    back the DB delete - the orphan-key cost is small and a future
+  //    sweep can reconcile.
+  let r2Status: number | undefined;
+  let r2Ok = true;
+  try {
+    const r2Result = await deleteR2Object(existing.fileKey);
+    r2Ok = r2Result.ok;
+    r2Status = r2Result.status;
+  } catch (err) {
+    // Network-level R2 failure (TLS, DNS). Log and continue - the
+    // audit row will note the orphan.
+    log.error("deleteDocument r2 delete threw", {
+      err,
+      documentId: existing.id,
+      fileKey: existing.fileKey,
+    });
+    r2Ok = false;
+  }
+
+  // 7. Audit. before-snapshot captures the salient fields of the row
+  //    we just deleted - status, type, key, owning company. r2Ok is
+  //    surfaced in metadata so a "find me documents whose bytes leaked"
+  //    audit-log query becomes possible.
+  await recordAuditEvent({
+    actorId: session.userId,
+    actorRole: session.role,
+    action: "document_deleted",
+    targetType: "document",
+    targetId: existing.id,
+    before: {
+      status: existing.status,
+      documentType: existing.documentType,
+      fileName: existing.fileName,
+      fileKey: existing.fileKey,
+      sizeBytes: existing.sizeBytes,
+    },
+    metadata: {
+      companyId: existing.companyId,
+      r2DeleteOk: r2Ok,
+      ...(r2Status !== undefined ? { r2Status } : {}),
+    },
+  });
+
+  log.info("document deleted", {
+    documentId: existing.id,
+    companyId: existing.companyId,
+    actorId: session.userId,
+    r2Ok,
+  });
+
+  return { ok: true, documentId: existing.id };
 }
 
 // ── Read helper (used by tests, may grow in Day 10) ─────────────────────────

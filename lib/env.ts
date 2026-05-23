@@ -107,6 +107,44 @@ const envSchema = z.object({
    * doc's `consultway-docs-staging` plan) this is where it gets pointed.
    */
   R2_BUCKET_NAME: z.string().min(1).default("consultway-docs"),
+
+  // ── Email (Resend) ──────────────────────────────────────────────────
+  // Day 10: transactional email is wired through `lib/email/client.ts`.
+  // When `RESEND_API_KEY` is set, the client uses the Resend SDK to
+  // actually send. When it's unset (the dev default), the client logs
+  // the rendered payload via the structured logger and returns ok.
+  //
+  // This split lets the document expiry-reminder cron be invoked
+  // locally via `pnpm cron:expiry-sweep` without a Resend account, and
+  // gracefully upgrades to real sends in production where the key is
+  // provisioned via Cloudflare secrets.
+
+  /**
+   * Resend API key. Optional in dev (empty string -> log fallback);
+   * REQUIRED in production for transactional emails to actually go out.
+   * Format: `re_<random>` (Resend's own token format; we don't validate
+   * the shape beyond non-emptiness because Resend is free to rotate it).
+   */
+  RESEND_API_KEY: z.string().default(""),
+
+  /**
+   * `From` address for outbound transactional email. The format
+   * `"Name <local@domain>"` is the Resend-and-RFC-5322 standard for
+   * setting both the display name and the address. The default uses
+   * `consultway.local` (an unroutable TLD) so a misconfigured dev
+   * environment can't accidentally send from a real-looking address.
+   *
+   * Production sets this to the verified sender domain configured in
+   * Resend (e.g. `noreply@consultway.info`).
+   */
+  EMAIL_FROM: z.string().min(1).default("Consultway <noreply@consultway.local>"),
+
+  /**
+   * Optional `Reply-To` address. When unset, replies route back to the
+   * `From` address (which usually goes to a black-hole inbox for noreply
+   * senders). Setting this points replies at a real support inbox.
+   */
+  EMAIL_REPLY_TO: z.string().optional(),
 });
 
 /**

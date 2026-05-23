@@ -65,6 +65,10 @@ export const auditActionSchema = z.enum([
   "compliance_status_changed",
   "document_uploaded",
   "document_expired",
+  // Document review verbs (Day 10).
+  "document_verified",
+  "document_rejected",
+  "document_deleted",
   "tender_published",
   "tender_applied",
   "tender_reopened",

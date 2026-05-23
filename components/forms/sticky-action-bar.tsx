@@ -63,12 +63,16 @@ export function StickyActionBar({
   return (
     <div
       className={cn(
-        // Fixed to viewport bottom. `inset-x-0` makes it span the full
-        // viewport width, ignoring the sidebar — that's intentional so
-        // the bar feels grounded to the screen, not the content area.
-        // The sidebar's own z-index keeps it on top of the bar so they
-        // don't visually fight.
-        "sticky bottom-0 left-0 right-0 z-30 -mx-6 mt-8 lg:-mx-10",
+        // Sticks to the bottom of its scroll container. Negative
+        // horizontal margins break out of the parent Card's padding so
+        // the bar's surface meets the Card edges cleanly. Margins MUST
+        // match the wrapping Card's padding at every breakpoint:
+        //   Card uses `p-6 sm:p-8` -> mirror with `-mx-6 sm:-mx-8`.
+        // Earlier `lg:-mx-10` over-extended past the Card by 0.5rem on
+        // each side at ≥1024 px; mid-viewport between sm and lg the
+        // mismatch went the other way and inset the bar. Aligning to
+        // the Card's actual padding fixes both.
+        "sticky bottom-0 left-0 right-0 z-30 -mx-6 mt-8 sm:-mx-8",
         // Surface treatment — white bg, top border, subtle shadow rising
         // upward from the bar so the form content above visibly tucks
         // behind it on scroll.
@@ -78,7 +82,9 @@ export function StickyActionBar({
     >
       <div
         className={cn(
-          "flex flex-col gap-3 px-6 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-10",
+          // Inner padding mirrors the negative margin so content lines
+          // up with the form fields above the bar.
+          "flex flex-col gap-3 px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-8",
           className,
         )}
       >
