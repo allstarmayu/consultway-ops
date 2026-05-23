@@ -1452,3 +1452,218 @@ export type NewProject = typeof projects.$inferInsert;
 
 /** Inferred select type — what a row looks like when read from the DB. */
 export type Project = typeof projects.$inferSelect;
+
+// -- Shared types: transactions ---------------------------------------------
+/**
+ * Kind of a financial transaction tracked against a company (and
+ * optionally a project). Closed union; SQLite has no native enums so the
+ * gate lives at the action / Zod layer.
+ *
+ *   - `invoice`  — money the company owes us (or owes the project's
+ *                  counterparty). Recorded when an invoice is issued.
+ *   - `payment`  — money received against an invoice.
+ *   - `expense`  — money out: vendor bills, costs incurred on the
+ *                  project, office overheads at the company level.
+ *   - `advance`  — money out, against work yet to be performed
+ *                  (advance to a contractor, retainer payment, etc.).
+ *   - `refund`   — money out, against work already paid for and now
+ *                  being reversed.
+ *
+ * Day 19 brief lists five values; staying tight on the closed set keeps
+ * the audit log and rollup queries deterministic. New types are
+ * deliberate schema-and-doc changes, not free-form strings.
+ */
+export type TransactionType =
+  | "invoice"
+  | "payment"
+  | "expense"
+  | "advance"
+  | "refund";
+
+// -- transactions -----------------------------------------------------------
+/**
+ * Admin-only financial ledger. Each row records a single recorded
+ * monetary event against a company (always) and a project (sometimes —
+ * company-level overheads like office rent don't belong to any project).
+ *
+ * **Admin-only forever.** Staff and company-role users cannot read or
+ * write this table — enforced at the action layer (`requireAdmin`) and
+ * at the page/route-handler layer (page-level redirect / 403). See
+ * `docs/08-rbac-matrix.md § Transactions`.
+ *
+ * Money column shape:
+ *
+ *   - `amountPaise` is an **INTEGER** count of **paise** (1 INR = 100
+ *     paise). NEVER use REAL/FLOAT for money — IEEE-754 loses precision
+ *     on rupees-and-paise arithmetic. INTEGER paise gives exact arithmetic
+ *     up to ~9.2 quintillion paise = ~92 trillion crore, which is well
+ *     above any realistic figure.
+ *   - `currency` is fixed at `'INR'` for Phase 1 / Phase 2 (the action
+ *     layer Zod-refuses anything else). The column exists for forward-
+ *     compat with multi-currency in Phase 3+ — schema landing now means
+ *     no migration churn when that feature lands.
+ *
+ * Distinct from `projects.budgetInr`:
+ *
+ *   - Projects store BUDGETS in **whole rupees** (planning figures —
+ *     50 paise is noise on a multi-crore budget).
+ *   - Transactions store ACTUALS in **paise** (where 50 paise matters
+ *     for reconciliation against invoices).
+ *
+ * Two precision regimes intentionally. The formatter in `lib/format/inr.ts`
+ * is the boundary between the two.
+ *
+ * Cascade semantics:
+ *
+ *   - `companyId` → `companies.id` ON DELETE RESTRICT. Losing the
+ *     counterparty out from under outstanding transactions would break
+ *     the ledger. Same shape as `tenders.publisherCompanyId`.
+ *   - `projectId` → `projects.id` ON DELETE RESTRICT. Asymmetric with
+ *     `users.companyId` (SET NULL) — a transaction exists because of the
+ *     project; losing the project out from under it would orphan a
+ *     row whose semantics depend on the project context. Forces a
+ *     deliberate cleanup before project deletion. (Combined with Day-16's
+ *     deferred `deleteProject`, the cascade is academic for now but
+ *     gets the invariant right at insert time.)
+ *
+ * Cross-FK invariant (enforced at the action layer, not the DB):
+ *
+ *   - If `projectId` is set, the referenced project's `companyId` MUST
+ *     equal this row's `companyId`. A transaction "on" project X for
+ *     company Y must have Y own X. The DB can't express the join-key
+ *     equality as a constraint; the action checks it on every
+ *     create/update.
+ *
+ * `referenceNumber` semantics:
+ *
+ *   - Optional invoice number / payment reference / cheque number etc.
+ *   - UNIQUE when present (SQLite NULL-distinct semantics; multiple NULLs
+ *     coexist, any non-null value must be unique across the table).
+ *     Same shape as `tenders.referenceNumber` and `companies.gstNumber`.
+ *
+ * `occurredOn` vs `createdAt`:
+ *
+ *   - `occurredOn` is the business date the transaction is dated to
+ *     (invoice date, payment date, etc.). ISO-8601 date-only, no time
+ *     component — transactions don't have a clock-time of day.
+ *   - `createdAt` is when the row was inserted into the platform. Could
+ *     be days or weeks after `occurredOn` for back-dated entries.
+ *
+ * `internalNotes`:
+ *
+ *   - Staff-only on every other table, but since the whole transactions
+ *     module is admin-only the field is moot. Kept for symmetry with
+ *     the rest of the codebase and to ease a hypothetical future widening
+ *     of read access.
+ */
+export const transactions = sqliteTable(
+  "transactions",
+  {
+    /** UUID v7. Generated app-side via `newId()`. */
+    id: text("id").primaryKey().$defaultFn(newId),
+
+    /**
+     * See `TransactionType`. Validated app-side with Zod against the
+     * closed union. SQLite has no native enums; the `$type<>` narrows
+     * the TypeScript surface.
+     */
+    type: text("type").notNull().$type<TransactionType>(),
+
+    /**
+     * Amount in **paise** (1 INR = 100 paise). INTEGER, never REAL —
+     * see table-level docstring re: money precision. Always positive at
+     * the action layer; a refund or expense is encoded by `type`, not by
+     * a negative sign. Zod-refuses `amountPaise <= 0`.
+     */
+    amountPaise: integer("amount_paise").notNull(),
+
+    /**
+     * Currency code. Default `'INR'`. The column exists for Phase-3
+     * multi-currency; today the action-layer Zod refines to literal
+     * `'INR'` only.
+     */
+    currency: text("currency").notNull().default("INR"),
+
+    /**
+     * Counterparty company. RESTRICT on delete so a company that's
+     * party to outstanding transactions can't be removed out from
+     * under them.
+     */
+    companyId: text("company_id")
+      .notNull()
+      .references(() => companies.id, {
+        onDelete: "restrict",
+        onUpdate: "no action",
+      }),
+
+    /**
+     * Optional project link. NULLABLE because company-level overheads
+     * (office rent, GST filing fee) aren't tied to any project. RESTRICT
+     * on project delete — see table-level commentary for the asymmetry
+     * with `users.companyId`.
+     *
+     * Cross-FK invariant enforced at the action layer: when set, the
+     * project's `companyId` must equal this row's `companyId`.
+     */
+    projectId: text("project_id").references(() => projects.id, {
+      onDelete: "restrict",
+      onUpdate: "no action",
+    }),
+
+    /**
+     * ISO-8601 date (YYYY-MM-DD) the transaction is dated to (invoice
+     * date / payment date / etc.). NOT NULL — every transaction has a
+     * business date even if it's the day it was recorded.
+     */
+    occurredOn: text("occurred_on").notNull(),
+
+    /**
+     * Optional reference number — invoice number, payment reference,
+     * cheque number, etc. NULL-distinct UNIQUE semantics (multiple
+     * NULLs allowed; any non-null must be unique).
+     */
+    referenceNumber: text("reference_number").unique(),
+
+    /** Free-form notes. Visible to admin viewers on the detail page. */
+    notes: text("notes"),
+
+    /**
+     * Staff-only field by convention; the whole module is admin-only so
+     * the distinction is moot today. Kept for symmetry with the rest of
+     * the codebase.
+     */
+    internalNotes: text("internal_notes"),
+
+    /** ISO-8601 UTC. Set by SQLite default on insert. */
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+
+    /** ISO-8601 UTC. Updated app-side via Drizzle $onUpdate hook. */
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(datetime('now'))`)
+      .$onUpdate(() => new Date().toISOString()),
+  },
+  (table) => [
+    // Per-company rollups + the company filter on the list page.
+    index("transactions_company_id_idx").on(table.companyId),
+    // Per-project rollups + the project filter on the list page.
+    index("transactions_project_id_idx").on(table.projectId),
+    // Type filter on the list page.
+    index("transactions_type_idx").on(table.type),
+    // Sort + range filter on `occurredOn` (default list sort is newest
+    // first; the date-range filter scans this).
+    index("transactions_occurred_on_idx").on(table.occurredOn),
+    // Composite for the per-company-by-type rollup query.
+    index("transactions_company_type_idx").on(table.companyId, table.type),
+    // Composite for the per-project-by-type rollup query.
+    index("transactions_project_type_idx").on(table.projectId, table.type),
+  ],
+);
+
+/** Inferred insert type — use for Zod parsing / insert validation. */
+export type NewTransaction = typeof transactions.$inferInsert;
+
+/** Inferred select type — what a row looks like when read from the DB. */
+export type Transaction = typeof transactions.$inferSelect;
