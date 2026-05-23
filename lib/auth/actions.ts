@@ -29,10 +29,12 @@
 import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
-import { users } from "@/lib/db/schema";
+import { users, companies } from "@/lib/db/schema";
+import { newId } from "@/lib/db/ids";
+import { recordAuditEvent, SYSTEM_ACTOR_ID } from "@/lib/audit/log";
 import { verifyPassword, hashPassword } from "./password";
 import { createSession, destroySession } from "./session";
-import { loginSchema } from "./schemas";
+import { loginSchema, registerCompanySchema } from "./schemas";
 import { logger } from "@/lib/logger";
 
 const log = logger.child({ module: "auth-actions" });
@@ -210,4 +212,249 @@ export async function login(rawInput: unknown): Promise<ActionResult> {
 export async function logout(): Promise<never> {
   await destroySession();
   redirect("/login");
+}
+
+// -- Public: registerCompany (Day 15) --------------------------------------
+
+/**
+ * Result type for `registerCompany`. The Chunk-1 surface returns the
+ * created ids on success; Chunk 2 will extend with `verificationEmailSent`.
+ * Lives here rather than imported from `lib/types/action-result` because
+ * this module already declares a narrower auth-specific result shape and
+ * keeping the two side-by-side avoids the conditional-import dance.
+ */
+export type RegisterCompanyResult =
+  | { ok: true; userId: string; companyId: string }
+  | { ok: false; error: string; field?: string };
+
+/**
+ * Create a paired (company, user) row from public registration.
+ *
+ * Unlike `createCompany` (admin/staff-only), this path is unauthenticated
+ * — the caller is by definition a prospect who doesn't yet have an
+ * account. We:
+ *
+ *   1. Validate input via Zod (schema enforces the password policy and
+ *      cross-validates userEmail / contactEmail).
+ *   2. Soft-check for duplicate user email, GST, and PAN BEFORE the
+ *      insert, so the form can surface friendlier errors than the DB
+ *      unique-violation surface. These checks are advisory — the actual
+ *      INSERT still races with a parallel registration, so we also
+ *      translate any post-insert UNIQUE failure to the same field hint.
+ *   3. Insert the `companies` row with `complianceStatus: 'pending'`.
+ *      The created company is unverified-pending until staff onboard them.
+ *   4. Insert the `users` row with `role: 'company'`, the new company id,
+ *      `isActive: true`, and `emailVerifiedAt: null`. The verification
+ *      gate (Chunk 2) is the active barrier — not `isActive`, which we
+ *      reserve for staff-driven deactivation.
+ *   5. Audit both inserts with `actorRole: 'system'` and the nil
+ *      `SYSTEM_ACTOR_ID` — there is no real actor before this action
+ *      runs. Same convention the cron uses.
+ *
+ * Returns `{ ok: true, userId, companyId }` on success. Chunk 2 picks up
+ * from here to mint a verification token and send the email.
+ */
+export async function registerCompany(
+  rawInput: unknown,
+): Promise<RegisterCompanyResult> {
+  // 1. Validate input shape. First failure carries a field hint so the
+  //    form can highlight the offender.
+  const parsed = registerCompanySchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const input = parsed.data;
+
+  // 2. Soft duplicate checks. Friendlier than letting the DB UNIQUE
+  //    violation propagate up. Parallel queries — each on an indexed
+  //    column so the round-trip is cheap.
+  const [emailHit, gstHit, panHit] = await Promise.all([
+    db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, input.userEmail))
+      .limit(1),
+    input.gstNumber
+      ? db
+          .select({ id: companies.id })
+          .from(companies)
+          .where(eq(companies.gstNumber, input.gstNumber))
+          .limit(1)
+      : Promise.resolve([] as { id: string }[]),
+    input.panNumber
+      ? db
+          .select({ id: companies.id })
+          .from(companies)
+          .where(eq(companies.panNumber, input.panNumber))
+          .limit(1)
+      : Promise.resolve([] as { id: string }[]),
+  ]);
+
+  if (emailHit.length > 0) {
+    return {
+      ok: false,
+      error: "An account with this email already exists",
+      field: "userEmail",
+    };
+  }
+  if (gstHit.length > 0) {
+    return {
+      ok: false,
+      error: "A company with this GST number is already registered",
+      field: "gstNumber",
+    };
+  }
+  if (panHit.length > 0) {
+    return {
+      ok: false,
+      error: "A company with this PAN is already registered",
+      field: "panNumber",
+    };
+  }
+
+  // 3. Insert the company row.
+  const companyId = newId();
+  try {
+    await db.insert(companies).values({
+      id: companyId,
+      name: input.companyName,
+      sector: input.sector,
+      geography: input.geography,
+      gstNumber: input.gstNumber,
+      panNumber: input.panNumber,
+      isMsme: false,
+      isJv: false,
+      complianceStatus: "pending",
+      contactEmail: input.contactEmail,
+      contactPhone: input.contactPhone,
+      contactPersonName: input.contactPersonName,
+    });
+  } catch (err) {
+    const conflict = translateRegistrationConflict(err);
+    if (conflict) {
+      log.info("registerCompany unique conflict on company insert", {
+        field: conflict.field,
+      });
+      return { ok: false, ...conflict };
+    }
+    log.error("registerCompany company insert failed", { err });
+    throw err;
+  }
+
+  // 4. Insert the user row. Wrap with an attempt to clean up the company
+  //    if the user insert fails — neither row is useful on its own.
+  const userId = newId();
+  const passwordHash = await hashPassword(input.password);
+  try {
+    await db.insert(users).values({
+      id: userId,
+      email: input.userEmail,
+      passwordHash,
+      role: "company",
+      companyId,
+      name: input.userName,
+      isActive: true,
+      // emailVerifiedAt left undefined -> NULL on insert. The verification
+      // gate (Chunk 2) is the active barrier; isActive=true means the
+      // account is not staff-disabled, distinct from "not yet verified".
+    });
+  } catch (err) {
+    // Roll back the company insert. Best-effort — if this fails too, the
+    // company row stays orphaned (no linked user) which is acceptable;
+    // duplicate-detection above will guide the user to a fresh attempt.
+    log.error("registerCompany user insert failed; rolling back company", {
+      err,
+      companyId,
+    });
+    try {
+      await db.delete(companies).where(eq(companies.id, companyId));
+    } catch (cleanupErr) {
+      log.error("registerCompany rollback of company failed", {
+        cleanupErr,
+        companyId,
+      });
+    }
+    const conflict = translateRegistrationConflict(err);
+    if (conflict) {
+      return { ok: false, ...conflict };
+    }
+    throw err;
+  }
+
+  // 5. Audit both creations. No real actor, so we use the nil SYSTEM
+  //    sentinel + role:"system" — same convention the cron uses.
+  await recordAuditEvent({
+    actorId: SYSTEM_ACTOR_ID,
+    actorRole: "system",
+    action: "created",
+    targetType: "company",
+    targetId: companyId,
+    after: {
+      name: input.companyName,
+      sector: input.sector,
+      geography: input.geography,
+      complianceStatus: "pending",
+      via: "public-registration",
+    },
+  });
+  await recordAuditEvent({
+    actorId: SYSTEM_ACTOR_ID,
+    actorRole: "system",
+    action: "created",
+    targetType: "user",
+    targetId: userId,
+    after: {
+      email: input.userEmail,
+      role: "company",
+      companyId,
+      via: "public-registration",
+    },
+  });
+
+  log.info("public registration created company + user", {
+    userId,
+    companyId,
+    companyName: input.companyName,
+  });
+
+  return { ok: true, userId, companyId };
+}
+
+// -- Private: translate SQLite UNIQUE conflicts to form-friendly errors ---
+
+/**
+ * SQLite reports unique conflicts as:
+ *   SQLITE_CONSTRAINT: UNIQUE constraint failed: <table>.<column>
+ * Translate the three that matter for registration into form-field hints.
+ * Anything we don't recognise returns null so the caller rethrows.
+ */
+function translateRegistrationConflict(
+  err: unknown,
+): { error: string; field: string } | null {
+  if (!(err instanceof Error)) return null;
+  const msg = err.message;
+  if (msg.includes("users.email")) {
+    return {
+      error: "An account with this email already exists",
+      field: "userEmail",
+    };
+  }
+  if (msg.includes("companies.gst_number")) {
+    return {
+      error: "A company with this GST number is already registered",
+      field: "gstNumber",
+    };
+  }
+  if (msg.includes("companies.pan_number")) {
+    return {
+      error: "A company with this PAN is already registered",
+      field: "panNumber",
+    };
+  }
+  return null;
 }

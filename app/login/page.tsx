@@ -89,8 +89,18 @@ export default function LoginPage() {
           <LoginForm />
         </Suspense>
 
+        <p className="mt-6 text-center text-sm text-muted-foreground">
+          Need an account?{" "}
+          <Link
+            href="/register"
+            className="font-medium text-primary underline-offset-4 hover:underline"
+          >
+            Register your company
+          </Link>
+        </p>
+
         {/* Footer note */}
-        <p className="mt-6 text-center text-xs text-muted-foreground">
+        <p className="mt-2 text-center text-xs text-muted-foreground">
           Internal portal - Not for public use
         </p>
       </div>
