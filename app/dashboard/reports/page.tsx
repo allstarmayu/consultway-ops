@@ -26,9 +26,12 @@
  */
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import Link from "next/link";
 import { redirect } from "next/navigation";
+import { Download } from "lucide-react";
 
 import { readSession } from "@/lib/auth/session";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { PeriodPicker } from "./_components/period-picker";
@@ -60,11 +63,21 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
   // a fresh fallback when the user changes the period or company.
   const suspenseKey = `${start}_${end}_${companyId ?? ""}`;
 
+  const pdfHref = buildPdfHref({ start, end, companyId });
+
   return (
     <>
       <PageHeader
         title="Reports"
         subtitle="Operations and financial summary, period-bounded"
+        actions={
+          <Button asChild variant="outline">
+            <Link href={pdfHref}>
+              <Download className="h-4 w-4" aria-hidden />
+              Download PDF
+            </Link>
+          </Button>
+        }
       />
 
       <div className="mb-6 sm:mb-8">
@@ -155,6 +168,26 @@ function resolvePeriod(
     end: defaults.end,
     companyId: stringOf(params.companyId) || undefined,
   };
+}
+
+/**
+ * Build the PDF download URL by forwarding the resolved `(start, end,
+ * companyId)` triple. The PDF route re-resolves its own period from the
+ * URL (same fallback to current-month), so forwarding the resolved
+ * values keeps the downloaded report aligned with what the user is
+ * looking at on screen — including when the user didn't pass any
+ * `?from` / `?to` and the page filled in defaults.
+ */
+function buildPdfHref({
+  start,
+  end,
+  companyId,
+}: ResolvedPeriod): string {
+  const search = new URLSearchParams();
+  search.set("from", start);
+  search.set("to", end);
+  if (companyId) search.set("companyId", companyId);
+  return `/dashboard/reports/pdf?${search.toString()}`;
 }
 
 function stringOf(v: string | string[] | undefined): string {
