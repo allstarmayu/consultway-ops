@@ -77,6 +77,10 @@ import { readSession } from "@/lib/auth/session";
 import { logger } from "@/lib/logger";
 import { recordAuditEvent, type AuditAction } from "@/lib/audit/log";
 import type { ActionResult } from "@/lib/types/action-result";
+import { env } from "@/lib/env";
+import { sendEmail, type SendEmailFn } from "@/lib/email/client";
+import { renderApplicationShortlistedEmail } from "@/lib/email/templates/application-shortlisted";
+import { renderApplicationRejectedEmail } from "@/lib/email/templates/application-rejected";
 import {
   createTenderSchema,
   updateTenderSchema,
@@ -1435,9 +1439,40 @@ export async function withdrawApplication(
  * Allowed sources: `submitted` only - once an application has been
  * decided either way, this action is a no-op (idempotent same-status
  * write returns ok). Reversing a decision goes via `reinstateApplication`.
+ *
+ * Day 14: on a successful shortlist/reject transition, fires an email
+ * notification to the applying company's `contactEmail`. Fail-soft -
+ * a failed email is logged at warn level but the action still returns
+ * ok. The status flip is the real decision; we never reverse a status
+ * write because the network blipped on the way to Resend. Same
+ * convention the cron uses.
  */
 export async function updateApplicationStatus(
   rawInput: unknown,
+): Promise<ActionResult> {
+  return updateApplicationStatusInternal(rawInput, { sendEmail });
+}
+
+/**
+ * Injection point exposed for tests. The public Server Action above
+ * passes the production `sendEmail`; tests import this directly and
+ * pass a vi.fn so they can assert payloads without touching Resend.
+ *
+ * The pattern mirrors how `runExpirySweep` takes its deps explicitly -
+ * keeps `vi.mock` scoped to the auth boundary only, leaves the email
+ * boundary as an honest parameter.
+ *
+ * Exported so tests can call it with custom deps. Not part of the
+ * public action surface - production callers should keep using
+ * `updateApplicationStatus` above.
+ */
+export interface UpdateApplicationStatusDeps {
+  sendEmail: SendEmailFn;
+}
+
+export async function updateApplicationStatusInternal(
+  rawInput: unknown,
+  deps: UpdateApplicationStatusDeps,
 ): Promise<ActionResult> {
   const auth = await requireAdminOrStaff();
   if (!auth.ok) return auth;
@@ -1520,7 +1555,153 @@ export async function updateApplicationStatus(
     to: input.status,
     actorId: auth.session.userId,
   });
+
+  // Day 14: notify the applicant. Fail-soft - the status flip already
+  // succeeded and is the load-bearing fact; a missed email surfaces in
+  // the log and the next-day cron / staff follow-up can recover. We
+  // deliberately do NOT propagate email failures to the staff caller -
+  // they made the right decision; the side-channel notification is
+  // belt-and-braces.
+  await notifyApplicantOfStatusChange({
+    sendEmail: deps.sendEmail,
+    application: { id: existing.id, submittedAt: existing.submittedAt },
+    tenderId: existing.tenderId,
+    companyId: existing.companyId,
+    newStatus: input.status,
+  });
+
   return { ok: true };
+}
+
+/**
+ * Resolve the tender + company, render the right template, and send.
+ * Pulled out of the main action so the happy path stays readable; the
+ * resolve/render/send dance lives in one place that fails closed when
+ * any prerequisite is missing.
+ *
+ * Why both lookups here rather than as JOINs on the main query:
+ *   updateApplicationStatus's primary job is the status flip; the
+ *   notification is a follow-up that doesn't need to block or share
+ *   data with the flip. Two small queries at this point are cheaper
+ *   than reshaping the main read.
+ *
+ * Failure handling: missing tender, missing company, missing email,
+ * and failed send each log + return. None throws. None affects the
+ * caller's `ok: true` return.
+ */
+async function notifyApplicantOfStatusChange(args: {
+  sendEmail: SendEmailFn;
+  application: { id: string; submittedAt: string };
+  tenderId: string;
+  companyId: string;
+  newStatus: "shortlisted" | "rejected";
+}): Promise<void> {
+  try {
+    // Both queries can fan out in parallel - independent reads.
+    const [tender, company] = await Promise.all([
+      db
+        .select({
+          id: tenders.id,
+          title: tenders.title,
+          referenceNumber: tenders.referenceNumber,
+          closingDate: tenders.closingDate,
+        })
+        .from(tenders)
+        .where(eq(tenders.id, args.tenderId))
+        .limit(1)
+        .then((rows) => rows[0]),
+      db
+        .select({
+          id: companies.id,
+          name: companies.name,
+          contactEmail: companies.contactEmail,
+        })
+        .from(companies)
+        .where(eq(companies.id, args.companyId))
+        .limit(1)
+        .then((rows) => rows[0]),
+    ]);
+
+    if (!tender) {
+      log.warn("application notification skipped: tender missing", {
+        applicationId: args.application.id,
+        tenderId: args.tenderId,
+      });
+      return;
+    }
+    if (!company) {
+      log.warn("application notification skipped: company missing", {
+        applicationId: args.application.id,
+        companyId: args.companyId,
+      });
+      return;
+    }
+    if (!company.contactEmail) {
+      log.warn("application notification skipped: company has no contactEmail", {
+        applicationId: args.application.id,
+        companyId: company.id,
+        companyName: company.name,
+        newStatus: args.newStatus,
+      });
+      return;
+    }
+
+    const rendered =
+      args.newStatus === "shortlisted"
+        ? renderApplicationShortlistedEmail({
+            application: args.application,
+            tender: {
+              id: tender.id,
+              title: tender.title,
+              referenceNumber: tender.referenceNumber,
+              closingDate: tender.closingDate,
+            },
+            company: { id: company.id, name: company.name },
+            appUrl: env.NEXT_PUBLIC_APP_URL,
+          })
+        : renderApplicationRejectedEmail({
+            application: args.application,
+            tender: {
+              id: tender.id,
+              title: tender.title,
+              referenceNumber: tender.referenceNumber,
+            },
+            company: { id: company.id, name: company.name },
+            appUrl: env.NEXT_PUBLIC_APP_URL,
+          });
+
+    const result = await args.sendEmail({
+      to: company.contactEmail,
+      subject: rendered.subject,
+      html: rendered.html,
+      text: rendered.text,
+    });
+
+    if (!result.ok) {
+      log.warn("application notification send failed", {
+        applicationId: args.application.id,
+        companyId: company.id,
+        newStatus: args.newStatus,
+        error: result.error,
+      });
+      return;
+    }
+
+    log.info("application notification sent", {
+      applicationId: args.application.id,
+      companyId: company.id,
+      newStatus: args.newStatus,
+      messageId: result.id,
+    });
+  } catch (err) {
+    // Defence in depth: any unexpected throw during the notification
+    // path must not surface to the caller. Log and swallow.
+    log.error("application notification threw", {
+      err,
+      applicationId: args.application.id,
+      newStatus: args.newStatus,
+    });
+  }
 }
 
 // -- listApplicationsForTender ---------------------------------------------

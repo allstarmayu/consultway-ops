@@ -44,14 +44,29 @@ vi.mock("@/lib/auth/session", () => ({
 }));
 
 import { readSession } from "@/lib/auth/session";
+import type { SendEmailArgs, SendEmailResult } from "@/lib/email/client";
 import {
   withdrawApplication,
   updateApplicationStatus,
+  updateApplicationStatusInternal,
   reinstateApplication,
   recallApplication,
 } from "../actions";
 
 const mockedReadSession = readSession as MockedFunction<typeof readSession>;
+
+/**
+ * Build a noop sendEmail stub that always succeeds. Tests that care
+ * about payload inspect the `.mock.calls`; tests that don't care just
+ * pass this through to keep the action's notification path quiet.
+ */
+function makeStubSendEmail(
+  override?: (args: SendEmailArgs) => Promise<SendEmailResult>,
+) {
+  return vi.fn<(args: SendEmailArgs) => Promise<SendEmailResult>>(
+    override ?? (async () => ({ ok: true, id: "msg_test" })),
+  );
+}
 
 // ── Fixture ───────────────────────────────────────────────────────────────
 
@@ -424,6 +439,168 @@ describe("updateApplicationStatus", () => {
       applicationId,
       status: "shortlisted",
     });
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ── updateApplicationStatus email notifications (Day 14) ──────────────────
+
+describe("updateApplicationStatus email notifications", () => {
+  it("fires a shortlisted email to the applying company on shortlist", async () => {
+    loginAs("staff", fixture);
+    const stub = makeStubSendEmail();
+    const applicationId = await insertApplication(fixture, {
+      companyId: fixture.companyAId,
+    });
+
+    const result = await updateApplicationStatusInternal(
+      { applicationId, status: "shortlisted" },
+      { sendEmail: stub },
+    );
+    expect(result.ok).toBe(true);
+    expect(stub).toHaveBeenCalledTimes(1);
+
+    const [args] = stub.mock.calls[0]!;
+    expect(args.to).toBe("acme@example.test");
+    expect(args.subject).toMatch(/shortlisted/i);
+    // Both html and text bodies are populated.
+    expect(args.html).toMatch(/Acme Construction/);
+    expect(args.text).toMatch(/Acme Construction/);
+  });
+
+  it("fires a rejected email to the applying company on reject", async () => {
+    loginAs("staff", fixture);
+    const stub = makeStubSendEmail();
+    const applicationId = await insertApplication(fixture, {
+      companyId: fixture.companyAId,
+    });
+
+    const result = await updateApplicationStatusInternal(
+      {
+        applicationId,
+        status: "rejected",
+        internalNotes: "Missing eligibility documents",
+      },
+      { sendEmail: stub },
+    );
+    expect(result.ok).toBe(true);
+    expect(stub).toHaveBeenCalledTimes(1);
+
+    const [args] = stub.mock.calls[0]!;
+    expect(args.to).toBe("acme@example.test");
+    // Subject deliberately avoids the word "rejected" - "Update on" is
+    // the chosen neutral phrasing.
+    expect(args.subject).toMatch(/Update on your application/i);
+    // internalNotes must NEVER leak into the customer-facing email.
+    expect(args.html).not.toMatch(/Missing eligibility documents/);
+    expect(args.text).not.toMatch(/Missing eligibility documents/);
+  });
+
+  it("does not reverse the status flip when the email send fails", async () => {
+    loginAs("staff", fixture);
+    const failingStub = makeStubSendEmail(async () => ({
+      ok: false,
+      error: "Resend 500: provider unavailable",
+    }));
+    const applicationId = await insertApplication(fixture, {
+      companyId: fixture.companyAId,
+    });
+
+    const result = await updateApplicationStatusInternal(
+      { applicationId, status: "shortlisted" },
+      { sendEmail: failingStub },
+    );
+    // Status flip is the load-bearing fact. Failed email is logged,
+    // not surfaced.
+    expect(result.ok).toBe(true);
+    expect(failingStub).toHaveBeenCalledTimes(1);
+
+    const row = await db
+      .select()
+      .from(tenderApplications)
+      .where(eq(tenderApplications.id, applicationId))
+      .then((r) => r[0]);
+    expect(row?.status).toBe("shortlisted");
+    expect(row?.decidedAt).toBeTruthy();
+  });
+
+  it("does not throw when the action itself throws inside the notifier", async () => {
+    // Belt-and-braces: if sendEmail itself throws (rather than returning
+    // ok:false), the action still returns ok:true. Mirrors the
+    // try/catch wrapper in notifyApplicantOfStatusChange.
+    loginAs("staff", fixture);
+    const throwingStub = vi.fn<
+      (args: SendEmailArgs) => Promise<SendEmailResult>
+    >(async () => {
+      throw new Error("network blip");
+    });
+    const applicationId = await insertApplication(fixture, {
+      companyId: fixture.companyAId,
+    });
+
+    const result = await updateApplicationStatusInternal(
+      { applicationId, status: "rejected" },
+      { sendEmail: throwingStub },
+    );
+    expect(result.ok).toBe(true);
+    expect(throwingStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("never sends an email when the status gate refuses (withdrawn applicant)", async () => {
+    loginAs("staff", fixture);
+    const stub = makeStubSendEmail();
+    const applicationId = await insertApplication(fixture, {
+      companyId: fixture.companyAId,
+      status: "withdrawn",
+      decidedAt: new Date().toISOString(),
+    });
+
+    const result = await updateApplicationStatusInternal(
+      { applicationId, status: "shortlisted" },
+      { sendEmail: stub },
+    );
+    expect(result.ok).toBe(false);
+    expect(stub).not.toHaveBeenCalled();
+  });
+
+  it("never sends an email on the idempotent no-op same-status path", async () => {
+    loginAs("staff", fixture);
+    const stub = makeStubSendEmail();
+    const applicationId = await insertApplication(fixture, {
+      companyId: fixture.companyAId,
+      status: "shortlisted",
+      decidedAt: new Date().toISOString(),
+    });
+
+    const result = await updateApplicationStatusInternal(
+      { applicationId, status: "shortlisted" },
+      { sendEmail: stub },
+    );
+    expect(result.ok).toBe(true);
+    expect(stub).not.toHaveBeenCalled();
+  });
+});
+
+// ── reinstateApplication does NOT email (Day 14) ──────────────────────────
+//
+// Companion to the email-notification block above. Reinstate is staff-
+// initiated "undo" of a shortlist/reject; the applicant didn't ask for
+// it, and the audit trail is the right channel for staff visibility.
+// The action doesn't take a sendEmail dep on purpose - this test is the
+// observable assurance that no email path is wired through.
+describe("reinstateApplication does not notify applicant", () => {
+  it("succeeds without touching the email client", async () => {
+    loginAs("staff", fixture);
+    const applicationId = await insertApplication(fixture, {
+      companyId: fixture.companyAId,
+      status: "shortlisted",
+      decidedAt: new Date().toISOString(),
+    });
+
+    // No stub injected - if reinstate ever grows an email path it would
+    // either hit the real (log-fallback) sendEmail or, if injection lands,
+    // fail to find a deps param. Today: succeeds cleanly.
+    const result = await reinstateApplication({ applicationId });
     expect(result.ok).toBe(true);
   });
 });
