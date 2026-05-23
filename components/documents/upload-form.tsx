@@ -60,6 +60,7 @@ import {
   ALLOWED_MIME_TYPES,
   MAX_UPLOAD_SIZE_BYTES,
 } from "@/lib/documents/schemas";
+import { DOCUMENT_TYPE_LABELS } from "@/lib/documents/labels";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -111,25 +112,6 @@ const FORM_DEFAULTS: FormValues = {
   issuedOn: "",
   expiresAt: "",
   file: null,
-};
-
-/**
- * Human-friendly labels for the document type select. Order matches
- * the most-common-first heuristic - GST and PAN dominate real uploads.
- * Kept in this file rather than the schemas module because labels are
- * a presentation concern, not validation logic.
- */
-const DOCUMENT_TYPE_LABELS: Record<
-  InitiateDocumentUploadInput["documentType"],
-  string
-> = {
-  gst_certificate: "GST Certificate",
-  pan_card: "PAN Card",
-  incorporation_cert: "Certificate of Incorporation",
-  board_resolution: "Board Resolution",
-  cancelled_cheque: "Cancelled Cheque",
-  trade_license: "Trade License",
-  other: "Other",
 };
 
 // ── Upload stage state machine ──────────────────────────────────────────────

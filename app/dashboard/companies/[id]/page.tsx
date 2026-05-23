@@ -42,6 +42,8 @@ import { EntityHistory } from "@/components/audit/entity-history";
 import { EntityHistoryLoading } from "@/components/audit/entity-history-loading";
 import { CompanyHeader } from "./_components/company-header";
 import { CompanyOverview } from "./_components/company-overview";
+import { DocumentsSection } from "./_components/documents-section";
+import { DocumentsSectionLoading } from "./_components/documents-section-loading";
 
 /**
  * Next.js App Router types `params` as a Promise in 15+.
@@ -116,7 +118,9 @@ export default async function CompanyDetailPage({
   //     own row. We've already gated row-level access above via
   //     getCompany - if a company-role user reached this page, their
   //     companyId matches this row's id, so we can short-circuit to
-  //     true rather than re-checking.
+  //     true rather than re-checking. Upload now sits inside the
+  //     Documents section (Day 10) rather than the page header - so
+  //     the boolean flows to that component instead of CompanyHeader.
   const canEdit = session.role === "admin" || session.role === "staff";
   const canDelete = session.role === "admin";
   const canUploadDocument =
@@ -130,7 +134,6 @@ export default async function CompanyDetailPage({
         company={company}
         canEdit={canEdit}
         canDelete={canDelete}
-        canUploadDocument={canUploadDocument}
       />
 
       <Card className="overflow-hidden p-0">
@@ -140,6 +143,19 @@ export default async function CompanyDetailPage({
           viewerRole={session.role}
         />
       </Card>
+
+      {/* Documents section (Day 10). Lists the company's uploaded
+          documents with type / status badges and per-row download.
+          Wrapped in Suspense so the DB query streams in independently
+          of the overview render above. Role-scope (company-role only
+          sees own docs) is enforced inside the action layer. */}
+      <Suspense fallback={<DocumentsSectionLoading />}>
+        <DocumentsSection
+          companyId={company.id}
+          canUploadDocument={canUploadDocument}
+          viewerRole={session.role}
+        />
+      </Suspense>
 
       {/* History section (Day 7) - audit-log feed scoped to this
           company. Wrapped in Suspense so the DB query streams in

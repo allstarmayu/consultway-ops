@@ -234,3 +234,170 @@ export type ConfirmDocumentUploadInput = z.infer<
  * `/dashboard/companies/[id]/documents/[documentId]`. Tiny but reused.
  */
 export const documentIdSchema = z.object({ id: uuidSchema });
+
+// ── listDocumentsForCompany ─────────────────────────────────────────────────
+
+/**
+ * Sort key for `listDocumentsForCompany`. Limited to columns we actually
+ * index or that are cheap to sort at Phase 1 scale (<20 docs per company).
+ *
+ *   - `uploadedAt`   - chronological, the default. Most recent uploads first.
+ *   - `expiresAt`    - "what's expiring soon?" view. Nulls (never-expire docs)
+ *                      sort last under SQLite's default NULLs-LAST behaviour
+ *                      when ordering DESC, and first when ASC. Acceptable for
+ *                      Phase 1; if a "never-expire shows first regardless of
+ *                      direction" UX becomes desirable, swap to a CASE expr.
+ *   - `documentType` - alphabetical by enum value. Groups same-type rows.
+ *   - `status`       - groups by review state. Useful when a staff user wants
+ *                      to see all `pending_review` rows first.
+ */
+export const documentSortBySchema = z.enum([
+  "uploadedAt",
+  "expiresAt",
+  "documentType",
+  "status",
+]);
+
+export type DocumentSortBy = z.infer<typeof documentSortBySchema>;
+
+/**
+ * Sort direction. Matches the companies module convention.
+ */
+export const documentSortDirSchema = z.enum(["asc", "desc"]);
+
+export type DocumentSortDir = z.infer<typeof documentSortDirSchema>;
+
+/**
+ * Query schema for `listDocumentsForCompany`.
+ *
+ * Design notes:
+ *   - `companyId` is required - the list is always company-scoped, even
+ *     for admin/staff. There's no "all documents across the platform"
+ *     view in Phase 1; the documents section lives on the company detail
+ *     page and the URL already carries the companyId.
+ *   - Filters compose with AND. Status + documentType are optional; both
+ *     are mirrored from the DB enums via the existing
+ *     `documentStatusSchema` / `documentTypeSchema`.
+ *   - No pagination. Phase 1 companies have <20 docs each, so a single
+ *     unfiltered LIST is cheap and the UX is "see everything at once."
+ *     If volume grows past ~50 rows per company, add page/perPage at the
+ *     same shape as `listCompaniesQuerySchema`.
+ *   - Coerces nothing - this schema parses Server-Action input (a typed
+ *     object), not URL search params. Filters bar in the UI translates
+ *     query-string state into this object on the server side.
+ */
+export const listDocumentsForCompanyQuerySchema = z.object({
+  companyId: uuidSchema,
+
+  status: documentStatusSchema.optional(),
+
+  documentType: documentTypeSchema.optional(),
+
+  sortBy: documentSortBySchema.optional().default("uploadedAt"),
+
+  sortDir: documentSortDirSchema.optional().default("desc"),
+});
+
+export type ListDocumentsForCompanyQuery = z.infer<
+  typeof listDocumentsForCompanyQuerySchema
+>;
+
+// ── getDocumentDetail / generateDocumentDownloadUrl ─────────────────────────
+
+/**
+ * Both single-row actions (`getDocumentDetail`, `generateDocumentDownloadUrl`)
+ * take the same shape: just a document id. Sharing one schema keeps the
+ * Server-Action input parsing identical across the two and avoids the
+ * "which of three near-identical schemas do I import" confusion.
+ *
+ * The id is the public-API surface (the URL the client knows about);
+ * the action layer translates it into an authoritative row read.
+ */
+export const documentByIdInputSchema = z.object({
+  documentId: uuidSchema,
+});
+
+export type DocumentByIdInput = z.infer<typeof documentByIdInputSchema>;
+
+// ── Reason primitives ────────────────────────────────────────────────────────
+
+/**
+ * Reusable reason field. Same shape as `lib/tenders/schemas.ts`'s
+ * reason primitives (kept duplicated rather than imported across module
+ * boundaries because the tenders file declares them as non-exported).
+ * If a third caller appears we should lift them to a shared module.
+ *
+ *   - optional: trim, 1-500 chars when present, otherwise undefined
+ *   - required: trim, 5-500 chars, must be present
+ *
+ * 5-char floor on the required form matches the client-side gate baked
+ * into `confirm-dialog.tsx`'s required-reason mode (kept in lockstep so
+ * the two enforce the same minimum).
+ */
+const optionalReasonSchema = z
+  .string()
+  .trim()
+  .min(1, "Reason cannot be empty if provided")
+  .max(500, "Reason must be 500 characters or fewer")
+  .optional()
+  .nullable();
+
+const requiredReasonSchema = z
+  .string()
+  .trim()
+  .min(5, "Please give a brief reason (at least 5 characters)")
+  .max(500, "Reason must be 500 characters or fewer");
+
+// ── verifyDocument ──────────────────────────────────────────────────────────
+
+/**
+ * Input schema for `verifyDocument`. Admin/staff only - flips
+ * `pending_review` -> `verified`, stamps reviewer + reviewedAt, and
+ * captures optional reviewer notes (e.g. "scanned copy is legible,
+ * issued by GST Maharashtra").
+ *
+ * Notes are optional because the common case is "looks good" with no
+ * additional commentary worth storing.
+ */
+export const verifyDocumentSchema = z.object({
+  documentId: uuidSchema,
+  notes: optionalReasonSchema,
+});
+
+export type VerifyDocumentInput = z.infer<typeof verifyDocumentSchema>;
+
+// ── rejectDocument ──────────────────────────────────────────────────────────
+
+/**
+ * Input schema for `rejectDocument`. Admin/staff only - flips
+ * `pending_review` -> `rejected` and captures a REQUIRED reason in
+ * `review_notes` so the uploader knows what to fix on re-upload.
+ *
+ * The reason floor is 5 chars (same as the tender reversal pattern).
+ * Rejections without context are unhelpful and waste an upload cycle;
+ * the schema enforces a brief explanation.
+ */
+export const rejectDocumentSchema = z.object({
+  documentId: uuidSchema,
+  reason: requiredReasonSchema,
+});
+
+export type RejectDocumentInput = z.infer<typeof rejectDocumentSchema>;
+
+// ── deleteDocument ──────────────────────────────────────────────────────────
+
+/**
+ * Input schema for `deleteDocument`. Just an id - the action layer
+ * reads the row to determine RBAC (admin always; company-role on own
+ * `pending` or `rejected` only - see docs/08-rbac-matrix.md). No reason
+ * field at the API surface; deletion is binary.
+ *
+ * Reuses `documentByIdInputSchema` indirectly via the same shape - we
+ * declare it as a fresh schema so the type name is self-documenting at
+ * call sites.
+ */
+export const deleteDocumentSchema = z.object({
+  documentId: uuidSchema,
+});
+
+export type DeleteDocumentInput = z.infer<typeof deleteDocumentSchema>;
