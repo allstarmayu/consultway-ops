@@ -28,7 +28,7 @@
  * @module scripts/seed
  */
 import "dotenv/config";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   users,
@@ -78,7 +78,89 @@ export const CONSULTWAY_PUBLISHER_NAME = "Consultway Infotech";
  * for "this account is verified" semantics. Picked early-2026 so the
  * timestamp predates any realistic UAT activity.
  */
-const SEED_VERIFIED_AT = "2026-01-01T00:00:00.000Z";
+export const SEED_VERIFIED_AT = "2026-01-01T00:00:00.000Z";
+
+// ── Scale profile ─────────────────────────────────────────────────────────
+
+/**
+ * Available scale profiles for the seed. Drives how many rows each
+ * Day-22 fixture generator emits. Selected via the `SEED_SCALE` env
+ * var; defaults to `large` so the local demo dataset stays rich.
+ *
+ *   - `small`  — ~1/5 of the full coverage. CI-friendly. Useful when
+ *                the dev DB needs to reset quickly between iterations.
+ *   - `medium` — ~1/2 of the full coverage. The "warm laptop" default
+ *                if `large` feels heavy on a constrained machine.
+ *   - `large`  — full Day-22 plan. ~30 companies / ~120 docs / ~25
+ *                tenders / ~60 apps / ~25 projects / ~250 transactions.
+ *                The default; what `pnpm db:seed` lands.
+ */
+export type SeedScale = "small" | "medium" | "large";
+
+export interface SeedScaleProfile {
+  /** Target standalone-company count BEYOND the Day-21 seeded set. */
+  companies: number;
+  /** Target document count across all companies. */
+  documents: number;
+  /** Target tender count. */
+  tenders: number;
+  /** Target tender-application count. */
+  tenderApplications: number;
+  /** Target project count. */
+  projects: number;
+  /** Target transaction count. */
+  transactions: number;
+  /** Approximate `reminders_sent` row count. */
+  reminders: number;
+}
+
+export const SEED_SCALE_PROFILES: Record<SeedScale, SeedScaleProfile> = {
+  small: {
+    companies: 6,
+    documents: 24,
+    tenders: 5,
+    tenderApplications: 12,
+    projects: 5,
+    transactions: 50,
+    reminders: 2,
+  },
+  medium: {
+    companies: 15,
+    documents: 60,
+    tenders: 12,
+    tenderApplications: 30,
+    projects: 12,
+    transactions: 125,
+    reminders: 3,
+  },
+  large: {
+    companies: 30,
+    documents: 120,
+    tenders: 25,
+    tenderApplications: 60,
+    projects: 25,
+    transactions: 250,
+    reminders: 5,
+  },
+};
+
+/**
+ * Resolve the active scale from the `SEED_SCALE` env var.
+ *
+ * - Unset / empty → `large` (the default for local demos).
+ * - Any other string is validated against the known profile keys;
+ *   an unknown value throws loudly rather than silently degrading to
+ *   default (better to surface a typo at the start of a 30s run than
+ *   to land an unexpectedly small dataset).
+ */
+export function resolveSeedScale(raw: string | undefined = process.env.SEED_SCALE): SeedScale {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (value === "") return "large";
+  if (value === "small" || value === "medium" || value === "large") return value;
+  throw new Error(
+    `Unknown SEED_SCALE=${JSON.stringify(raw)}. Expected one of: small, medium, large.`,
+  );
+}
 
 // ── Seed data: Consultway staff users (no company link) ───────────────────
 
@@ -2284,10 +2366,130 @@ export async function seedTransaction(
   return "updated";
 }
 
+// ── Demo cheat-sheet ──────────────────────────────────────────────────────
+
+/**
+ * Print a human-readable summary of the seeded DB. The structured log
+ * line above is for machines; this one is for the demo presenter — a
+ * one-screen reference for "what's in this DB right now" with login
+ * credentials grouped by role.
+ *
+ * Uses `console.log` directly (the same escape hatch the cron scripts
+ * use for their result echo). The structured logger's JSON output is
+ * great for grepping but rough for eyeballing.
+ */
+async function printDemoCheatSheet(scale: SeedScale): Promise<void> {
+  // Counts by status / type — single grouped query per dimension.
+  const companiesByStatus = await db
+    .select({
+      status: companies.complianceStatus,
+      n: sql<number>`count(*)`,
+    })
+    .from(companies)
+    .groupBy(companies.complianceStatus);
+
+  const documentsByStatus = await db
+    .select({ status: documents.status, n: sql<number>`count(*)` })
+    .from(documents)
+    .groupBy(documents.status);
+
+  const tendersByStatus = await db
+    .select({ status: tenders.status, n: sql<number>`count(*)` })
+    .from(tenders)
+    .groupBy(tenders.status);
+
+  const applicationsByStatus = await db
+    .select({ status: tenderApplications.status, n: sql<number>`count(*)` })
+    .from(tenderApplications)
+    .groupBy(tenderApplications.status);
+
+  const projectsByStatus = await db
+    .select({ status: projects.status, n: sql<number>`count(*)` })
+    .from(projects)
+    .groupBy(projects.status);
+
+  const transactionsByType = await db
+    .select({ type: transactions.type, n: sql<number>`count(*)` })
+    .from(transactions)
+    .groupBy(transactions.type);
+
+  // Aggregate totals.
+  const [{ totalBudget }] = await db
+    .select({ totalBudget: sql<number>`coalesce(sum(${projects.budgetInr}), 0)` })
+    .from(projects);
+  const [{ totalTxn }] = await db
+    .select({ totalTxn: sql<number>`coalesce(sum(${transactions.amountPaise}), 0)` })
+    .from(transactions);
+
+  // Users grouped by role for the login cheat-sheet.
+  const userRows = await db
+    .select({ email: users.email, role: users.role, isActive: users.isActive })
+    .from(users)
+    .orderBy(users.role, users.email);
+  const usersByRole = new Map<string, Array<{ email: string; isActive: boolean }>>();
+  for (const u of userRows) {
+    const arr = usersByRole.get(u.role) ?? [];
+    arr.push({ email: u.email, isActive: u.isActive });
+    usersByRole.set(u.role, arr);
+  }
+
+  const fmt = (rows: Array<{ status?: string; type?: string; n: number }>) =>
+    rows
+      .map((r) => `${(r.status ?? r.type) ?? "?"}=${r.n}`)
+      .sort()
+      .join(", ");
+  const formatInr = (rupees: number): string =>
+    rupees >= 10_000_000
+      ? `₹${(rupees / 10_000_000).toFixed(2)} cr`
+      : rupees >= 100_000
+        ? `₹${(rupees / 100_000).toFixed(2)} lakh`
+        : `₹${rupees.toLocaleString("en-IN")}`;
+
+  // eslint-disable-next-line no-console
+  console.log(`\n────────────────────────────────────────────────────────────`);
+  // eslint-disable-next-line no-console
+  console.log(`  Consultway Ops — seed cheat sheet (scale=${scale})`);
+  // eslint-disable-next-line no-console
+  console.log(`────────────────────────────────────────────────────────────`);
+  // eslint-disable-next-line no-console
+  console.log(`  Companies   : ${fmt(companiesByStatus)}`);
+  // eslint-disable-next-line no-console
+  console.log(`  Documents   : ${fmt(documentsByStatus)}`);
+  // eslint-disable-next-line no-console
+  console.log(`  Tenders     : ${fmt(tendersByStatus)}`);
+  // eslint-disable-next-line no-console
+  console.log(`  Applications: ${fmt(applicationsByStatus)}`);
+  // eslint-disable-next-line no-console
+  console.log(`  Projects    : ${fmt(projectsByStatus)}`);
+  // eslint-disable-next-line no-console
+  console.log(`  Transactions: ${fmt(transactionsByType)}`);
+  // eslint-disable-next-line no-console
+  console.log(`  Total project budget : ${formatInr(Number(totalBudget))}`);
+  // eslint-disable-next-line no-console
+  console.log(
+    `  Total transaction sum: ${formatInr(Math.round(Number(totalTxn) / 100))}`,
+  );
+  // eslint-disable-next-line no-console
+  console.log(`\n  Login cheat-sheet (password for every account: ChangeMe123!)`);
+  for (const role of ["admin", "staff", "company"] as const) {
+    const xs = usersByRole.get(role) ?? [];
+    if (xs.length === 0) continue;
+    // eslint-disable-next-line no-console
+    console.log(`    [${role}] (${xs.length} accounts)`);
+    for (const u of xs) {
+      // eslint-disable-next-line no-console
+      console.log(`      - ${u.email}${u.isActive ? "" : "  (DISABLED)"}`);
+    }
+  }
+  // eslint-disable-next-line no-console
+  console.log(`────────────────────────────────────────────────────────────\n`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 
 export async function main(): Promise<void> {
-  log.info("starting seed");
+  const scale = resolveSeedScale();
+  log.info("starting seed", { scale });
 
   const coreStats = newTally();
 
@@ -2354,6 +2556,7 @@ export async function main(): Promise<void> {
   }
 
   log.info("seed complete", {
+    scale,
     core: coreStats,
     documents: docStats,
     tenders: tenderStats,
@@ -2361,6 +2564,10 @@ export async function main(): Promise<void> {
     projects: projectStats,
     transactions: transactionStats,
   });
+
+  // Human-readable cheat-sheet for the demo presenter. The structured
+  // log above is for grep; this one is for eyeballs.
+  await printDemoCheatSheet(scale);
 
   // Close the SQLite connection so the script exits cleanly. Without
   // this, the process hangs on the open file handle.

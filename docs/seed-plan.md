@@ -124,3 +124,125 @@ no-op log line. `pnpm db:reset` wipes and re-seeds from scratch.
   data is a separate UX task.
 - Dependent counts ("seed 100 companies"). Phase-1 scale is small; the
   seed targets coverage, not volume.
+
+---
+
+# Seed plan v2 — Day 22 volume lift
+
+_Day-22 extension. Day 21 covered the long-tail STATE axis (every
+status, every type); Day 22 covers the VOLUME axis on top so the
+dashboard and reports surfaces have enough rows to feel like a real
+post-launch dataset._
+
+The plan stacks on Day-21's natural-key idempotency contract +
+compare-and-update self-healing. Same per-entity frozen vs updatable
+field set. The new `rejectionReason` column on `companies` is
+classified as updatable so a fixture edit propagates on re-seed.
+
+## SEED_SCALE knob
+
+`process.env.SEED_SCALE` selects the row count target. Three profiles:
+
+- `small`  (~1/5 scale, CI): ~6 companies, ~24 docs, ~5 tenders,
+  ~12 apps, ~5 projects, ~50 transactions.
+- `medium` (~1/2 scale): ~15 / ~60 / ~12 / ~30 / ~12 / ~125.
+- `large`  (default, full demo): ~30 / ~120 / ~25 / ~60 / ~25 / ~250.
+
+`pnpm db:seed` = large. `pnpm db:seed:small|medium|large` pick a
+non-default profile inline via `cross-env`.
+
+## What gets seeded (large profile)
+
+### Companies (~30 rows)
+
+- 4 pending, 20 compliant, 3 suspended, 3 rejected (with reason)
+- ~5 JVs (drawn from compliant set) + ~8 MSMEs (compliant + JVs)
+- Sectors: Infrastructure / Solar EPC / Civil Works / Renewable /
+  Real Estate / Manufacturing
+- Geographies: Maharashtra / Karnataka / Tamil Nadu / Delhi NCR /
+  Gujarat / Pan India
+- ~12 with `annualTurnover` populated (₹2 cr → ₹500 cr spread)
+
+### Users (~30 rows)
+
+- 3 admins + 6 staff (all `@consultway.info`)
+- 1 company-user per active company (~25 rows)
+- All `emailVerifiedAt = SEED_VERIFIED_AT`
+- 1 in 5 marked `isActive = false`
+
+### Documents (~120 rows)
+
+- 4–6 per active company
+- Status mix: 60% verified / 20% pending_review / 10% rejected /
+  10% expired
+- ~10 with `expiresInDays` in (0, 30] for cron coverage
+- ~3 with `expiresInDays < 0` for expired-flip coverage
+- All 7 `DocumentType` values represented
+
+### reminders_sent (~5 rows)
+
+- Pre-populated across (T-30 / T-14 / T-7 / T-1) slots so the audit
+  trail isn't pristine on a fresh seed.
+
+### Tenders (~25 rows)
+
+- 5 draft + 12 published + 5 closed + 3 awarded
+- ~22 published by Consultway sentinel, ~3 sub-contracted
+- ~8 with `minAnnualTurnoverInr`, ~5 with `eligibleSector`,
+  ~3 with `msmeOnly`
+- Awarded rows have `awardedCompanyId` populated against a
+  shortlisted application's company
+
+### Tender applications (~60 rows)
+
+- 3–8 per published tender; every compliant company has 1–3 apps
+- Status mix: 40% submitted / 20% shortlisted / 20% rejected /
+  15% withdrawn / 5% awarded (reflected on the tender row)
+
+### Projects (~25 rows)
+
+- 5 planning + 10 active + 3 on_hold + 5 completed + 2 cancelled
+- ~10 with `tenderId` populated (promoted), ~15 standalone
+- Budgets on ~20 (mix of lakh + crore range)
+
+### Transactions (~250 rows)
+
+- ~20/month spread across the last 12 months
+- Type mix: 30% invoice / 30% payment / 20% expense / 10% advance /
+  10% refund
+- ~60% project-tagged (cross-FK invariant enforced), ~40%
+  company-level
+- All carry a unique `referenceNumber` for idempotency
+- Deterministic PRNG seeded from a fixed value so amounts/dates are
+  stable across runs
+
+### Audit log
+
+Each insert path calls `recordAuditEvent` directly so the activity
+feed widget has natural history on a fresh seed. Skipped on updates
+to keep re-seeds from doubling audit rows.
+
+## Invariant verifier
+
+`pnpm seed:verify` → `tsx scripts/seed-invariants.ts`. Re-asserts:
+
+1. Project-linked transactions: `txn.companyId == project.companyId`
+2. Rejected companies have a populated `rejectionReason`
+3. Awarded tenders have a populated `awardedCompanyId`
+4. Tender applications: `(tenderId, companyId)` unique
+5. `reminders_sent`: `(documentId, reminderKind)` unique
+6. No orphan FKs anywhere
+7. Every enum-typed value is in its known union
+
+Exits 0 on clean, 1 on any failure with sample row ids.
+
+## Acceptance
+
+- `pnpm db:reset` → full from-scratch reset + migrate + seed (large)
+  under 30s
+- `pnpm db:seed` re-run → every row `unchanged` (self-healing holds
+  at volume)
+- `pnpm db:seed:small` against a wiped DB → small profile lands cleanly
+- `pnpm seed:verify` → clean against every freshly-seeded scale
+- `pnpm cron:expiry-sweep` → `remindersAttempted >= 10`
+- Dashboard + reports show non-trivial multi-month data across roles
