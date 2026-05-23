@@ -55,10 +55,15 @@ import {
   createProjectFromTenderSchema,
   listProjectsQuerySchema,
   projectIdSchema,
+  transitionProjectStatusSchema,
   type CreateProjectInput,
   type UpdateProjectInput,
   type ListProjectsQuery,
 } from "./schemas";
+import {
+  isLegalProjectTransition,
+  illegalProjectTransitionMessage,
+} from "./state-machine";
 
 const log = logger.child({ module: "projects-actions" });
 
@@ -694,4 +699,144 @@ export async function getProject(
     scope.session.role === "company" ? { ...row, internalNotes: null } : row;
 
   return { ok: true, project: sanitized };
+}
+
+// ── transitionProjectStatus ─────────────────────────────────────────────────
+
+/**
+ * Staff-driven status transitions. Admin/staff only — company-role
+ * users don't drive project state.
+ *
+ * Pipeline:
+ *   1. AuthZ (admin/staff)
+ *   2. Zod validation (project id + target status well-formed)
+ *   3. Load the row
+ *   4. No-op short-circuit when from === to
+ *   5. State-machine gate via `isLegalProjectTransition`
+ *   6. Patch + audit with before/after status snapshot + optional
+ *      `metadata.reason`
+ *
+ * Same shape as `transitionTenderStatus` minus the publishedAt
+ * special-casing and the application-count guard — projects don't have
+ * the equivalent of "draft has no public ID yet" concerns.
+ */
+export async function transitionProjectStatus(
+  rawInput: unknown,
+): Promise<ActionResult> {
+  // 1. AuthZ — admin/staff only.
+  const auth = await requireAdminOrStaff();
+  if (!auth.ok) return auth;
+
+  // 2. Validate
+  const parsed = transitionProjectStatusSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const input = parsed.data;
+
+  // 3. Load existing row.
+  const existing = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, input.projectId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { ok: false, error: "Project not found" };
+  }
+
+  // 4. No-op short-circuit. Distinct from "illegal" — same-status
+  //    writes are treated as idempotent success.
+  if (existing.status === input.toStatus) {
+    return { ok: true };
+  }
+
+  // 5. State-machine gate.
+  if (!isLegalProjectTransition(existing.status, input.toStatus)) {
+    return {
+      ok: false,
+      field: "toStatus",
+      error: illegalProjectTransitionMessage(existing.status, input.toStatus),
+    };
+  }
+
+  // 6. Apply.
+  const previousStatus = existing.status;
+  try {
+    await db
+      .update(projects)
+      .set({ status: input.toStatus })
+      .where(eq(projects.id, existing.id));
+  } catch (err) {
+    log.error("transitionProjectStatus failed", {
+      err,
+      from: previousStatus,
+      to: input.toStatus,
+      actorId: auth.session.userId,
+    });
+    throw err;
+  }
+
+  // 7. Audit. Same `updated` verb projects use elsewhere — status
+  //    transitions aren't load-bearing enough yet to warrant a
+  //    dedicated audit verb. The before/after status snapshot makes
+  //    "show me all project status changes" a metadata-walk away.
+  await recordAuditEvent({
+    actorId: auth.session.userId,
+    actorRole: auth.session.role,
+    action: "updated",
+    targetType: "project",
+    targetId: existing.id,
+    before: { status: previousStatus },
+    after: { status: input.toStatus },
+    metadata: {
+      statusChange: { from: previousStatus, to: input.toStatus },
+      ...(input.reason ? { reason: input.reason } : {}),
+    },
+  });
+
+  log.info("project status transitioned", {
+    id: existing.id,
+    from: previousStatus,
+    to: input.toStatus,
+    actorId: auth.session.userId,
+    ...(input.reason ? { reason: input.reason } : {}),
+  });
+  return { ok: true };
+}
+
+// ── projectExistsByTenderId ─────────────────────────────────────────────────
+
+/**
+ * Cheap indexed existence check: "is there a project already linked
+ * to this tender?" Used by the tender detail page's "Create project
+ * from this tender" button to avoid double-creating projects, and by
+ * the same surface to swap in a "View linked project" link when a
+ * project already exists.
+ *
+ * Returns the linked project id when found (so the caller can build a
+ * direct link), or NULL when none exists.
+ *
+ * Not gated on role — this is metadata about a tender, used by both
+ * staff (to decide which button to render) and as a defence-in-depth
+ * check before `createProjectFromTender`. Any caller with tender
+ * visibility already has the right to know whether the bridge has
+ * been crossed.
+ */
+export async function projectExistsByTenderId(
+  tenderId: string,
+): Promise<{ projectId: string } | null> {
+  const row = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(eq(projects.tenderId, tenderId))
+    .limit(1)
+    .then((rows) => rows[0]);
+  return row ? { projectId: row.id } : null;
 }

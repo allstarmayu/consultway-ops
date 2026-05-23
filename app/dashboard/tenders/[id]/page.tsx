@@ -43,6 +43,7 @@ import {
   getTender,
   listApplicationsForTender,
 } from "@/lib/tenders/actions";
+import { projectExistsByTenderId } from "@/lib/projects/actions";
 import { readSession } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { companies, tenderApplications } from "@/lib/db/schema";
@@ -55,6 +56,7 @@ import { TenderHeader } from "./_components/tender-header";
 import { TenderOverview } from "./_components/tender-overview";
 import { ApplicationsTable } from "./_components/applications-table";
 import { ApplyButton } from "./_components/apply-button";
+import { TenderToProjectBridge } from "./_components/tender-to-project-bridge";
 import { TenderStatusBadge } from "../_components/badges";
 import type { TenderStatus } from "@/lib/db/schema";
 
@@ -185,6 +187,16 @@ export default async function TenderDetailPage({
     existingApplication = existing;
   }
 
+  // 6. Day 16: bridge surface. On an awarded tender, check whether a
+  //    project already exists for it. The bridge button (admin/staff)
+  //    is the entry point to `createProjectFromTender`; the "view
+  //    linked project" link replaces the button once a project is
+  //    created. Cheap indexed query (projects_tender_id_idx).
+  const existingLinkedProject =
+    tender.status === "awarded"
+      ? await projectExistsByTenderId(tender.id)
+      : null;
+
   return (
     <>
       <PageBackLink />
@@ -229,6 +241,22 @@ export default async function TenderDetailPage({
           )}
         </header>
       )}
+
+      {/* Day 16: Tender → Project bridge. Mounted only on awarded
+          tenders; the component itself decides between the "create"
+          button and the "view linked project" link based on the
+          existingLinkedProject lookup above. Hidden for company-role
+          viewers when no project exists (they don't drive creation),
+          but visible to everyone once a project is linked (read-only
+          link). */}
+      {tender.status === "awarded" &&
+        (canManage || existingLinkedProject) && (
+          <TenderToProjectBridge
+            tenderId={tender.id}
+            existingProjectId={existingLinkedProject?.projectId ?? null}
+            canCreate={canManage}
+          />
+        )}
 
       {/* Overview cards */}
       <TenderOverview

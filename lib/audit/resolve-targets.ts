@@ -131,8 +131,10 @@ function targetHref(
         ? `/dashboard/tenders/${tenderId}`
         : null;
     }
-    case "user":
     case "project":
+      // Project detail pages landed in Day 16.
+      return `/dashboard/projects/${targetId}`;
+    case "user":
     case "transaction":
     case "document":
       // No detail pages yet. Phase 2 + later.

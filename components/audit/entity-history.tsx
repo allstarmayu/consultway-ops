@@ -71,8 +71,12 @@ const APPLICATION_EVENT_FETCH_CAP = 200;
 // ── Props ───────────────────────────────────────────────────────────────────
 
 export interface EntityHistoryProps {
-  /** Which entity type this history is about. */
-  targetType: "company" | "tender";
+  /**
+   * Which entity type this history is about. Closed union — keep in
+   * lockstep with the upstream `AuditTargetType` from `lib/audit/log.ts`
+   * for the kinds of entities that have a detail page surface.
+   */
+  targetType: "company" | "tender" | "project";
 
   /** The specific entity id. */
   targetId: string;
