@@ -11,6 +11,7 @@
  */
 import type { Metadata } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
+import { Toaster } from '@/components/ui/sonner';
 import './globals.css';
 
 const geistSans = Geist({
@@ -48,6 +49,11 @@ export default function RootLayout({
     >
       <body className="min-h-full bg-background font-sans text-foreground">
         {children}
+        {/* App-wide toast surface. Mounted at the root so any client
+            component can call toast() / toast.error() / toast.success()
+            without each route remounting its own Toaster. Defaults to
+            bottom-right with a 4s autoclose. */}
+        <Toaster richColors closeButton />
       </body>
     </html>
   );

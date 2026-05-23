@@ -3,8 +3,9 @@
  *
  * Client Component. Tiny state machine:
  *
- *   idle -> minting -> success (open URL in new tab, return to idle)
- *                   -> error  (show inline message, return to idle on retry)
+ *   idle -> minting -> success (open URL in new tab, success toast,
+ *                                return to idle)
+ *                   -> error  (error toast, return to idle on retry)
  *
  * Calls `generateDocumentDownloadUrl` Server Action which RBAC-gates
  * the request and returns a 5-minute presigned R2 GET URL. We open the
@@ -21,8 +22,9 @@
  */
 "use client";
 
-import { useState, useTransition } from "react";
+import { useTransition } from "react";
 import { Download, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { generateDocumentDownloadUrl } from "@/lib/documents/reads";
 
@@ -37,15 +39,14 @@ export function DocumentDownloadButton({
   fileName,
 }: DocumentDownloadButtonProps) {
   const [isPending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
 
   function handleClick() {
-    setError(null);
-
     startTransition(async () => {
       const result = await generateDocumentDownloadUrl({ documentId });
       if (!result.ok) {
-        setError(result.error);
+        toast.error("Could not prepare download", {
+          description: result.error,
+        });
         return;
       }
 
@@ -56,44 +57,33 @@ export function DocumentDownloadButton({
       // carry the bucket-side filename via the key and most browsers
       // honour that.
       window.open(result.url, "_blank", "noopener,noreferrer");
+
+      toast.success("Download ready", {
+        description: `Opening ${fileName} in a new tab.`,
+      });
     });
   }
 
   return (
-    <div className="flex flex-col items-end gap-1">
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={handleClick}
-        disabled={isPending}
-        aria-label={`Download ${fileName}`}
-      >
-        {isPending ? (
-          <>
-            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-            Preparing...
-          </>
-        ) : (
-          <>
-            <Download className="h-3.5 w-3.5" aria-hidden />
-            Download
-          </>
-        )}
-      </Button>
-
-      {/* Inline error so the user knows their click didn't no-op. No
-          toast library yet in the codebase (deferred to Day 11 polish);
-          this small text below the button is the lowest-cost stand-in. */}
-      {error && (
-        <p
-          className="text-xs text-destructive"
-          role="alert"
-          aria-live="polite"
-        >
-          {error}
-        </p>
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      onClick={handleClick}
+      disabled={isPending}
+      aria-label={`Download ${fileName}`}
+    >
+      {isPending ? (
+        <>
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+          Preparing...
+        </>
+      ) : (
+        <>
+          <Download className="h-3.5 w-3.5" aria-hidden />
+          Download
+        </>
       )}
-    </div>
+    </Button>
   );
 }

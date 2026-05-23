@@ -22,8 +22,8 @@
  * Why one component for all three:
  *   Each action would otherwise need its own client-component file
  *   with the same useTransition + router.refresh boilerplate. Sharing
- *   the wrapper lets us also share the inline error display surface
- *   and keep the row's right-side action cluster visually coherent.
+ *   the wrapper lets us also share one toast surface and keep the
+ *   row's right-side action cluster visually coherent.
  *
  * Why router.refresh and not optimistic update:
  *   The status badge, the row's expiry affordance, the section's count,
@@ -39,6 +39,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, XCircle, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
@@ -69,7 +70,6 @@ export function DocumentRowActions({
 }: DocumentRowActionsProps) {
   const router = useRouter();
   const [isPending, startTransition] = React.useTransition();
-  const [error, setError] = React.useState<string | null>(null);
 
   // ── Visibility booleans. Each affordance computed from role + status,
   //    matching the server-side gates exactly so a UI-shown button
@@ -88,111 +88,36 @@ export function DocumentRowActions({
     return null;
   }
 
+  /**
+   * Run a server action, toast on the outcome, and refresh on success.
+   * `successMessage` is required so every action gets confirmation
+   * feedback; `errorTitle` headlines the toast.error description.
+   */
   function runAction(
     action: () => Promise<
       { ok: true } | { ok: false; error: string; field?: string }
     >,
+    successMessage: string,
+    errorTitle: string,
   ) {
-    setError(null);
     startTransition(async () => {
       const result = await action();
       if (!result.ok) {
-        setError(result.error);
+        toast.error(errorTitle, { description: result.error });
         return;
       }
-      // Success - refresh the route so the documents-section re-fetches
-      // and the row updates.
+      toast.success(successMessage);
+      // Refresh the route so the documents-section re-fetches and the
+      // row updates (status badge, action visibility, section count).
       router.refresh();
     });
   }
 
   return (
-    <div className="flex flex-col items-end gap-1">
-      <div className="flex items-center gap-1">
-        {canVerifyOrReject && (
-          <>
-            {/* Verify - optional notes textarea */}
-            <ConfirmDialog
-              trigger={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={isPending}
-                  aria-label={`Verify ${document.fileName}`}
-                  className="text-primary hover:bg-primary/10 hover:text-primary"
-                >
-                  <CheckCircle2 className="h-4 w-4" aria-hidden />
-                </Button>
-              }
-              title="Verify this document?"
-              description={
-                <>
-                  Marking <strong>{document.fileName}</strong> as verified
-                  signals it has been reviewed and is accepted. The
-                  uploader will see the new status the next time they
-                  view their company.
-                </>
-              }
-              confirmLabel="Verify"
-              confirmVariant="default"
-              reasonField="optional"
-              reasonLabel="Reviewer notes"
-              reasonPlaceholder="e.g. Issued by GST Maharashtra, scan is clear"
-              pending={isPending}
-              onConfirm={(notes) =>
-                runAction(() =>
-                  verifyDocument({
-                    documentId: document.id,
-                    notes,
-                  }),
-                )
-              }
-            />
-
-            {/* Reject - required reason */}
-            <ConfirmDialog
-              trigger={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={isPending}
-                  aria-label={`Reject ${document.fileName}`}
-                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                >
-                  <XCircle className="h-4 w-4" aria-hidden />
-                </Button>
-              }
-              title="Reject this document?"
-              description={
-                <>
-                  Tell the uploader what to fix on{" "}
-                  <strong>{document.fileName}</strong>. The reason is
-                  captured in the audit log and surfaced on the document
-                  row so the uploader can re-upload a corrected version.
-                </>
-              }
-              confirmLabel="Reject"
-              confirmVariant="destructive"
-              reasonField="required"
-              reasonLabel="Reason for rejection"
-              reasonPlaceholder="e.g. Scan is illegible - please re-upload at higher DPI"
-              pending={isPending}
-              onConfirm={(reason) =>
-                runAction(() =>
-                  rejectDocument({
-                    documentId: document.id,
-                    // reasonField="required" guarantees a non-empty string
-                    reason: reason!,
-                  }),
-                )
-              }
-            />
-          </>
-        )}
-
-        {canDelete && (
+    <div className="flex items-center gap-1">
+      {canVerifyOrReject && (
+        <>
+          {/* Verify - optional notes textarea */}
           <ConfirmDialog
             trigger={
               <Button
@@ -200,44 +125,121 @@ export function DocumentRowActions({
                 variant="ghost"
                 size="sm"
                 disabled={isPending}
-                aria-label={`Delete ${document.fileName}`}
-                className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                aria-label={`Verify ${document.fileName}`}
+                className="text-primary hover:bg-primary/10 hover:text-primary"
               >
-                <Trash2 className="h-4 w-4" aria-hidden />
+                <CheckCircle2 className="h-4 w-4" aria-hidden />
               </Button>
             }
-            title="Delete this document?"
+            title="Verify this document?"
             description={
               <>
-                This permanently removes <strong>{document.fileName}</strong>{" "}
-                from the system, including the file in R2. This action
-                cannot be undone.
+                Marking <strong>{document.fileName}</strong> as verified
+                signals it has been reviewed and is accepted. The
+                uploader will see the new status the next time they
+                view their company.
               </>
             }
-            confirmLabel="Delete"
-            confirmVariant="destructive"
+            confirmLabel="Verify"
+            confirmVariant="default"
+            reasonField="optional"
+            reasonLabel="Reviewer notes"
+            reasonPlaceholder="e.g. Issued by GST Maharashtra, scan is clear"
             pending={isPending}
-            onConfirm={() =>
-              runAction(() =>
-                deleteDocument({
-                  documentId: document.id,
-                }),
+            onConfirm={(notes) =>
+              runAction(
+                () =>
+                  verifyDocument({
+                    documentId: document.id,
+                    notes,
+                  }),
+                `Verified ${document.fileName}`,
+                "Could not verify document",
               )
             }
           />
-        )}
-      </div>
 
-      {/* Inline error surface - same pattern as document-download-button.
-          A toast library would be a step up; deferred to Day-11 polish. */}
-      {error && (
-        <p
-          className="max-w-[240px] text-right text-xs text-destructive"
-          role="alert"
-          aria-live="polite"
-        >
-          {error}
-        </p>
+          {/* Reject - required reason */}
+          <ConfirmDialog
+            trigger={
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={isPending}
+                aria-label={`Reject ${document.fileName}`}
+                className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+              >
+                <XCircle className="h-4 w-4" aria-hidden />
+              </Button>
+            }
+            title="Reject this document?"
+            description={
+              <>
+                Tell the uploader what to fix on{" "}
+                <strong>{document.fileName}</strong>. The reason is
+                captured in the audit log and surfaced on the document
+                row so the uploader can re-upload a corrected version.
+              </>
+            }
+            confirmLabel="Reject"
+            confirmVariant="destructive"
+            reasonField="required"
+            reasonLabel="Reason for rejection"
+            reasonPlaceholder="e.g. Scan is illegible - please re-upload at higher DPI"
+            pending={isPending}
+            onConfirm={(reason) =>
+              runAction(
+                () =>
+                  rejectDocument({
+                    documentId: document.id,
+                    // reasonField="required" guarantees a non-empty string
+                    reason: reason!,
+                  }),
+                `Rejected ${document.fileName}`,
+                "Could not reject document",
+              )
+            }
+          />
+        </>
+      )}
+
+      {canDelete && (
+        <ConfirmDialog
+          trigger={
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={isPending}
+              aria-label={`Delete ${document.fileName}`}
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden />
+            </Button>
+          }
+          title="Delete this document?"
+          description={
+            <>
+              This permanently removes <strong>{document.fileName}</strong>{" "}
+              from the system, including the file in R2. This action
+              cannot be undone.
+            </>
+          }
+          confirmLabel="Delete"
+          confirmVariant="destructive"
+          pending={isPending}
+          onConfirm={() =>
+            runAction(
+              () =>
+                deleteDocument({
+                  documentId: document.id,
+                }),
+              `Deleted ${document.fileName}`,
+              "Could not delete document",
+            )
+          }
+        />
       )}
     </div>
   );

@@ -46,10 +46,15 @@ import { DocumentsSection } from "./_components/documents-section";
 import { DocumentsSectionLoading } from "./_components/documents-section-loading";
 
 /**
- * Next.js App Router types `params` as a Promise in 15+.
+ * Next.js App Router types `params` and `searchParams` as Promises
+ * in 15+. The documents section reads `documentStatus` and
+ * `documentType` from the URL to drive its filter dropdowns; future
+ * filters on other sections of this page can be added under their own
+ * namespaced keys without collision.
  */
 interface CompanyDetailPageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 // ── Metadata ──────────────────────────────────────────────────────────────
@@ -73,12 +78,71 @@ export async function generateMetadata(
   };
 }
 
+/**
+ * Closed set of document statuses, mirrored from the schema's
+ * `DocumentStatus` union. Used for runtime narrowing of URL params -
+ * `listDocumentsForCompany` validates again on the server, but
+ * narrowing here keeps the page prop strongly typed without an
+ * `as DocumentStatus` cast.
+ */
+const DOCUMENT_STATUS_VALUES = [
+  "pending",
+  "pending_review",
+  "verified",
+  "rejected",
+  "expired",
+] as const;
+type DocumentStatusValue = (typeof DOCUMENT_STATUS_VALUES)[number];
+
+const DOCUMENT_TYPE_VALUES = [
+  "gst_certificate",
+  "pan_card",
+  "incorporation_cert",
+  "board_resolution",
+  "cancelled_cheque",
+  "trade_license",
+  "other",
+] as const;
+type DocumentTypeValue = (typeof DOCUMENT_TYPE_VALUES)[number];
+
+/**
+ * Pull a single string out of a Next.js searchParams record, ignoring
+ * arrays (`?key=a&key=b`) and undefined.
+ */
+function singleParam(
+  v: string | string[] | undefined,
+): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
+function parseStatus(
+  raw: string | undefined,
+): DocumentStatusValue | undefined {
+  return raw && (DOCUMENT_STATUS_VALUES as readonly string[]).includes(raw)
+    ? (raw as DocumentStatusValue)
+    : undefined;
+}
+
+function parseType(raw: string | undefined): DocumentTypeValue | undefined {
+  return raw && (DOCUMENT_TYPE_VALUES as readonly string[]).includes(raw)
+    ? (raw as DocumentTypeValue)
+    : undefined;
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────
 
 export default async function CompanyDetailPage({
   params,
+  searchParams,
 }: CompanyDetailPageProps) {
-  const { id } = await params;
+  const [{ id }, urlQuery] = await Promise.all([params, searchParams]);
+
+  // Filter values for the documents section. Narrowed against the
+  // canonical enum tuples - an unknown value silently drops to
+  // `undefined` (same effect as removing the param), which is the
+  // right UX for a tampered URL.
+  const statusFilter = parseStatus(singleParam(urlQuery.documentStatus));
+  const documentTypeFilter = parseType(singleParam(urlQuery.documentType));
 
   // Session needed for role-gating the Edit / Delete / Upload buttons.
   // Layout guarantees a session exists (redirects otherwise), but
@@ -149,11 +213,20 @@ export default async function CompanyDetailPage({
           Wrapped in Suspense so the DB query streams in independently
           of the overview render above. Role-scope (company-role only
           sees own docs) is enforced inside the action layer. */}
-      <Suspense fallback={<DocumentsSectionLoading />}>
+      <Suspense
+        // Key on the filter values so a filter change triggers the
+        // fallback skeleton instead of holding the previous list while
+        // the new query resolves. Both undefined → stable key
+        // ("|"); typical use shifts the key only on filter input.
+        key={`${statusFilter ?? ""}|${documentTypeFilter ?? ""}`}
+        fallback={<DocumentsSectionLoading />}
+      >
         <DocumentsSection
           companyId={company.id}
           canUploadDocument={canUploadDocument}
           viewerRole={session.role}
+          statusFilter={statusFilter}
+          documentTypeFilter={documentTypeFilter}
         />
       </Suspense>
 

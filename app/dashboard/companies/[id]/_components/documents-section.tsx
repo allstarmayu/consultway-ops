@@ -25,13 +25,18 @@
  * @module app/dashboard/companies/[id]/_components/documents-section
  */
 import Link from "next/link";
-import { FileText, Upload } from "lucide-react";
+import { FileText, Filter, Upload } from "lucide-react";
 import { listDocumentsForCompany } from "@/lib/documents/reads";
-import type { UserRole } from "@/lib/db/schema";
+import type {
+  DocumentStatus,
+  DocumentType,
+  UserRole,
+} from "@/lib/db/schema";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { DocumentsList } from "./documents-list";
+import { DocumentsFiltersBar } from "./documents-filters-bar";
 
 // ── Props ──────────────────────────────────────────────────────────────────
 
@@ -51,6 +56,21 @@ export interface DocumentsSectionProps {
    * reject / delete affordances to render.
    */
   viewerRole: UserRole;
+
+  /**
+   * Optional status filter from `?documentStatus=...` in the URL.
+   * Passed through to `listDocumentsForCompany`; that action's Zod
+   * schema validates it against the `DocumentStatus` enum, so an
+   * unknown value surfaces as a typed validation error rather than a
+   * runtime crash.
+   */
+  statusFilter?: DocumentStatus;
+
+  /**
+   * Optional document-type filter from `?documentType=...` in the URL.
+   * Same validation guarantees as `statusFilter`.
+   */
+  documentTypeFilter?: DocumentType;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────
@@ -59,8 +79,17 @@ export async function DocumentsSection({
   companyId,
   canUploadDocument,
   viewerRole,
+  statusFilter,
+  documentTypeFilter,
 }: DocumentsSectionProps) {
-  const result = await listDocumentsForCompany({ companyId });
+  const result = await listDocumentsForCompany({
+    companyId,
+    status: statusFilter,
+    documentType: documentTypeFilter,
+  });
+
+  const filtersActive =
+    statusFilter !== undefined || documentTypeFilter !== undefined;
 
   // Error branch. Includes "Company not found" for company-role users
   // hitting a row they're not entitled to - but the page-level
@@ -95,23 +124,35 @@ export async function DocumentsSection({
         canUploadDocument={canUploadDocument}
       />
 
+      <DocumentsFiltersBar />
+
       {rows.length === 0 ? (
-        // Empty state. Two flavours - one for users who can upload
-        // (primary CTA to upload), one for users who can't (just the
-        // muted line). Practically only company-role-without-link sees
-        // the read-only flavour; admin/staff/own-company-user all can
-        // upload.
+        // Empty state. Three flavours:
+        //   - filters active + 0 matches  -> "no documents match" + clear hint
+        //   - no docs + can upload        -> primary CTA
+        //   - no docs + read-only         -> muted line only
+        // Practically only company-role-without-link sees the read-only
+        // no-docs flavour; admin/staff/own-company-user all can upload.
         <div className="flex flex-col items-center gap-3 px-4 py-12 text-center">
           <div className="rounded-full bg-muted p-3">
-            <FileText
-              className="h-6 w-6 text-muted-foreground"
-              aria-hidden
-            />
+            {filtersActive ? (
+              <Filter
+                className="h-6 w-6 text-muted-foreground"
+                aria-hidden
+              />
+            ) : (
+              <FileText
+                className="h-6 w-6 text-muted-foreground"
+                aria-hidden
+              />
+            )}
           </div>
           <p className="text-sm text-muted-foreground">
-            No documents uploaded yet.
+            {filtersActive
+              ? "No documents match the current filters."
+              : "No documents uploaded yet."}
           </p>
-          {canUploadDocument && (
+          {!filtersActive && canUploadDocument && (
             <Button asChild variant="default" size="sm">
               <Link href={uploadHref}>
                 <Upload className="h-3.5 w-3.5" aria-hidden />

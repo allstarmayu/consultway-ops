@@ -26,6 +26,14 @@ export function DocumentsSectionLoading() {
         </div>
       </div>
 
+      {/* Filter-bar placeholder. Matches the populated bar's height so
+          a filter-change-triggered Suspense fallback doesn't shift
+          the rows below. */}
+      <div className="flex items-center gap-3 border-b border-border bg-card px-4 py-3">
+        <div className="h-9 w-48 animate-pulse rounded-md bg-muted" />
+        <div className="h-9 w-56 animate-pulse rounded-md bg-muted" />
+      </div>
+
       <ul className="divide-y divide-border px-4">
         {Array.from({ length: 3 }).map((_, i) => (
           <li key={i} className="flex items-start gap-3 py-4">

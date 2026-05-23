@@ -30,6 +30,7 @@ import type { Document, UserRole } from "@/lib/db/schema";
 import { DocumentTypeBadge } from "@/components/documents/document-type-badge";
 import { DocumentStatusBadge } from "@/components/documents/document-status-badge";
 import { DocumentDownloadButton } from "@/components/documents/document-download-button";
+import { DocumentDetailSheet } from "@/components/documents/document-detail-sheet";
 import { DocumentRowActions } from "@/components/documents/document-row-actions";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -175,13 +176,13 @@ export function DocumentsList({ documents, viewerRole }: DocumentsListProps) {
             </div>
           </div>
 
-          {/* Right: actions. Download appears for any row whose bytes
-              actually landed in R2 (status !== "pending"). The review
-              cluster (verify / reject / delete) self-gates on role +
-              status inside <DocumentRowActions> and renders nothing
-              when neither affordance is allowed - so we don't need a
-              wrapper conditional here. */}
-          <div className="flex shrink-0 items-center gap-2">
+          {/* Right: actions. From left to right: View details, Download
+              (when bytes are in R2), Verify/Reject/Delete cluster.
+              The detail sheet is shown for every row regardless of
+              status (even pending rows benefit from the metadata view).
+              `DocumentRowActions` self-gates on role + status. */}
+          <div className="flex shrink-0 items-center gap-1.5">
+            <DocumentDetailSheet document={doc} />
             {doc.status !== "pending" && (
               <DocumentDownloadButton
                 documentId={doc.id}
