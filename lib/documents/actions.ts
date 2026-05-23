@@ -449,25 +449,3 @@ export async function getDocumentById(
     .then((rows) => rows[0]);
   return row ?? null;
 }
-
-// ── Internal: cross-company guard for future read actions ──────────────────
-
-/**
- * Returns true if the given session may VIEW a document owned by
- * `documentCompanyId`. Mirrors the upload-authority logic above but for
- * reads. Not used in Chunk 3 actions but exported so the Day 10 list /
- * detail / download actions can lean on the same predicate.
- *
- * Pure function - takes session + companyId, returns boolean. No I/O.
- */
-export function sessionCanViewDocumentForCompany(
-  session: Session | null,
-  documentCompanyId: string,
-): boolean {
-  if (!session) return false;
-  if (session.role === "admin" || session.role === "staff") return true;
-  if (session.role === "company") {
-    return session.companyId === documentCompanyId;
-  }
-  return false;
-}
