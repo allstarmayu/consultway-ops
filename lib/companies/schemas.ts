@@ -105,6 +105,8 @@ export const complianceStatusSchema = z.enum([
   "compliant",
   "non_compliant",
   "expired",
+  "suspended",
+  "rejected",
 ]);
 
 // ── Create company ──────────────────────────────────────────────────────────
@@ -283,6 +285,12 @@ export const updateCompanySchema = z
 
     // Update-only field — admins/staff change compliance state directly.
     complianceStatus: complianceStatusSchema.optional(),
+
+    // Admin/staff only. Required-in-spirit when complianceStatus moves to
+    // `rejected`, but enforcement of that pair lives at the action layer
+    // (and in the seed-invariant verifier) — the Zod schema accepts the
+    // patch shape.
+    rejectionReason: z.string().trim().max(2000).optional().nullable(),
   })
   .superRefine((data, ctx) => {
     if (data.isJv !== undefined && data.parentCompanyIds !== undefined) {

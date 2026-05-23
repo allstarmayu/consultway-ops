@@ -1,0 +1,1 @@
+ALTER TABLE `companies` ADD `rejection_reason` text;

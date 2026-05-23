@@ -117,6 +117,16 @@ export type User = typeof users.$inferSelect;
  *   - `non_compliant`  - admin-flagged issue (missing docs, failed verification).
  *   - `expired`        - at least one required document past its expiry date.
  *                        Set automatically by the nightly cron sweep.
+ *   - `suspended`      - admin-paused for backstory reasons (legal hold,
+ *                        commercial dispute, internal review). Reversible
+ *                        back to `compliant` — a suspension does not
+ *                        terminate the relationship, it just freezes it.
+ *   - `rejected`       - terminal. Initial registration was denied, or a
+ *                        re-review concluded the company is not eligible
+ *                        to operate on the platform. State machine refuses
+ *                        any transition OUT of `rejected`; re-applying
+ *                        creates a new company row. Populated alongside
+ *                        `rejectionReason` so audit reviewers know why.
  *
  * Validated app-side via Zod + TypeScript union - SQLite has no native enums.
  */
@@ -124,7 +134,9 @@ export type ComplianceStatus =
   | "pending"
   | "compliant"
   | "non_compliant"
-  | "expired";
+  | "expired"
+  | "suspended"
+  | "rejected";
 
 // -- companies --------------------------------------------------------------
 /**
@@ -234,6 +246,20 @@ export const companies = sqliteTable(
      * own detail view - filtered at the action layer.
      */
     internalNotes: text("internal_notes"),
+
+    /**
+     * Free-text reason populated alongside `complianceStatus = 'rejected'`.
+     * NULL for every other status. Audit reviewers and admins read this
+     * to understand WHY a company was rejected (failed background check,
+     * commercial dispute, regulatory blocker, etc.) without having to
+     * dig into the audit log. Admin/staff-only on read, same scoping as
+     * `internalNotes` — company-role users never see it.
+     *
+     * No CHECK constraint that ties this to status — SQLite can't easily
+     * express conditional NOT NULL — but the action / seed layer asserts
+     * "rejected ⇒ non-null reason" on every write.
+     */
+    rejectionReason: text("rejection_reason"),
 
     /** ISO-8601 UTC. Set by SQLite default on insert. */
     createdAt: text("created_at")

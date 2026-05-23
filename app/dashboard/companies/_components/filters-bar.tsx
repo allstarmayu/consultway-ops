@@ -88,6 +88,8 @@ const COMPLIANCE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "compliant", label: "Compliant" },
   { value: "non_compliant", label: "Non-compliant" },
   { value: "expired", label: "Expired" },
+  { value: "suspended", label: "Suspended" },
+  { value: "rejected", label: "Rejected" },
 ];
 
 // ── Component ───────────────────────────────────────────────────────────────

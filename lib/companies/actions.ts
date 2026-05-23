@@ -361,6 +361,8 @@ export async function updateCompany(
       patch.complianceStatus = input.complianceStatus;
     if (input.internalNotes !== undefined)
       patch.internalNotes = input.internalNotes;
+    if (input.rejectionReason !== undefined)
+      patch.rejectionReason = input.rejectionReason;
   }
 
   // 6. Cross-field invariants against the merged row state.

@@ -14,8 +14,10 @@
  */
 import {
   AlertCircle,
+  Ban,
   CheckCircle2,
   Clock,
+  PauseCircle,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
@@ -58,6 +60,16 @@ const COMPLIANCE_STYLES: Record<ComplianceStatus, ComplianceBadgeStyle> = {
     label: "Expired",
     classes: "bg-muted text-muted-foreground border-border",
     icon: AlertCircle,
+  },
+  suspended: {
+    label: "Suspended",
+    classes: "bg-amber-100 text-amber-900 border-amber-200",
+    icon: PauseCircle,
+  },
+  rejected: {
+    label: "Rejected",
+    classes: "bg-destructive text-destructive-foreground border-transparent",
+    icon: Ban,
   },
 };
 
