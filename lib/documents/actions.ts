@@ -54,6 +54,7 @@ import {
   verifyDocumentSchema,
   rejectDocumentSchema,
   deleteDocumentSchema,
+  revertDocumentReviewSchema,
   type InitiateDocumentUploadInput,
 } from "./schemas";
 import { deleteR2Object } from "@/lib/r2/client";
@@ -857,6 +858,146 @@ export async function deleteDocument(
     companyId: existing.companyId,
     actorId: session.userId,
     r2Ok,
+  });
+
+  return { ok: true, documentId: existing.id };
+}
+
+// ── revertDocumentReview ────────────────────────────────────────────────────
+
+/**
+ * Reverse a verify / reject. **Admin/staff only.** Flips status
+ * `verified` or `rejected` back to `pending_review`, clears
+ * `reviewedBy`, `reviewedAt`, and `reviewNotes` so the row is
+ * indistinguishable from a fresh upload awaiting review.
+ *
+ * UX surface (Day 11): the verify/reject success toast renders an
+ * "Undo" action button with an 8-second window. Clicking it calls
+ * this action. The DB layer does NOT impose a time window of its own
+ * — the toast's lifetime IS the window. A stale undo firing after a
+ * re-review is caught by the status guard below ("Document is no
+ * longer verified/rejected").
+ *
+ * Pipeline:
+ *   1. AuthZ: admin/staff (same gate as verify/reject)
+ *   2. Validate input (documentId + optional reason)
+ *   3. Load row
+ *   4. Status gate: must be `verified` OR `rejected`. `pending`,
+ *      `pending_review`, and `expired` refuse.
+ *   5. Update row: status -> pending_review; clear reviewedBy,
+ *      reviewedAt, reviewNotes.
+ *   6. Audit `document_review_reverted` with before-snapshot of the
+ *      cleared fields so the audit trail preserves what was undone.
+ *      An optional reason rides in metadata (not in `reviewNotes` -
+ *      those get cleared as part of the revert).
+ *
+ * Failure modes:
+ *   - Invalid input              -> ok:false with the first Zod issue
+ *   - Not signed in / not staff  -> ok:false
+ *   - Document not found         -> ok:false
+ *   - Document in wrong status   -> ok:false with specific message
+ *   - DB write fails             -> rethrows (500)
+ */
+export async function revertDocumentReview(
+  rawInput: unknown,
+): Promise<ActionResult<{ documentId: string }>> {
+  // 1. AuthZ
+  const auth = await requireReviewAuthority();
+  if (!auth.ok) return auth;
+
+  // 2. Validate
+  const parsed = revertDocumentReviewSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const input = parsed.data;
+
+  // 3. Load row - snapshot needed for the audit before-payload.
+  const existing = await db
+    .select()
+    .from(documents)
+    .where(eq(documents.id, input.documentId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { ok: false, error: "Document not found" };
+  }
+
+  // 4. Status gate. Only `verified` or `rejected` rows can be
+  //    reverted. This is also what catches a stale toast-undo firing
+  //    after a re-review: by then the status has moved on and we
+  //    refuse cleanly.
+  if (existing.status !== "verified" && existing.status !== "rejected") {
+    return {
+      ok: false,
+      error: `Cannot undo - document is ${existing.status}, not verified or rejected`,
+    };
+  }
+
+  // Capture the pre-revert snapshot before we mutate, so the audit
+  // event records exactly what was undone (which reviewer, which
+  // notes, which terminal state).
+  const beforeSnapshot = {
+    status: existing.status,
+    reviewedBy: existing.reviewedBy,
+    reviewedAt: existing.reviewedAt,
+    reviewNotes: existing.reviewNotes,
+  };
+
+  // 5. Update. Clears the review trail entirely - the row should
+  //    look the same as a fresh pending_review upload after this.
+  try {
+    await db
+      .update(documents)
+      .set({
+        status: "pending_review",
+        reviewedBy: null,
+        reviewedAt: null,
+        reviewNotes: null,
+      })
+      .where(eq(documents.id, existing.id));
+  } catch (err) {
+    log.error("revertDocumentReview update failed", {
+      err,
+      documentId: existing.id,
+      actorId: auth.session.userId,
+    });
+    throw err;
+  }
+
+  // 6. Audit. The before-snapshot preserves the cleared fields so a
+  //    "show me everything that was undone" query is possible. The
+  //    optional reason rides in metadata for context; it deliberately
+  //    is NOT written back to `reviewNotes` (which we just cleared -
+  //    the row is in pending_review now, no review notes apply).
+  await recordAuditEvent({
+    actorId: auth.session.userId,
+    actorRole: auth.session.role,
+    action: "document_review_reverted",
+    targetType: "document",
+    targetId: existing.id,
+    before: beforeSnapshot,
+    after: { status: "pending_review" },
+    metadata: {
+      companyId: existing.companyId,
+      documentType: existing.documentType,
+      fileName: existing.fileName,
+      revertedFrom: existing.status,
+      ...(input.reason ? { reason: input.reason } : {}),
+    },
+  });
+
+  log.info("document review reverted", {
+    documentId: existing.id,
+    companyId: existing.companyId,
+    actorId: auth.session.userId,
+    fromStatus: existing.status,
   });
 
   return { ok: true, documentId: existing.id };

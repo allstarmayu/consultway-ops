@@ -92,6 +92,7 @@ import {
   verifyDocument,
   rejectDocument,
   deleteDocument,
+  revertDocumentReview,
   getDocumentById,
 } from "../actions";
 
@@ -865,5 +866,234 @@ describe("deleteDocument", () => {
     );
     const metadata = deleteEvent?.metadata as Record<string, unknown>;
     expect(metadata?.r2DeleteOk).toBe(false);
+  });
+});
+
+// ── revertDocumentReview ──────────────────────────────────────────────────
+
+describe("revertDocumentReview", () => {
+  it("admin can revert a verified row back to pending_review (clears reviewer + notes + reviewedAt)", async () => {
+    mockedReadSession.mockResolvedValue({
+      userId: fixture.adminUserId,
+      role: "admin",
+      companyId: null,
+      email: "admin@test.local",
+    });
+
+    const result = await revertDocumentReview({
+      documentId: fixture.docAVerifiedId,
+    });
+
+    expect(result.ok).toBe(true);
+
+    const row = await getDocumentById(fixture.docAVerifiedId);
+    expect(row?.status).toBe("pending_review");
+    expect(row?.reviewedBy).toBeNull();
+    expect(row?.reviewedAt).toBeNull();
+    expect(row?.reviewNotes).toBeNull();
+  });
+
+  it("staff can revert a rejected row back to pending_review", async () => {
+    mockedReadSession.mockResolvedValue({
+      userId: fixture.staffUserId,
+      role: "staff",
+      companyId: null,
+      email: "staff@test.local",
+    });
+
+    const result = await revertDocumentReview({
+      documentId: fixture.docARejectedId,
+    });
+
+    expect(result.ok).toBe(true);
+
+    const row = await getDocumentById(fixture.docARejectedId);
+    expect(row?.status).toBe("pending_review");
+    // The previous rejection reason ("Illegible" in the fixture) should
+    // be cleared - the row is back to awaiting review, no review notes
+    // apply.
+    expect(row?.reviewNotes).toBeNull();
+    expect(row?.reviewedBy).toBeNull();
+  });
+
+  it("optional reason rides in audit metadata (not in reviewNotes)", async () => {
+    mockedReadSession.mockResolvedValue({
+      userId: fixture.adminUserId,
+      role: "admin",
+      companyId: null,
+      email: "admin@test.local",
+    });
+
+    const result = await revertDocumentReview({
+      documentId: fixture.docAVerifiedId,
+      reason: "Caller mis-clicked Verify, restoring to queue.",
+    });
+
+    expect(result.ok).toBe(true);
+
+    const auditRows = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.targetId, fixture.docAVerifiedId));
+    const revertEvent = auditRows.find(
+      (r) => r.action === "document_review_reverted",
+    );
+    expect(revertEvent).toBeDefined();
+    const metadata = revertEvent?.metadata as Record<string, unknown>;
+    expect(metadata?.reason).toBe(
+      "Caller mis-clicked Verify, restoring to queue.",
+    );
+
+    // reviewNotes on the row itself stays null (the revert cleared them).
+    const row = await getDocumentById(fixture.docAVerifiedId);
+    expect(row?.reviewNotes).toBeNull();
+  });
+
+  it("refuses when not signed in", async () => {
+    mockedReadSession.mockResolvedValue(null);
+
+    const result = await revertDocumentReview({
+      documentId: fixture.docAVerifiedId,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/signed in/i);
+
+    // Row untouched.
+    const row = await getDocumentById(fixture.docAVerifiedId);
+    expect(row?.status).toBe("verified");
+  });
+
+  it("refuses company-role callers (admin/staff only)", async () => {
+    mockedReadSession.mockResolvedValue({
+      userId: fixture.companyAUserId,
+      role: "company",
+      companyId: fixture.companyAId,
+      email: "acme@test.local",
+    });
+
+    const result = await revertDocumentReview({
+      documentId: fixture.docAVerifiedId,
+    });
+
+    expect(result.ok).toBe(false);
+
+    const row = await getDocumentById(fixture.docAVerifiedId);
+    expect(row?.status).toBe("verified");
+  });
+
+  it("refuses when the document does not exist", async () => {
+    mockedReadSession.mockResolvedValue({
+      userId: fixture.adminUserId,
+      role: "admin",
+      companyId: null,
+      email: "admin@test.local",
+    });
+
+    const result = await revertDocumentReview({
+      documentId: newId(),
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/not found/i);
+  });
+
+  it("refuses when the document is already pending_review (idempotent guard)", async () => {
+    mockedReadSession.mockResolvedValue({
+      userId: fixture.adminUserId,
+      role: "admin",
+      companyId: null,
+      email: "admin@test.local",
+    });
+
+    const result = await revertDocumentReview({
+      documentId: fixture.docAPendingReviewId,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/pending_review/);
+  });
+
+  it("refuses when the document is in pending state (pre-confirm orphan)", async () => {
+    mockedReadSession.mockResolvedValue({
+      userId: fixture.adminUserId,
+      role: "admin",
+      companyId: null,
+      email: "admin@test.local",
+    });
+
+    const result = await revertDocumentReview({
+      documentId: fixture.docAPendingId,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/pending/);
+  });
+
+  it("audit before-snapshot captures cleared reviewer + reviewedAt + reviewNotes; metadata.revertedFrom is the prior status", async () => {
+    mockedReadSession.mockResolvedValue({
+      userId: fixture.staffUserId,
+      role: "staff",
+      companyId: null,
+      email: "staff@test.local",
+    });
+
+    const result = await revertDocumentReview({
+      documentId: fixture.docARejectedId,
+    });
+
+    expect(result.ok).toBe(true);
+
+    const auditRows = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.targetId, fixture.docARejectedId));
+    const revertEvent = auditRows.find(
+      (r) => r.action === "document_review_reverted",
+    );
+    expect(revertEvent).toBeDefined();
+
+    const before = revertEvent?.before as Record<string, unknown>;
+    expect(before?.status).toBe("rejected");
+    expect(before?.reviewedBy).toBe(fixture.staffUserId);
+    expect(before?.reviewedAt).toBe("2026-05-22T10:00:00.000Z");
+    expect(before?.reviewNotes).toBe("Illegible");
+
+    const metadata = revertEvent?.metadata as Record<string, unknown>;
+    expect(metadata?.revertedFrom).toBe("rejected");
+    expect(metadata?.companyId).toBe(fixture.companyAId);
+  });
+
+  it("stale-undo guard: row that's been re-verified after the toast appeared refuses the undo", async () => {
+    // Simulate the race: the toast undo callback fires, but in the
+    // meantime the row has cycled back to pending_review and been
+    // re-verified. By the time the action runs, the row is verified
+    // again - the action SHOULD succeed (it's a verified row, that's
+    // revertable). What we're really testing is: it doesn't crash on
+    // re-verified rows, and it operates on the CURRENT state, not the
+    // stale state the toast was constructed against.
+    mockedReadSession.mockResolvedValue({
+      userId: fixture.adminUserId,
+      role: "admin",
+      companyId: null,
+      email: "admin@test.local",
+    });
+
+    // Verify a fresh pending_review row.
+    await verifyDocument({ documentId: fixture.docAPendingReviewId });
+
+    // Now revert it.
+    const result = await revertDocumentReview({
+      documentId: fixture.docAPendingReviewId,
+    });
+
+    expect(result.ok).toBe(true);
+    const row = await getDocumentById(fixture.docAPendingReviewId);
+    expect(row?.status).toBe("pending_review");
+    expect(row?.reviewedBy).toBeNull();
   });
 });

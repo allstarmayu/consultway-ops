@@ -401,3 +401,24 @@ export const deleteDocumentSchema = z.object({
 });
 
 export type DeleteDocumentInput = z.infer<typeof deleteDocumentSchema>;
+
+// ── revertDocumentReview ───────────────────────────────────────────────────
+
+/**
+ * Input to `revertDocumentReview`. Reverses a `verified` or `rejected`
+ * row back to `pending_review`, clearing reviewer + review notes.
+ *
+ * Day 11 add-on. The "Undo" affordance on the verify/reject success
+ * toast calls this with just the documentId; a future row-action
+ * affordance could pass an explicit reason for the reversal. The
+ * reason (if supplied) rides in the audit event's metadata and is NOT
+ * written back to `reviewNotes` (those get cleared by the revert).
+ */
+export const revertDocumentReviewSchema = z.object({
+  documentId: uuidSchema,
+  reason: optionalReasonSchema,
+});
+
+export type RevertDocumentReviewInput = z.infer<
+  typeof revertDocumentReviewSchema
+>;

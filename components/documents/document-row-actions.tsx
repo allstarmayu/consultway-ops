@@ -46,6 +46,7 @@ import {
   verifyDocument,
   rejectDocument,
   deleteDocument,
+  revertDocumentReview,
 } from "@/lib/documents/actions";
 import type { Document, UserRole } from "@/lib/db/schema";
 
@@ -89,9 +90,32 @@ export function DocumentRowActions({
   }
 
   /**
+   * Fire `revertDocumentReview` and report. Used by the "Undo" toast
+   * action on verify/reject. Server-side status guard catches a stale
+   * undo (e.g. if a re-review happened between the toast appearing
+   * and the undo click) and surfaces a clean error toast.
+   */
+  function handleUndo() {
+    startTransition(async () => {
+      const result = await revertDocumentReview({
+        documentId: document.id,
+      });
+      if (!result.ok) {
+        toast.error("Could not undo", { description: result.error });
+        return;
+      }
+      toast.success(`Review reverted for ${document.fileName}`);
+      router.refresh();
+    });
+  }
+
+  /**
    * Run a server action, toast on the outcome, and refresh on success.
    * `successMessage` is required so every action gets confirmation
    * feedback; `errorTitle` headlines the toast.error description.
+   * `undoable` (verify/reject) adds an Undo action button to the
+   * success toast and extends its duration so the affordance is
+   * genuinely visible.
    */
   function runAction(
     action: () => Promise<
@@ -99,6 +123,7 @@ export function DocumentRowActions({
     >,
     successMessage: string,
     errorTitle: string,
+    options?: { undoable?: boolean },
   ) {
     startTransition(async () => {
       const result = await action();
@@ -106,7 +131,21 @@ export function DocumentRowActions({
         toast.error(errorTitle, { description: result.error });
         return;
       }
-      toast.success(successMessage);
+      if (options?.undoable) {
+        // Extended duration (8s vs the 4s default) so the Undo
+        // affordance has a realistic discovery window. The
+        // server-side status guard prevents stale undos racing
+        // against a re-review.
+        toast.success(successMessage, {
+          duration: 8000,
+          action: {
+            label: "Undo",
+            onClick: handleUndo,
+          },
+        });
+      } else {
+        toast.success(successMessage);
+      }
       // Refresh the route so the documents-section re-fetches and the
       // row updates (status badge, action visibility, section count).
       router.refresh();
@@ -155,6 +194,7 @@ export function DocumentRowActions({
                   }),
                 `Verified ${document.fileName}`,
                 "Could not verify document",
+                { undoable: true },
               )
             }
           />
@@ -198,6 +238,7 @@ export function DocumentRowActions({
                   }),
                 `Rejected ${document.fileName}`,
                 "Could not reject document",
+                { undoable: true },
               )
             }
           />

@@ -115,6 +115,10 @@ export type AuditAction =
   | "document_verified"
   | "document_rejected"
   | "document_deleted"
+  // ── Document review reversal (Day 11) ──────────────────────────────────
+  // Reverts a verified/rejected row back to pending_review. Surfaced
+  // via an "Undo" action on the verify/reject success toast.
+  | "document_review_reverted"
   | "tender_published"
   | "tender_applied"
   // ── Reversal verbs (Day 5) ─────────────────────────────────────────────

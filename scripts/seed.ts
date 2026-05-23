@@ -332,15 +332,22 @@ const DOCUMENTS_PER_COMPANY: Record<string, DocumentSeed[]> = {
       reviewNotes: null,
     },
     {
+      // Recently re-uploaded, awaiting staff review AND closing in on
+      // expiry - a realistic "act on this now" double-affordance for
+      // the reviewer. Kept as pending_review (not verified) so the
+      // expiry-sweep cron's verified-only reminder query doesn't pick
+      // it up, which would contaminate the cron test's reminder count.
+      // The list view's "Expires in N days" warning affordance still
+      // colours based on the date regardless of status.
       documentType: "trade_license",
       fileName: "Acme-Mumbai-Trade-License.pdf",
-      status: "verified",
+      status: "pending_review",
       sizeBytes: 245_000,
       mimeType: "application/pdf",
       issuedOn: "2025-01-15",
       expiresInDays: 18, // near expiry - exercises the warning affordance
       uploaderEmail: "acme@example.local",
-      reviewerEmail: "staff@consultway.local",
+      reviewerEmail: null,
       reviewNotes: null,
     },
     {

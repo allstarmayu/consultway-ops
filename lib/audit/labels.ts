@@ -148,6 +148,14 @@ const LABELS: Record<AuditAction, AuditLabel> = {
     icon: Trash2,
     tone: "destructive",
   },
+  // Day 11 reversal verb. Neutral tone - a reversal isn't itself a
+  // create/destructive outcome; it just unwinds the previous one. The
+  // RotateCcw icon ties it visually to the tender-reversal family.
+  document_review_reverted: {
+    verb: "reverted review of a document for",
+    icon: RotateCcw,
+    tone: "neutral",
+  },
 
   // ── Tender lifecycle ─────────────────────────────────────────────────────
   tender_published: {

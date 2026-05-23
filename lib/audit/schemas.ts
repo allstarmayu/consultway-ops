@@ -69,6 +69,8 @@ export const auditActionSchema = z.enum([
   "document_verified",
   "document_rejected",
   "document_deleted",
+  // Document review reversal (Day 11). Verified/rejected → pending_review.
+  "document_review_reverted",
   "tender_published",
   "tender_applied",
   "tender_reopened",
