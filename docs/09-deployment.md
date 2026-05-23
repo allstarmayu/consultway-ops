@@ -56,6 +56,27 @@ can have public access for user avatars.
 2. Permissions: Object Read & Write, scope to the `consultway-docs` bucket
 3. Save the `Access Key ID` and `Secret Access Key`
 
+**CORS policy for browser uploads:**
+
+The document upload flow PUTs files directly from the browser to R2
+using a presigned URL. R2 buckets default to no CORS policy, so the
+browser preflight rejects the PUT with a cryptic `TypeError: Failed
+to fetch` until a policy is in place. The committed policy lives at
+[`infra/r2-cors.json`](../infra/r2-cors.json); apply or re-apply with:
+
+```bash
+wrangler r2 bucket cors set consultway-docs --file infra/r2-cors.json --force
+wrangler r2 bucket cors list consultway-docs   # verify
+```
+
+The current policy allow-lists `http://localhost:3000` for `GET` +
+`PUT` with a `Content-Type` header. **Before a non-localhost deploy
+(staging or prod), add the public origin to `infra/r2-cors.json`'s
+`origins` array and re-apply** — without it, browsers hitting the
+deployed app can't upload. Origins must match exactly including
+scheme + port; wildcards work too (`https://*.consultway.info`) but
+prefer explicit allow-lists at Phase 1.
+
 ---
 
 ## 3. Configure `wrangler.jsonc`
