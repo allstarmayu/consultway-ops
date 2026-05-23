@@ -35,9 +35,12 @@ import {
   companies,
   tenders,
   tenderApplications,
+  projects,
+  transactions,
   users,
   type AuditLogEntry,
 } from "@/lib/db/schema";
+import { formatRupeesFromPaise } from "@/lib/format/inr";
 // AuditTargetType is the narrow runtime union for target-type values;
 // the schema's column is plain TEXT, so the union lives in the audit
 // module (alongside the matching Zod enum) rather than the DB schema.
@@ -134,8 +137,10 @@ function targetHref(
     case "project":
       // Project detail pages landed in Day 16.
       return `/dashboard/projects/${targetId}`;
-    case "user":
     case "transaction":
+      // Transaction detail pages landed in Day 17 (admin-only).
+      return `/dashboard/transactions/${targetId}`;
+    case "user":
     case "document":
       // No detail pages yet. Phase 2 + later.
       return null;
@@ -192,6 +197,8 @@ export async function resolveReferences(
   const companyIds = new Set<string>();
   const tenderIds = new Set<string>();
   const applicationIds = new Set<string>();
+  const projectIds = new Set<string>();
+  const transactionIds = new Set<string>();
 
   for (const row of rows) {
     actorIds.add(row.actorId);
@@ -205,7 +212,13 @@ export async function resolveReferences(
       case "tender_application":
         applicationIds.add(row.targetId);
         break;
-      // user / project / transaction / document / unknown:
+      case "project":
+        projectIds.add(row.targetId);
+        break;
+      case "transaction":
+        transactionIds.add(row.targetId);
+        break;
+      // user / document / unknown:
       // nothing to resolve yet. The renderer will show the truncated
       // id via the fallback path below.
       default:
@@ -219,39 +232,60 @@ export async function resolveReferences(
   //    Wrapped in Promise.all so the slowest one bounds the latency.
   //    With 4 batched queries and a local SQLite file, this completes
   //    in single-digit milliseconds.
-  const [actorRows, companyRows, tenderRows, applicationRows] =
-    await Promise.all([
-      actorIds.size > 0
-        ? db
-            .select({ id: users.id, email: users.email })
-            .from(users)
-            .where(inArray(users.id, Array.from(actorIds)))
-        : Promise.resolve([]),
-      companyIds.size > 0
-        ? db
-            .select({ id: companies.id, name: companies.name })
-            .from(companies)
-            .where(inArray(companies.id, Array.from(companyIds)))
-        : Promise.resolve([]),
-      tenderIds.size > 0
-        ? db
-            .select({ id: tenders.id, title: tenders.title })
-            .from(tenders)
-            .where(inArray(tenders.id, Array.from(tenderIds)))
-        : Promise.resolve([]),
-      applicationIds.size > 0
-        ? db
-            .select({
-              id: tenderApplications.id,
-              companyId: tenderApplications.companyId,
-              tenderId: tenderApplications.tenderId,
-            })
-            .from(tenderApplications)
-            .where(
-              inArray(tenderApplications.id, Array.from(applicationIds)),
-            )
-        : Promise.resolve([]),
-    ]);
+  const [
+    actorRows,
+    companyRows,
+    tenderRows,
+    applicationRows,
+    projectRows,
+    transactionRows,
+  ] = await Promise.all([
+    actorIds.size > 0
+      ? db
+          .select({ id: users.id, email: users.email })
+          .from(users)
+          .where(inArray(users.id, Array.from(actorIds)))
+      : Promise.resolve([]),
+    companyIds.size > 0
+      ? db
+          .select({ id: companies.id, name: companies.name })
+          .from(companies)
+          .where(inArray(companies.id, Array.from(companyIds)))
+      : Promise.resolve([]),
+    tenderIds.size > 0
+      ? db
+          .select({ id: tenders.id, title: tenders.title })
+          .from(tenders)
+          .where(inArray(tenders.id, Array.from(tenderIds)))
+      : Promise.resolve([]),
+    applicationIds.size > 0
+      ? db
+          .select({
+            id: tenderApplications.id,
+            companyId: tenderApplications.companyId,
+            tenderId: tenderApplications.tenderId,
+          })
+          .from(tenderApplications)
+          .where(inArray(tenderApplications.id, Array.from(applicationIds)))
+      : Promise.resolve([]),
+    projectIds.size > 0
+      ? db
+          .select({ id: projects.id, name: projects.name })
+          .from(projects)
+          .where(inArray(projects.id, Array.from(projectIds)))
+      : Promise.resolve([]),
+    transactionIds.size > 0
+      ? db
+          .select({
+            id: transactions.id,
+            type: transactions.type,
+            amountPaise: transactions.amountPaise,
+            occurredOn: transactions.occurredOn,
+          })
+          .from(transactions)
+          .where(inArray(transactions.id, Array.from(transactionIds)))
+      : Promise.resolve([]),
+  ]);
 
   // 3. Build per-type lookup maps. For applications we also need the
   //    parent tender title and the applying company name - issue two
@@ -260,6 +294,17 @@ export async function resolveReferences(
   const actorById = new Map(actorRows.map((r) => [r.id, r.email]));
   const companyNameById = new Map(companyRows.map((r) => [r.id, r.name]));
   const tenderTitleById = new Map(tenderRows.map((r) => [r.id, r.title]));
+  const projectNameById = new Map(projectRows.map((r) => [r.id, r.name]));
+  const transactionLabelById = new Map(
+    transactionRows.map((r) => [
+      r.id,
+      // Composite label: "{type} ₹{amount} on {date}" — gives the
+      // activity feed enough at-a-glance context that the row is
+      // scannable without clicking through. Example:
+      //   "payment ₹50,000.00 on 2026-05-23"
+      `${r.type} ${formatRupeesFromPaise(r.amountPaise)} on ${r.occurredOn}`,
+    ]),
+  );
 
   // Secondary lookups: applications reference both their parent tender
   // and their applying company. We collect those ids from the
@@ -350,9 +395,15 @@ export async function resolveReferences(
         }
         break;
       }
+      case "project": {
+        label = projectNameById.get(row.targetId) ?? null;
+        break;
+      }
+      case "transaction": {
+        label = transactionLabelById.get(row.targetId) ?? null;
+        break;
+      }
       case "user":
-      case "project":
-      case "transaction":
       case "document":
         // No resolution implemented yet. The renderer surfaces the
         // truncated id when label is null and href is null.

@@ -36,6 +36,7 @@ import { EntityHistory } from "@/components/audit/entity-history";
 import { EntityHistoryLoading } from "@/components/audit/entity-history-loading";
 import { ProjectHeader } from "./_components/project-header";
 import { ProjectOverview } from "./_components/project-overview";
+import { ProjectRollupCard } from "./_components/project-rollup-card";
 
 export const metadata: Metadata = {
   title: "Project",
@@ -108,6 +109,14 @@ export default async function ProjectDetailPage({
         linkedTender={linkedTender}
         showInternalNotes={canManage}
       />
+
+      {/* Admin-only: financial rollup card. Staff and company-role
+          viewers don't see it at all — transactions are admin-only. */}
+      {session.role === "admin" && (
+        <Suspense fallback={null}>
+          <ProjectRollupCard projectId={project.id} />
+        </Suspense>
+      )}
 
       <Suspense fallback={<EntityHistoryLoading />}>
         <EntityHistory
