@@ -61,7 +61,19 @@
  */
 "use server";
 
-import { and, asc, count, desc, eq, gte, like, lte, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gte,
+  like,
+  lte,
+  ne,
+  or,
+  type SQL,
+} from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   companies,
@@ -1088,30 +1100,43 @@ export async function listTenders(
   const filters: SQL[] = [];
 
   // Row-level scope: company-role users get a status whitelist OR their
-  // own drafts. Drizzle expresses this as a Drizzle-typed SQL clause.
-  // For Phase 1 we keep it simple: if the caller is company-role and
-  // they explicitly asked for `status=draft`, only allow it if they're
-  // also asking for their own publisher. Otherwise, drop draft filter
-  // and force the whitelist.
+  // own drafts. Day 14: encoded directly in SQL via Drizzle's `or(...)`
+  // rather than a JS post-filter — the previous approach (filter in JS
+  // after fetching the page) made the `total` count an approximation
+  // because other-publisher drafts that fell on the current page would
+  // be subtracted but other pages couldn't be inspected. The SQL
+  // version returns an accurate count without any extra query.
+  //
+  // Branch table (company-role):
+  //   status filter        WHERE clause
+  //   ──────────────       ────────────
+  //   none                 (status != 'draft') OR (publisher = own)
+  //   'draft'              status = 'draft' AND publisher = own
+  //   other status         status = <other>
+  //
+  // The third branch needs no special handling - admin/staff would
+  // produce the same WHERE, but the company-role caller still gets the
+  // visibility-respecting result because only non-draft statuses can
+  // reach this branch (Zod schema permits all four, but draft is
+  // handled above and the others don't expose anything restricted).
   if (scope.scopeCompanyId) {
-    // Company role - show non-drafts always, plus own drafts.
-    //   (status != 'draft') OR (publisher_company_id = own)
-    // Pragmatic compromise for Phase 1: if no status filter is set,
-    // include both "non-draft" tenders AND own-publisher drafts via a
-    // post-filter in JS. This is fine at Phase 1 scale (<100 tenders);
-    // if it ever becomes a perf issue we'll move to a proper OR clause.
-    //
-    // If a specific status is requested:
-    //   - status='draft' -> show only own drafts (publisher = scope)
-    //   - other status   -> standard filter, no special handling
     if (query.status === "draft") {
       filters.push(eq(tenders.status, "draft"));
       filters.push(eq(tenders.publisherCompanyId, scope.scopeCompanyId));
     } else if (query.status) {
       filters.push(eq(tenders.status, query.status));
+    } else {
+      // No status filter: visibility = non-drafts ∪ own-publisher drafts.
+      // The `or(...)` result is typed as `SQL | undefined` because both
+      // inputs are `SQL`, but neither can be null at this point - the
+      // bang asserts the contract.
+      filters.push(
+        or(
+          ne(tenders.status, "draft"),
+          eq(tenders.publisherCompanyId, scope.scopeCompanyId),
+        )!,
+      );
     }
-    // If no status filter: handled below by skipping draft-exclusion
-    // and post-filtering in JS.
   } else {
     // admin/staff - straightforward status filter if provided.
     if (query.status) {
@@ -1155,8 +1180,10 @@ export async function listTenders(
   const offset = (query.page - 1) * query.perPage;
 
   // Two queries: one for the page of rows, one for the total count.
-  // Same shape as the companies list.
-  const [rowsRaw, totalRow] = await Promise.all([
+  // Same shape as the companies list. As of Day 14 the visibility-scope
+  // clause is baked into `whereClause`, so the count is accurate without
+  // a JS-side adjustment.
+  const [rows, totalRow] = await Promise.all([
     db
       .select()
       .from(tenders)
@@ -1171,24 +1198,7 @@ export async function listTenders(
       .then((r) => r[0]),
   ]);
 
-  // Post-filter for company-role users with no explicit status filter:
-  // hide drafts that aren't their own. See the OR-clause note above for
-  // why this is post-filtered rather than encoded in the WHERE.
-  let rows: Tender[] = rowsRaw;
-  let total = totalRow?.value ?? 0;
-  if (scope.scopeCompanyId && !query.status) {
-    const before = rows.length;
-    rows = rows.filter(
-      (r) =>
-        r.status !== "draft" || r.publisherCompanyId === scope.scopeCompanyId,
-    );
-    // Adjust total to reflect the JS-side hide. Approximation only -
-    // the total may be off by the number of "other-publisher drafts"
-    // that fell on this page, but pagination remains usable. Long-term
-    // fix is a proper SQL OR clause; tracked as tech debt.
-    const removed = before - rows.length;
-    total = Math.max(0, total - removed);
-  }
+  const total = totalRow?.value ?? 0;
 
   // Strip internal notes for company-role callers.
   const sanitized: Tender[] =
