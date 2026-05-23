@@ -1,10 +1,10 @@
 /**
  * Post-registration "check your email" landing.
  *
- * Server Component. Reads `?email=` from search params and shows a
- * confirmation message — Chunk 1 lands a static placeholder; Chunk 2
- * fills in the verification-link copy and adds the resend button once
- * the email-verification flow is live.
+ * Server Component shell. Reads `?email=` from search params and renders
+ * the confirmation copy. The resend control is a small Client Component
+ * (`./_components/resend-button`) that posts to the
+ * `resendVerificationEmail` Server Action.
  *
  * @module app/register/check-email/page
  */
@@ -19,6 +19,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { ResendVerificationButton } from "./_components/resend-button";
 
 export const metadata: Metadata = {
   title: "Check your email",
@@ -56,22 +57,32 @@ export default async function CheckEmailPage({ searchParams }: PageProps) {
             <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
               <MailCheck className="h-6 w-6 text-primary" aria-hidden />
             </div>
-            <CardTitle className="text-xl">Account created</CardTitle>
+            <CardTitle className="text-xl">Check your inbox</CardTitle>
             <CardDescription>
               {email
-                ? `We've created your account for ${email}.`
-                : "We've created your account."}{" "}
-              Email verification is coming next — once it lands you&apos;ll
-              need to confirm your inbox before signing in.
+                ? `We sent a verification link to ${email}.`
+                : "We sent you a verification link."}{" "}
+              Click it to activate your account, then come back to sign in.
+              The link expires in 24 hours.
             </CardDescription>
           </CardHeader>
 
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             <Button asChild className="w-full">
               <Link href="/login">Continue to sign in</Link>
             </Button>
+
+            {email && (
+              <div className="pt-2">
+                <ResendVerificationButton email={email} />
+              </div>
+            )}
           </CardContent>
         </Card>
+
+        <p className="mt-6 text-center text-xs text-muted-foreground">
+          Didn&apos;t get the email? Check your spam folder, then click resend.
+        </p>
       </div>
     </main>
   );

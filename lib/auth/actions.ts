@@ -32,9 +32,17 @@ import { db } from "@/lib/db";
 import { users, companies } from "@/lib/db/schema";
 import { newId } from "@/lib/db/ids";
 import { recordAuditEvent, SYSTEM_ACTOR_ID } from "@/lib/audit/log";
+import { sendEmail, type SendEmailFn } from "@/lib/email/client";
+import { renderEmailVerificationEmail } from "@/lib/email/templates/email-verification";
+import { mintEmailVerificationToken } from "./tokens";
 import { verifyPassword, hashPassword } from "./password";
 import { createSession, destroySession } from "./session";
-import { loginSchema, registerCompanySchema } from "./schemas";
+import {
+  loginSchema,
+  registerCompanySchema,
+  resendVerificationSchema,
+} from "./schemas";
+import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 
 const log = logger.child({ module: "auth-actions" });
@@ -167,6 +175,22 @@ export async function login(rawInput: unknown): Promise<ActionResult> {
     };
   }
 
+  // 6b. Refuse unverified accounts. Distinct error message + an `email`
+  //     field hint so the login UI can surface a "resend verification"
+  //     prompt for exactly this branch (not on other failures — that
+  //     would help email enumeration).
+  if (!user.emailVerifiedAt) {
+    log.info("login failed: email not verified", {
+      email,
+      userId: user.id,
+    });
+    return {
+      ok: false,
+      error: "Verify your email first. We sent you a link when you signed up.",
+      field: "email",
+    };
+  }
+
   // 7. Issue the session cookie. `companyId` is carried into the JWT
   //    so row-scoped reads (companies, documents, tenders) can authorise
   //    without an extra users-table lookup on every request.
@@ -217,14 +241,18 @@ export async function logout(): Promise<never> {
 // -- Public: registerCompany (Day 15) --------------------------------------
 
 /**
- * Result type for `registerCompany`. The Chunk-1 surface returns the
- * created ids on success; Chunk 2 will extend with `verificationEmailSent`.
- * Lives here rather than imported from `lib/types/action-result` because
- * this module already declares a narrower auth-specific result shape and
- * keeping the two side-by-side avoids the conditional-import dance.
+ * Result type for `registerCompany`. Returns the created ids on success
+ * and reports whether the verification email actually went out — the
+ * /register/check-email landing reads `verificationEmailSent: false` to
+ * show a "resend" button rather than pretending the mail was sent.
  */
 export type RegisterCompanyResult =
-  | { ok: true; userId: string; companyId: string }
+  | {
+      ok: true;
+      userId: string;
+      companyId: string;
+      verificationEmailSent: boolean;
+    }
   | { ok: false; error: string; field?: string };
 
 /**
@@ -254,8 +282,25 @@ export type RegisterCompanyResult =
  * Returns `{ ok: true, userId, companyId }` on success. Chunk 2 picks up
  * from here to mint a verification token and send the email.
  */
+/**
+ * Public wrapper. Uses the production `sendEmail` for verification.
+ * Tests should call `registerCompanyInternal` directly with a stub.
+ */
 export async function registerCompany(
   rawInput: unknown,
+): Promise<RegisterCompanyResult> {
+  return registerCompanyInternal(rawInput, { sendEmail });
+}
+
+/**
+ * Email-DI variant of `registerCompany`. Exported for tests — same shape
+ * as the cron's expiry-sweep DI pattern (Day 10) and the application-
+ * status notifier (Day 14). The production action calls this with the
+ * real `sendEmail`.
+ */
+export async function registerCompanyInternal(
+  rawInput: unknown,
+  deps: { sendEmail: SendEmailFn },
 ): Promise<RegisterCompanyResult> {
   // 1. Validate input shape. First failure carries a field hint so the
   //    form can highlight the offender.
@@ -422,7 +467,125 @@ export async function registerCompany(
     companyName: input.companyName,
   });
 
-  return { ok: true, userId, companyId };
+  // 6. Mint a verification token and send the verification email. Fail-
+  //    soft: registration succeeded; if the mail can't go we still return
+  //    ok:true so the form lands on /register/check-email — that page
+  //    surfaces a "resend" button when `verificationEmailSent` is false.
+  let verificationEmailSent = false;
+  try {
+    const { token } = await mintEmailVerificationToken(userId);
+    const verifyUrl = `${env.NEXT_PUBLIC_APP_URL}/auth/verify?token=${encodeURIComponent(token)}`;
+    const rendered = renderEmailVerificationEmail({
+      user: { name: input.userName, email: input.userEmail },
+      verifyUrl,
+      expiresInHours: 24,
+    });
+    const result = await deps.sendEmail({
+      to: input.userEmail,
+      subject: rendered.subject,
+      html: rendered.html,
+      text: rendered.text,
+    });
+    verificationEmailSent = result.ok;
+    if (!result.ok) {
+      log.warn("verification email send failed at registration", {
+        userId,
+        error: result.error,
+      });
+    }
+  } catch (err) {
+    log.error("verification email pipeline threw at registration", {
+      err,
+      userId,
+    });
+  }
+
+  return { ok: true, userId, companyId, verificationEmailSent };
+}
+
+// -- Public: resendVerificationEmail (Day 15) ------------------------------
+
+/**
+ * Resend a verification email for an unverified account.
+ *
+ * Enumeration defence: always returns `{ ok: true }` regardless of whether
+ * the email exists. The caller-facing UI (the /register/check-email page's
+ * "resend" button) renders the same "if your account exists, we sent a
+ * link" copy in both cases. Specifically:
+ *
+ *   - Unknown email     -> no insert, no send, log at info, return ok:true
+ *   - Known + verified  -> no insert, no send, log at info, return ok:true
+ *   - Known + pending   -> mint new token, send email, return ok:true
+ *
+ * The "verified" branch silently no-ops because a successful enumeration
+ * here would tell an attacker which addresses already have accounts. The
+ * trade-off: a user who already verified and clicks resend gets nothing —
+ * we accept that confusion because login already works for them.
+ */
+export async function resendVerificationEmail(
+  rawInput: unknown,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  return resendVerificationEmailInternal(rawInput, { sendEmail });
+}
+
+/** Email-DI variant of `resendVerificationEmail`. Exported for tests. */
+export async function resendVerificationEmailInternal(
+  rawInput: unknown,
+  deps: { sendEmail: SendEmailFn },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const parsed = resendVerificationSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues[0]?.message ?? "Invalid input",
+    };
+  }
+  const { email } = parsed.data;
+
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+
+  if (!user) {
+    log.info("resendVerificationEmail: unknown email (silently ok)", { email });
+    return { ok: true };
+  }
+  if (user.emailVerifiedAt) {
+    log.info("resendVerificationEmail: already verified (silently ok)", {
+      userId: user.id,
+    });
+    return { ok: true };
+  }
+
+  try {
+    const { token } = await mintEmailVerificationToken(user.id);
+    const verifyUrl = `${env.NEXT_PUBLIC_APP_URL}/auth/verify?token=${encodeURIComponent(token)}`;
+    const rendered = renderEmailVerificationEmail({
+      user: { name: user.name, email: user.email },
+      verifyUrl,
+      expiresInHours: 24,
+    });
+    const result = await deps.sendEmail({
+      to: user.email,
+      subject: rendered.subject,
+      html: rendered.html,
+      text: rendered.text,
+    });
+    if (!result.ok) {
+      log.warn("verification email resend failed", {
+        userId: user.id,
+        error: result.error,
+      });
+    }
+  } catch (err) {
+    log.error("verification email resend threw", { err, userId: user.id });
+  }
+
+  // Always return ok:true to the caller — see enumeration-defence note
+  // in the docstring above.
+  return { ok: true };
 }
 
 // -- Private: translate SQLite UNIQUE conflicts to form-friendly errors ---

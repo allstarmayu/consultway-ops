@@ -136,6 +136,11 @@ function LoginFormSkeleton() {
  */
 function LoginForm() {
   const [serverError, setServerError] = useState<string | null>(null);
+  // Set to the email that triggered the "verify your email first" branch
+  // so the resend link is scoped to that specific account. Cleared on
+  // any other error so we never expose a "resend" UI for an email we
+  // can't confirm exists — that would help enumeration.
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   // Read the post-login destination from the URL. proxy.ts sets this
@@ -177,12 +182,20 @@ function LoginForm() {
 
   function onSubmit(data: LoginInput) {
     setServerError(null);
+    setUnverifiedEmail(null);
     startTransition(async () => {
       const result = await login(data);
       // On success, the action redirects - we never reach this line.
       // On failure, result has `{ ok: false, error }`.
       if (!result.ok) {
         setServerError(result.error);
+        // Discriminant for the "needs verification" branch — the login
+        // action returns field:"email" + a message starting with "Verify"
+        // exactly for this case. Avoid pattern-matching on the prose;
+        // the field hint is the contract.
+        if (result.field === "email" && /verify/i.test(result.error)) {
+          setUnverifiedEmail(data.email);
+        }
       }
     });
   }
@@ -207,7 +220,19 @@ function LoginForm() {
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
               <AlertTitle>Sign-in failed</AlertTitle>
-              <AlertDescription>{serverError}</AlertDescription>
+              <AlertDescription>
+                {serverError}
+                {unverifiedEmail && (
+                  <span className="mt-2 block">
+                    <Link
+                      href={`/register/check-email?email=${encodeURIComponent(unverifiedEmail)}`}
+                      className="font-medium underline underline-offset-4"
+                    >
+                      Resend verification email
+                    </Link>
+                  </span>
+                )}
+              </AlertDescription>
             </Alert>
           )}
 

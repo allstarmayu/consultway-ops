@@ -1134,3 +1134,82 @@ export type NewReminderSent = typeof remindersSent.$inferInsert;
 
 /** Inferred select type - what a row looks like when read from the DB. */
 export type ReminderSent = typeof remindersSent.$inferSelect;
+
+// -- email_verification_tokens (Day 15) ------------------------------------
+/**
+ * Single-use tokens for the post-registration "verify your email" flow.
+ *
+ * The raw token (32 bytes, hex-encoded — see lib/auth/tokens.ts) is sent
+ * in the verification email link. The DB stores only its SHA-256 hash,
+ * so a database leak does not expose still-valid verification links.
+ * The hash IS the lookup key — `consumeEmailVerificationToken` re-hashes
+ * the URL-supplied raw token and looks it up by hash.
+ *
+ * Lifecycle:
+ *   - `mintEmailVerificationToken(userId)` inserts a row with `usedAt =
+ *     NULL` and `expiresAt = now + 24h`. Returns the raw token to the
+ *     caller — the only time the raw value exists outside the user's
+ *     inbox.
+ *   - `consumeEmailVerificationToken(rawToken)` looks up by hash, checks
+ *     not-yet-used + not-yet-expired, sets `usedAt`, and flips the user's
+ *     `emailVerifiedAt`. Both writes happen in one statement chain.
+ *
+ * Cascade: ON DELETE CASCADE on `userId`. A deleted user's pending
+ * tokens go with them — no value in keeping orphaned tokens.
+ */
+export const emailVerificationTokens = sqliteTable(
+  "email_verification_tokens",
+  {
+    /** UUID v7. Generated app-side via `newId()`. */
+    id: text("id").primaryKey().$defaultFn(newId),
+
+    /**
+     * The user this token verifies. Cascade-delete when the user is
+     * removed — no value in keeping orphaned tokens.
+     */
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, {
+        onDelete: "cascade",
+        onUpdate: "no action",
+      }),
+
+    /**
+     * SHA-256 hex of the raw token. NEVER store the raw token. The hash
+     * IS the lookup key — `consumeEmailVerificationToken` re-hashes the
+     * URL-supplied raw token and looks it up here.
+     */
+    tokenHash: text("token_hash").notNull(),
+
+    /** ISO-8601 UTC expiry (24h after mint by convention). */
+    expiresAt: text("expires_at").notNull(),
+
+    /** ISO-8601 UTC. Set by SQLite default on insert. */
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+
+    /**
+     * ISO-8601 UTC. Stamped by `consumeEmailVerificationToken` when the
+     * token is exchanged for the `emailVerifiedAt` flip. NULL while the
+     * token is still spendable.
+     */
+    usedAt: text("used_at"),
+  },
+  (table) => [
+    // Lookup key — every consume query hits this index.
+    uniqueIndex("email_verification_tokens_token_hash_unique_idx").on(
+      table.tokenHash,
+    ),
+    // "Show me this user's outstanding tokens" — used by the resend flow
+    // and by housekeeping that purges used/expired rows.
+    index("email_verification_tokens_user_id_idx").on(table.userId),
+  ],
+);
+
+/** Inferred insert type. */
+export type NewEmailVerificationToken =
+  typeof emailVerificationTokens.$inferInsert;
+/** Inferred select type. */
+export type EmailVerificationToken =
+  typeof emailVerificationTokens.$inferSelect;
