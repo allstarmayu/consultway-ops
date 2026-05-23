@@ -39,6 +39,18 @@ const Toaster = ({ ...props }: ToasterProps) => {
       toastOptions={{
         classNames: {
           toast: "cn-toast",
+          // Explicit action-button styling. Without this, sonner's
+          // default action-button colours (white-on-near-black via the
+          // shadcn template's --normal-* overrides) become hard to
+          // spot inside a `richColors` success toast (light green bg
+          // with green text). Using the project's primary palette
+          // forces a high-contrast pill button regardless of toast
+          // type. `!important` overrides the inline style sonner
+          // sets on the button element.
+          actionButton:
+            "!bg-primary !text-primary-foreground !font-medium hover:!opacity-90",
+          cancelButton:
+            "!bg-muted !text-muted-foreground hover:!opacity-90",
         },
       }}
       {...props}
