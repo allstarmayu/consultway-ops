@@ -54,9 +54,13 @@
   ],
 
   // ── Scheduled triggers (cron) ───────────────────────
+  // Dispatched by `lib/crons/scheduled-handler.ts::scheduled()` once the
+  // OpenNext worker entry re-exports it (Day 13 follow-up — see
+  // docs/reports/day-13-report.md).
   "triggers": {
     "crons": [
-      "0 2 * * *" // 2 AM UTC daily — document expiry sweep
+      "0 2 * * *", // 2 AM UTC daily — document expiry sweep
+      "0 3 * * *"  // 3 AM UTC daily — pending-upload row cleanup
     ]
   },
 
