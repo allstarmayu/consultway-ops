@@ -28,12 +28,15 @@
  * @module scripts/seed
  */
 import "dotenv/config";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   users,
   companies,
+  documents,
   type ComplianceStatus,
+  type DocumentStatus,
+  type DocumentType,
   type NewCompany,
   type UserRole,
 } from "@/lib/db/schema";
@@ -242,6 +245,285 @@ const JV_COMPANIES: JvSeed[] = [
     partnerNames: ["GreenTech Solutions", "BuildRight Engineers"],
   },
 ];
+
+// ── Seed data: documents per company ───────────────────────────────────────
+
+/**
+ * Document fixtures keyed by company name. Each company gets 3-5 docs
+ * covering a realistic spread of types, statuses, and expiry profiles
+ * so the documents section, the filter dropdowns, the side-sheet, and
+ * the review affordances all have something to show on a fresh seed.
+ *
+ * `file_key` points at R2 keys that don't exist - these are demo-only
+ * metadata rows. Downloading any of them will surface an R2 404; the
+ * rest of the UI (list / detail sheet / verify / reject / filter)
+ * works against the metadata alone. Flagged in the Day 11 report;
+ * a future "stage real fixtures into R2" task could swap these for
+ * actual blobs.
+ *
+ * `uploaderEmail` and `reviewerEmail` are resolved to UUIDs at seed
+ * time. Using emails (not UUIDs) keeps the fixtures readable in this
+ * file and decoupled from `newId()`'s output.
+ */
+interface DocumentSeed {
+  documentType: DocumentType;
+  fileName: string;
+  status: DocumentStatus;
+  /** Bytes. Realistic for the type (PDF certs ~150 KB, image scans ~1 MB). */
+  sizeBytes: number;
+  mimeType: "application/pdf" | "image/png" | "image/jpeg";
+  /** ISO date YYYY-MM-DD; null = unknown. */
+  issuedOn: string | null;
+  /**
+   * Relative to "today" at seed time. Null = no expiry; negative = past;
+   * positive = future. Lets the seed stay date-independent.
+   */
+  expiresInDays: number | null;
+  /** Email of the seeded user who uploaded this document. */
+  uploaderEmail: string;
+  /** Email of the seeded admin/staff user who reviewed. NULL = no review yet. */
+  reviewerEmail: string | null;
+  /** Optional reviewer notes (verified or rejected commentary). */
+  reviewNotes: string | null;
+}
+
+/**
+ * One fixtures block per company name. Skipped companies (the
+ * Consultway publisher sentinel; any company the seed grew beyond
+ * this map) just don't get document rows - the section's empty state
+ * exercises that case.
+ */
+const DOCUMENTS_PER_COMPANY: Record<string, DocumentSeed[]> = {
+  "Acme Construction Pvt Ltd": [
+    {
+      documentType: "gst_certificate",
+      fileName: "Acme-GST-Certificate-2024.pdf",
+      status: "verified",
+      sizeBytes: 187_000,
+      mimeType: "application/pdf",
+      issuedOn: "2024-04-01",
+      expiresInDays: 280, // ~9 months out
+      uploaderEmail: "acme@example.local",
+      reviewerEmail: "staff@consultway.local",
+      reviewNotes: "Verified via GSTN portal lookup; matches CIN on file.",
+    },
+    {
+      documentType: "pan_card",
+      fileName: "Acme-PAN-Card.pdf",
+      status: "verified",
+      sizeBytes: 92_000,
+      mimeType: "application/pdf",
+      issuedOn: "2019-08-12",
+      expiresInDays: null, // PAN cards don't expire
+      uploaderEmail: "acme@example.local",
+      reviewerEmail: "staff@consultway.local",
+      reviewNotes: null,
+    },
+    {
+      documentType: "incorporation_cert",
+      fileName: "Acme-CoI.pdf",
+      status: "verified",
+      sizeBytes: 354_000,
+      mimeType: "application/pdf",
+      issuedOn: "2019-08-01",
+      expiresInDays: null,
+      uploaderEmail: "acme@example.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes: null,
+    },
+    {
+      documentType: "trade_license",
+      fileName: "Acme-Mumbai-Trade-License.pdf",
+      status: "verified",
+      sizeBytes: 245_000,
+      mimeType: "application/pdf",
+      issuedOn: "2025-01-15",
+      expiresInDays: 18, // near expiry - exercises the warning affordance
+      uploaderEmail: "acme@example.local",
+      reviewerEmail: "staff@consultway.local",
+      reviewNotes: null,
+    },
+    {
+      documentType: "board_resolution",
+      fileName: "Acme-Board-Resolution-Coastal-Road.pdf",
+      status: "pending_review",
+      sizeBytes: 423_000,
+      mimeType: "application/pdf",
+      issuedOn: "2026-04-22",
+      expiresInDays: null,
+      uploaderEmail: "acme@example.local",
+      reviewerEmail: null,
+      reviewNotes: null,
+    },
+  ],
+  "BuildRight Engineers": [
+    {
+      documentType: "gst_certificate",
+      fileName: "BuildRight-GST.pdf",
+      status: "verified",
+      sizeBytes: 198_000,
+      mimeType: "application/pdf",
+      issuedOn: "2022-06-10",
+      expiresInDays: 410,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes: null,
+    },
+    {
+      documentType: "pan_card",
+      fileName: "BuildRight-PAN.pdf",
+      status: "verified",
+      sizeBytes: 88_000,
+      mimeType: "application/pdf",
+      issuedOn: "2017-03-20",
+      expiresInDays: null,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes: null,
+    },
+    {
+      documentType: "trade_license",
+      fileName: "BuildRight-Bengaluru-License.pdf",
+      status: "expired",
+      sizeBytes: 261_000,
+      mimeType: "application/pdf",
+      issuedOn: "2022-02-01",
+      expiresInDays: -45, // already past expiry, cron flipped it
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes: "Renewal pending with Karnataka SAGE office.",
+    },
+    {
+      documentType: "cancelled_cheque",
+      fileName: "BuildRight-Cheque-HDFC.jpg",
+      status: "verified",
+      sizeBytes: 1_148_000,
+      mimeType: "image/jpeg",
+      issuedOn: null,
+      expiresInDays: null,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "staff@consultway.local",
+      reviewNotes: null,
+    },
+  ],
+  "GreenTech Solutions": [
+    {
+      documentType: "gst_certificate",
+      fileName: "GreenTech-GST-Application-Receipt.pdf",
+      status: "rejected",
+      sizeBytes: 142_000,
+      mimeType: "application/pdf",
+      issuedOn: "2026-04-10",
+      expiresInDays: null,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "staff@consultway.local",
+      reviewNotes:
+        "This is an application acknowledgement, not the GST certificate itself. Please upload the actual REG-06 form once GSTN issues it.",
+    },
+    {
+      documentType: "pan_card",
+      fileName: "GreenTech-PAN.pdf",
+      status: "pending_review",
+      sizeBytes: 96_000,
+      mimeType: "application/pdf",
+      issuedOn: "2024-11-05",
+      expiresInDays: null,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: null,
+      reviewNotes: null,
+    },
+    {
+      documentType: "incorporation_cert",
+      fileName: "GreenTech-CoI.pdf",
+      status: "verified",
+      sizeBytes: 410_000,
+      mimeType: "application/pdf",
+      issuedOn: "2024-10-28",
+      expiresInDays: null,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes: null,
+    },
+  ],
+  "Acme-BuildRight JV": [
+    {
+      documentType: "incorporation_cert",
+      fileName: "Acme-BuildRight-JV-Agreement.pdf",
+      status: "verified",
+      sizeBytes: 612_000,
+      mimeType: "application/pdf",
+      issuedOn: "2025-09-15",
+      expiresInDays: null,
+      uploaderEmail: "admin@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes: "Three-year JV term, witnessed by both partner notaries.",
+    },
+    {
+      documentType: "board_resolution",
+      fileName: "Acme-BuildRight-JV-Authority.pdf",
+      status: "verified",
+      sizeBytes: 388_000,
+      mimeType: "application/pdf",
+      issuedOn: "2025-09-20",
+      expiresInDays: null,
+      uploaderEmail: "admin@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes: null,
+    },
+    {
+      documentType: "gst_certificate",
+      fileName: "Acme-BuildRight-JV-GST.pdf",
+      status: "verified",
+      sizeBytes: 205_000,
+      mimeType: "application/pdf",
+      issuedOn: "2025-10-01",
+      expiresInDays: 215,
+      uploaderEmail: "admin@consultway.local",
+      reviewerEmail: "staff@consultway.local",
+      reviewNotes: null,
+    },
+  ],
+  "Modern-Alpha Alliance": [
+    {
+      documentType: "gst_certificate",
+      fileName: "ModernAlpha-GST.pdf",
+      status: "verified",
+      sizeBytes: 178_000,
+      mimeType: "application/pdf",
+      issuedOn: "2023-12-05",
+      expiresInDays: 95,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "staff@consultway.local",
+      reviewNotes: null,
+    },
+    {
+      documentType: "other",
+      fileName: "ModernAlpha-Environmental-Clearance-LAPSED.pdf",
+      status: "expired",
+      sizeBytes: 524_000,
+      mimeType: "application/pdf",
+      issuedOn: "2022-03-01",
+      expiresInDays: -120,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes:
+        "Environmental clearance from MoEFCC lapsed. Renewal blocks any tender application until refiled.",
+    },
+    {
+      documentType: "board_resolution",
+      fileName: "ModernAlpha-Authority-2026.pdf",
+      status: "rejected",
+      sizeBytes: 312_000,
+      mimeType: "application/pdf",
+      issuedOn: "2026-02-14",
+      expiresInDays: null,
+      uploaderEmail: "staff@consultway.local",
+      reviewerEmail: "admin@consultway.local",
+      reviewNotes:
+        "Resolution signed by only one partner's authorised signatory. Both JV partners must sign per the JV deed. Re-upload after countersignature.",
+    },
+  ],
+};
 
 // ── Seeding helpers ───────────────────────────────────────────────────────
 
@@ -505,6 +787,141 @@ async function seedJvCompany(
   return "created";
 }
 
+/**
+ * Compute an ISO date `daysFromNow` away from "today" in UTC.
+ * Negative values land in the past. Returns `null` if the input is null.
+ */
+function isoDateOffset(daysFromNow: number | null): string | null {
+  if (daysFromNow === null) return null;
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + daysFromNow);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Seed one company's document fixtures. Idempotent on the
+ * `(company_id, file_name)` pair - re-running this script against an
+ * already-seeded DB skips existing rows without raising. Uploader and
+ * reviewer emails are resolved to UUIDs; an unknown email fails loudly
+ * with a clear message (would mean the earlier user-seeding step
+ * didn't run).
+ *
+ * Returns the per-company tally of created and skipped rows.
+ */
+async function seedDocumentsForCompany(
+  companyName: string,
+  specs: DocumentSeed[],
+): Promise<{ created: number; skipped: number }> {
+  const tally = { created: 0, skipped: 0 };
+
+  // Resolve the company id once per company.
+  const company = await db
+    .select({ id: companies.id })
+    .from(companies)
+    .where(eq(companies.name, companyName))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!company) {
+    log.warn("skipping document seed: company not found", { companyName });
+    return tally;
+  }
+
+  // Resolve uploader/reviewer emails to UUIDs in a single batch up front.
+  const uniqueEmails = Array.from(
+    new Set(
+      specs.flatMap((s) =>
+        s.reviewerEmail ? [s.uploaderEmail, s.reviewerEmail] : [s.uploaderEmail],
+      ),
+    ),
+  );
+
+  const emailToId = new Map<string, string>();
+  for (const email of uniqueEmails) {
+    const u = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (!u) {
+      throw new Error(
+        `Document seed for "${companyName}" references user "${email}" but no such user exists. Did the user-seed step run first?`,
+      );
+    }
+    emailToId.set(email, u.id);
+  }
+
+  for (const spec of specs) {
+    // Idempotency check: (companyId, fileName) is unique enough for the
+    // fixture set (we control these names; production rows can clash on
+    // filename across companies but never within one).
+    const existing = await db
+      .select({ id: documents.id })
+      .from(documents)
+      .where(
+        and(
+          eq(documents.companyId, company.id),
+          eq(documents.fileName, spec.fileName),
+        ),
+      )
+      .limit(1);
+
+    if (existing.length > 0) {
+      tally.skipped++;
+      continue;
+    }
+
+    const documentId = newId();
+    const uploadedById = emailToId.get(spec.uploaderEmail)!;
+    const reviewedById = spec.reviewerEmail
+      ? emailToId.get(spec.reviewerEmail)!
+      : null;
+
+    // The reviewed_at stamp is only meaningful for terminal-review states.
+    // `verified` / `rejected` always carry a reviewer + a timestamp;
+    // `expired` rows are flipped by the cron from `verified`, so they
+    // keep the original reviewer + add a (notional) review timestamp.
+    const isReviewed =
+      spec.status === "verified" ||
+      spec.status === "rejected" ||
+      spec.status === "expired";
+    const reviewedAt = isReviewed ? new Date().toISOString() : null;
+
+    await db.insert(documents).values({
+      id: documentId,
+      companyId: company.id,
+      documentType: spec.documentType,
+      // Demo metadata - bytes don't actually exist in R2. The fileKey
+      // shape matches what `lib/r2/keys.ts::buildDocumentKey` produces
+      // so the action layer's RBAC checks behave identically against
+      // these rows.
+      fileKey: `companies/${company.id}/${documentId}/${spec.fileName}`,
+      fileName: spec.fileName,
+      mimeType: spec.mimeType,
+      sizeBytes: spec.sizeBytes,
+      status: spec.status,
+      reviewNotes: spec.reviewNotes,
+      reviewedBy: reviewedById,
+      reviewedAt,
+      issuedOn: spec.issuedOn,
+      expiresAt: isoDateOffset(spec.expiresInDays),
+      uploadedBy: uploadedById,
+      uploadedAt: new Date().toISOString(),
+    });
+
+    tally.created++;
+  }
+
+  log.info("seeded documents for company", {
+    companyName,
+    created: tally.created,
+    skipped: tally.skipped,
+  });
+
+  return tally;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -536,10 +953,21 @@ async function main(): Promise<void> {
     bump(await seedJvCompany(spec));
   }
 
-  // 5. Company-role users LAST — they reference a client company by
-  //    name, so the named companies must exist by this point.
+  // 5. Company-role users — they reference a client company by name,
+  //    so the named companies must exist by this point.
   for (const spec of SEED_COMPANY_USERS) {
     bump(await seedCompanyUser(spec));
+  }
+
+  // 6. Document fixtures LAST. Documents reference both a company
+  //    (FK companyId) and users (FK uploadedBy, reviewedBy), so all
+  //    earlier steps must have run. Tracked under a separate tally
+  //    so the doc-level numbers are visible in the final log line.
+  const docStats = { created: 0, skipped: 0 };
+  for (const [companyName, specs] of Object.entries(DOCUMENTS_PER_COMPANY)) {
+    const tally = await seedDocumentsForCompany(companyName, specs);
+    docStats.created += tally.created;
+    docStats.skipped += tally.skipped;
   }
 
   const total =
@@ -549,10 +977,18 @@ async function main(): Promise<void> {
     JV_COMPANIES.length +
     SEED_COMPANY_USERS.length;
 
+  const totalDocuments = Object.values(DOCUMENTS_PER_COMPANY).reduce(
+    (sum, specs) => sum + specs.length,
+    0,
+  );
+
   log.info("seed complete", {
     created: stats.created,
     skipped: stats.skipped,
     total,
+    documentsCreated: docStats.created,
+    documentsSkipped: docStats.skipped,
+    totalDocuments,
   });
 
   // Close the SQLite connection so the script exits cleanly. Without

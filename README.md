@@ -20,12 +20,13 @@
 2. [Tech Stack](#tech-stack)
 3. [Project Structure](#project-structure)
 4. [Quick Start](#quick-start)
-5. [Development Phases](#development-phases)
-6. [Documentation](#documentation)
-7. [Environment Variables](#environment-variables)
-8. [Scripts](#scripts)
-9. [Deployment](#deployment)
-10. [Contributing](#contributing)
+5. [Demo Credentials](#demo-credentials)
+6. [Development Phases](#development-phases)
+7. [Documentation](#documentation)
+8. [Environment Variables](#environment-variables)
+9. [Scripts](#scripts)
+10. [Deployment](#deployment)
+11. [Contributing](#contributing)
 
 ---
 
@@ -237,8 +238,12 @@ pnpm db:migrate    # Applies to local D1
 ### 5. Seed admin user
 
 ```bash
-pnpm db:seed       # Creates a default admin: admin@consultway.info / ChangeMe123!
+pnpm db:seed       # Idempotent. Safe to re-run.
 ```
+
+Seeds three login users, a Consultway publisher sentinel, five client
+companies (3 standalone + 2 JVs), and ~18 document fixtures across
+those companies. See [Demo Credentials](#demo-credentials) below.
 
 ### 6. Start dev server
 
@@ -246,6 +251,57 @@ pnpm db:seed       # Creates a default admin: admin@consultway.info / ChangeMe12
 pnpm dev           # http://localhost:3000
 # Payload admin:  http://localhost:3000/admin
 ```
+
+---
+
+## Demo Credentials
+
+The `pnpm db:seed` script provisions three login accounts so the three
+RBAC roles can be exercised end to end. All share the same password.
+
+| Role | Email | Password | Notes |
+|---|---|---|---|
+| **Admin** | `admin@consultway.local` | `ChangeMe123!` | Full platform control. Can delete companies and documents. |
+| **Staff** | `staff@consultway.local` | `ChangeMe123!` | Operations team. Verify/reject documents, manage roster. Cannot delete companies. |
+| **Company user** | `acme@example.local` | `ChangeMe123!` | Linked to *Acme Construction Pvt Ltd*. Self-service portal only. |
+
+> ⚠️ These credentials are for local development only. Production seeds
+> use distinct values and stronger passwords pushed via
+> `wrangler secret put`. The dev password is also referenced by the
+> placeholder-secret warning in `lib/env.ts` — leaving any
+> `PASSWORD_PEPPER` / `JWT_SECRET` / `R2_*` value at its `.env.example`
+> default logs a startup warning so it doesn't accidentally ship.
+
+### Things to try
+
+A quick tour of the Phase-1 surface, in roughly the order it tells the
+best story:
+
+1. **Sign in as Admin or Staff** at `/login` → land on the dashboard
+   with the activity feed.
+2. **Open the companies roster** at `/dashboard/companies`. Filter by
+   sector / geography / compliance status; the filters persist in the
+   URL.
+3. **Click into a company detail page** (e.g. *Acme Construction Pvt
+   Ltd*). You'll see the overview card, the **Documents section** with
+   its filter bar, and the activity feed below.
+4. **Hover a document row** → the "View details" eye icon opens a
+   side-sheet with uploader/reviewer info, expiry affordance, review
+   notes, and a Download CTA.
+5. **As Admin/Staff**, hit the **Verify** or **Reject** affordance on
+   a `pending_review` document. The toast fires, the row's status badge
+   updates, and the audit feed shows the new event.
+6. **Filter the documents section** by `?documentStatus=expired` to see
+   the past-expiry fixtures (e.g. BuildRight's trade license, Modern-
+   Alpha's environmental clearance). Filters are link-shareable.
+7. **Sign out and back in as the Company user** (`acme@example.local`).
+   You'll land on the dashboard with only Acme's own data visible —
+   the roster row, that company's documents, no admin affordances.
+   Try uploading a document via `/dashboard/companies/<acme-id>/documents/new`.
+
+The expiry-reminder and pending-cleanup crons can be triggered on
+demand via `pnpm cron:expiry-sweep` and `pnpm cron:pending-cleanup` —
+both write structured JSON to stdout summarising what they did.
 
 ---
 

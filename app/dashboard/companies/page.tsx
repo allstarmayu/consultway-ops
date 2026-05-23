@@ -22,16 +22,16 @@
  * @module app/dashboard/companies/page
  */
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import Link from "next/link";
 import { Plus, Link2 } from "lucide-react";
-import { listCompanies } from "@/lib/companies/actions";
 import { readSession } from "@/lib/auth/session";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { TableSectionLoading } from "@/components/dashboard/table-section-loading";
 import { FiltersBar } from "./_components/filters-bar";
-import { CompaniesTable } from "./_components/companies-table";
+import { CompaniesTableSection } from "./_components/companies-table-section";
 
 export const metadata: Metadata = {
   title: "Companies",
@@ -49,9 +49,10 @@ interface CompaniesPageProps {
 export default async function CompaniesPage({
   searchParams,
 }: CompaniesPageProps) {
-  // 1. Resolve search params and session in parallel.
-  //    The Zod schema in listCompanies handles coercion + defaults, so
-  //    we pass the raw object through unchanged.
+  // 1. Resolve search params and session in parallel. Both are cheap;
+  //    the heavier work (listCompanies) is now deferred into a child
+  //    Server Component behind a Suspense boundary so the page header
+  //    + filter bar paint at first-byte time.
   const [params, session] = await Promise.all([searchParams, readSession()]);
 
   // Session is guaranteed by the dashboard layout's auth guard, but
@@ -60,32 +61,16 @@ export default async function CompaniesPage({
     return null;
   }
 
-  // 2. Fetch the page. The action handles validation, scope, sorting,
-  //    pagination, and returns a typed `ActionResult`.
-  const result = await listCompanies(params);
-
-  // 3. Hard failure mode — bad query, DB hiccup, etc.
-  if (!result.ok) {
-    return (
-      <>
-        <PageHeader
-          title="Companies"
-          subtitle="Manage company profiles and compliance"
-        />
-        <Alert variant="destructive">
-          <AlertTitle>Couldn't load companies</AlertTitle>
-          <AlertDescription>{result.error}</AlertDescription>
-        </Alert>
-      </>
-    );
-  }
-
-  const { rows, total, page, perPage } = result;
-
-  // 4. Action buttons differ by role. Admin/staff can add companies;
+  // 2. Action buttons differ by role. Admin/staff can add companies;
   //    `company` role users only ever see their own row and can't
   //    register others.
   const canCreate = session.role === "admin" || session.role === "staff";
+
+  // Stable key for the Suspense boundary - re-keying on a serialised
+  // form of `params` forces a re-render (and a fresh fallback) every
+  // time a filter or page changes, matching what the user expects
+  // visually.
+  const suspenseKey = JSON.stringify(params);
 
   return (
     <>
@@ -116,17 +101,21 @@ export default async function CompaniesPage({
 
       {/* Single card wraps filters + table for the figma's "one panel"
           look. Filters separate from table by an internal border so
-          they read as a coherent toolbar. */}
+          they read as a coherent toolbar. The table itself streams
+          behind a Suspense boundary - filter changes re-key the
+          boundary so the skeleton flickers during re-fetch. */}
       <Card className="overflow-hidden p-0">
         <FiltersBar />
-        <CompaniesTable
-          rows={rows}
-          total={total}
-          page={page}
-          perPage={perPage}
-          canEdit={canCreate}
-          canDelete={session.role === "admin"}
-        />
+        <Suspense
+          key={suspenseKey}
+          fallback={<TableSectionLoading columns={7} />}
+        >
+          <CompaniesTableSection
+            query={params}
+            canEdit={canCreate}
+            canDelete={session.role === "admin"}
+          />
+        </Suspense>
       </Card>
     </>
   );

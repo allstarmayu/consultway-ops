@@ -28,16 +28,16 @@
  * @module app/dashboard/tenders/page
  */
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import Link from "next/link";
 import { Plus } from "lucide-react";
-import { listTenders } from "@/lib/tenders/actions";
 import { readSession } from "@/lib/auth/session";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { TableSectionLoading } from "@/components/dashboard/table-section-loading";
 import { FiltersBar } from "./_components/filters-bar";
-import { TendersTable } from "./_components/tenders-table";
+import { TendersTableSection } from "./_components/tenders-table-section";
 
 export const metadata: Metadata = {
   title: "Tenders",
@@ -55,9 +55,10 @@ interface TendersPageProps {
 export default async function TendersPage({
   searchParams,
 }: TendersPageProps) {
-  // 1. Resolve search params and session in parallel. The Zod schema
-  //    in listTenders handles coercion + defaults, so we pass the raw
-  //    object through unchanged.
+  // 1. Resolve search params and session in parallel. The heavier
+  //    listTenders call is deferred into a child Server Component
+  //    behind a Suspense boundary so the header + filter bar paint at
+  //    first-byte time.
   const [params, session] = await Promise.all([searchParams, readSession()]);
 
   // Session is guaranteed by the dashboard layout's auth guard, but
@@ -66,32 +67,15 @@ export default async function TendersPage({
     return null;
   }
 
-  // 2. Fetch the page. The action handles validation, scope, sorting,
-  //    pagination, and returns a typed `ActionResult`.
-  const result = await listTenders(params);
-
-  // 3. Hard failure mode — bad query, DB hiccup, etc.
-  if (!result.ok) {
-    return (
-      <>
-        <PageHeader
-          title="Tenders"
-          subtitle="Manage tender opportunities and applications"
-        />
-        <Alert variant="destructive">
-          <AlertTitle>Couldn&apos;t load tenders</AlertTitle>
-          <AlertDescription>{result.error}</AlertDescription>
-        </Alert>
-      </>
-    );
-  }
-
-  const { rows, total, page, perPage } = result;
-
-  // 4. Action buttons differ by role. Admin/staff can create tenders;
+  // 2. Action buttons differ by role. Admin/staff can create tenders;
   //    `company` role users don't see the create surface (they apply,
   //    they don't publish — that's the next chunk's UI).
   const canCreate = session.role === "admin" || session.role === "staff";
+
+  // Stable Suspense key - re-keying on serialised params triggers a
+  // fresh fallback flicker every time a filter or page changes,
+  // matching the visual expectation.
+  const suspenseKey = JSON.stringify(params);
 
   return (
     <>
@@ -111,17 +95,21 @@ export default async function TendersPage({
       />
 
       {/* Single card wraps filters + table for the figma's "one panel"
-          look — same shell as the companies list. */}
+          look — same shell as the companies list. The table itself
+          streams behind a Suspense boundary keyed on the filter
+          params. */}
       <Card className="overflow-hidden p-0">
         <FiltersBar />
-        <TendersTable
-          rows={rows}
-          total={total}
-          page={page}
-          perPage={perPage}
-          canEdit={canCreate}
-          canDelete={session.role === "admin"}
-        />
+        <Suspense
+          key={suspenseKey}
+          fallback={<TableSectionLoading columns={7} />}
+        >
+          <TendersTableSection
+            query={params}
+            canEdit={canCreate}
+            canDelete={session.role === "admin"}
+          />
+        </Suspense>
       </Card>
     </>
   );
