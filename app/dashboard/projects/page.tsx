@@ -18,7 +18,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import Link from "next/link";
 import { asc } from "drizzle-orm";
-import { Plus } from "lucide-react";
+import { Download, Plus } from "lucide-react";
 import { readSession } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { companies } from "@/lib/db/schema";
@@ -58,6 +58,7 @@ export default async function ProjectsPage({
     : undefined;
 
   const suspenseKey = JSON.stringify(params);
+  const exportHref = canCreate ? buildExportHref(params) : null;
 
   return (
     <>
@@ -66,12 +67,22 @@ export default async function ProjectsPage({
         subtitle="Project tracking across active engagements"
         actions={
           canCreate ? (
-            <Button asChild>
-              <Link href="/dashboard/projects/new">
-                <Plus className="h-4 w-4" aria-hidden />
-                Add Project
-              </Link>
-            </Button>
+            <div className="flex items-center gap-2">
+              {exportHref && (
+                <Button asChild variant="outline">
+                  <Link href={exportHref}>
+                    <Download className="h-4 w-4" aria-hidden />
+                    Export CSV
+                  </Link>
+                </Button>
+              )}
+              <Button asChild>
+                <Link href="/dashboard/projects/new">
+                  <Plus className="h-4 w-4" aria-hidden />
+                  Add Project
+                </Link>
+              </Button>
+            </div>
           ) : undefined
         }
       />
@@ -87,4 +98,29 @@ export default async function ProjectsPage({
       </Card>
     </>
   );
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Build the CSV export URL by copying through the current filter params.
+ * Only the filter-relevant keys are forwarded — page / perPage / sort
+ * aren't meaningful for a full export, so they're dropped. Mirrors the
+ * transactions list's `buildExportHref` shape.
+ */
+function buildExportHref(
+  params: Record<string, string | string[] | undefined>,
+): string {
+  const search = new URLSearchParams();
+  const forwarded = ["status", "companyId", "search"] as const;
+  for (const key of forwarded) {
+    const value = params[key];
+    if (typeof value === "string" && value !== "") {
+      search.set(key, value);
+    }
+  }
+  const qs = search.toString();
+  return qs
+    ? `/dashboard/projects/export?${qs}`
+    : "/dashboard/projects/export";
 }
