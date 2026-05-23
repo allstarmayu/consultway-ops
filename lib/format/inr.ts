@@ -79,6 +79,100 @@ export function formatInr(rupees: number | null | undefined): string {
   return `₹ ${inrFormatter.format(rupees)}`;
 }
 
+// ── Paise-grained formatters (Day 17) ───────────────────────────────────
+
+/**
+ * Cached formatter for the paise tail (always two digits, e.g. "07"
+ * not "7"). Cheap to construct but cached for symmetry with
+ * `inrFormatter`.
+ */
+const paiseTailFormatter = new Intl.NumberFormat("en-IN", {
+  minimumIntegerDigits: 2,
+  maximumFractionDigits: 0,
+  useGrouping: false,
+});
+
+/**
+ * Format an amount stored in paise as a UI rupees-and-paise string.
+ * Used for the transactions module where actuals (50 paise matters
+ * for invoice reconciliation) need full paise precision.
+ *
+ *   formatRupeesFromPaise(50000000_00) // "₹ 5,00,00,000.00"
+ *   formatRupeesFromPaise(12345_67)    // "₹ 12,345.67"
+ *   formatRupeesFromPaise(100)         // "₹ 1.00"
+ *   formatRupeesFromPaise(7)           // "₹ 0.07"
+ *
+ * Always shows the `.NN` paise tail (two digits) even when the figure
+ * is whole rupees — financial UIs benefit from the alignment, and the
+ * trailing `.00` signals "yes, this is paise-exact, not rounded."
+ *
+ * @param paise Integer paise count. Must be a finite number; the
+ *   transactions Zod schema rejects non-integers upstream.
+ * @returns Formatted string like "₹ 12,345.67".
+ */
+export function formatRupeesFromPaise(paise: number): string {
+  const sign = paise < 0 ? "-" : "";
+  const abs = Math.abs(paise);
+  const rupees = Math.trunc(abs / 100);
+  const tail = abs % 100;
+  return `${sign}₹ ${inrFormatter.format(rupees)}.${paiseTailFormatter.format(tail)}`;
+}
+
+/**
+ * ASCII variant of `formatRupeesFromPaise` for CSV exports, audit logs,
+ * and other ASCII-safe contexts. Same rationale as `formatInrAscii`.
+ *
+ *   formatRupeesFromPaiseAscii(50000000_00) // "Rs.5,00,00,000.00"
+ *   formatRupeesFromPaiseAscii(12345_67)    // "Rs.12,345.67"
+ */
+export function formatRupeesFromPaiseAscii(paise: number): string {
+  const sign = paise < 0 ? "-" : "";
+  const abs = Math.abs(paise);
+  const rupees = Math.trunc(abs / 100);
+  const tail = abs % 100;
+  return `${sign}Rs.${inrFormatter.format(rupees)}.${paiseTailFormatter.format(tail)}`;
+}
+
+/**
+ * Parse a user-typed rupees-and-paise string into integer paise.
+ * Accepts `"12345"`, `"12345.6"`, `"12345.67"`, `"12,345.67"`, or
+ * `"₹ 12,345.67"`. Returns null for empty/invalid input.
+ *
+ *   parsePaiseFromRupees("12345.67")    // 1234567
+ *   parsePaiseFromRupees("12,345")      // 1234500
+ *   parsePaiseFromRupees("₹ 100.05")    // 10005
+ *   parsePaiseFromRupees("0.5")         // 50
+ *   parsePaiseFromRupees("")            // null
+ *   parsePaiseFromRupees("not a num")   // null
+ *
+ * Caps the paise tail at two digits — `"1.234"` parses as `"1.23"`
+ * paise (123 paise total), the third decimal silently dropped. Anything
+ * more is sub-paise precision the platform doesn't model.
+ *
+ * Used by the transactions form's amount input to convert the
+ * user-facing rupees-and-paise representation into the integer paise
+ * the schema expects.
+ */
+export function parsePaiseFromRupees(input: string): number | null {
+  const trimmed = input.trim().replace(/[₹,\s]/g, "");
+  if (trimmed === "" || trimmed === "-") return null;
+
+  const isNegative = trimmed.startsWith("-");
+  const unsigned = isNegative ? trimmed.slice(1) : trimmed;
+
+  if (!/^\d+(\.\d+)?$/.test(unsigned)) return null;
+
+  const [whole, tailRaw = ""] = unsigned.split(".");
+  // Truncate (NOT round) to 2 decimals — sub-paise precision isn't modelled.
+  const tail = tailRaw.slice(0, 2).padEnd(2, "0");
+  const rupees = Number.parseInt(whole, 10);
+  const paiseTail = Number.parseInt(tail, 10);
+  if (!Number.isFinite(rupees) || !Number.isFinite(paiseTail)) return null;
+
+  const value = rupees * 100 + paiseTail;
+  return isNegative ? -value : value;
+}
+
 /**
  * Format a rupee integer for error messages, audit logs, and any other
  * ASCII-safe context. Uses "Rs." prefix (no space) instead of the
