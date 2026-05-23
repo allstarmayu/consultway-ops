@@ -37,8 +37,10 @@ import {
   companies,
   users,
   auditLog,
+  remindersSent,
   type DocumentStatus,
   type DocumentType,
+  type ReminderKind,
   type UserRole,
 } from "@/lib/db/schema";
 import { newId } from "@/lib/db/ids";
@@ -257,6 +259,9 @@ async function clearFixture(f: Fixture): Promise<void> {
     .delete(auditLog)
     .where(eq(auditLog.actorId, SYSTEM_ACTOR_ID))
     .catch(() => {});
+  // `reminders_sent` rows cascade with documents (ON DELETE CASCADE),
+  // so the document deletes below cover them — but the in-memory DB
+  // makes this a no-op cheap enough to be explicit.
   await db.delete(documents).where(eq(documents.companyId, f.companyAId));
   await db.delete(documents).where(eq(documents.companyId, f.companyBId));
   await db
@@ -458,15 +463,106 @@ describe("runExpirySweep - idempotency", () => {
     expect(second.expiredCount).toBe(0);
   });
 
-  it("second run RE-SENDS reminders (no dedup table yet)", async () => {
+  it("second same-day run is deduped: no second send for the same (document, slot) pair", async () => {
     const sendEmail = vi.fn<(args: SendEmailArgs) => Promise<SendEmailResult>>(
       async () => ({ ok: true, id: "msg_test" }),
     );
 
-    await runExpirySweep(buildDeps({ sendEmail }));
-    await runExpirySweep(buildDeps({ sendEmail }));
+    const first = await runExpirySweep(buildDeps({ sendEmail }));
+    const second = await runExpirySweep(buildDeps({ sendEmail }));
 
-    // 2 runs * 1 in-window email each = 2 sends.
+    // First run: 1 send (docInWindow at +5 days, slot T-7).
+    expect(first.remindersSucceeded).toBe(1);
+    expect(first.remindersSkippedDeduped).toBe(0);
+
+    // Second run: same row, same slot, dedup row exists -> skipped.
+    expect(second.remindersAttempted).toBe(0);
+    expect(second.remindersSucceeded).toBe(0);
+    expect(second.remindersSkippedDeduped).toBe(1);
+    // Email mock called exactly once across both runs.
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+
+    // A `reminders_sent` row was inserted for the right (doc, kind).
+    const sentRows = await db
+      .select()
+      .from(remindersSent)
+      .where(eq(remindersSent.documentId, fixture.docInWindowId));
+    expect(sentRows).toHaveLength(1);
+    expect(sentRows[0]?.reminderKind).toBe<ReminderKind>("T-7");
+  });
+
+  it("crossing a slot boundary triggers a fresh reminder under the new kind", async () => {
+    // First run on day TODAY: docInWindow is +5 days -> slot T-7.
+    // Subsequent run pretends N days have elapsed so the same document
+    // is now at a different distance from expiry and falls into a new
+    // slot. The dedup table should NOT block the new kind.
+    const sendEmail = vi.fn<(args: SendEmailArgs) => Promise<SendEmailResult>>(
+      async () => ({ ok: true, id: "msg_test" }),
+    );
+
+    // Replace docInWindow's expiry so we can drive the boundary cleanly.
+    // Set expiresAt to TODAY+10 so first run falls in T-14 (8..14 days).
+    await db
+      .update(documents)
+      .set({ expiresAt: addDays(TODAY, 10) })
+      .where(eq(documents.id, fixture.docInWindowId));
+
+    // Day 1: slot T-14.
+    const day1 = await runExpirySweep(buildDeps({ sendEmail, today: TODAY }));
+    expect(day1.remindersSucceeded).toBe(1);
+    const dedupAfterDay1 = await db
+      .select()
+      .from(remindersSent)
+      .where(eq(remindersSent.documentId, fixture.docInWindowId));
+    expect(dedupAfterDay1).toHaveLength(1);
+    expect(dedupAfterDay1[0]?.reminderKind).toBe<ReminderKind>("T-14");
+
+    // Day 4 (TODAY + 4): the row is now 6 days from expiry -> slot T-7.
+    // Different (document, kind) tuple, so dedup doesn't block.
+    const advancedToday = addDays(TODAY, 4);
+    const day4 = await runExpirySweep(
+      buildDeps({ sendEmail, today: advancedToday }),
+    );
+    expect(day4.remindersSucceeded).toBe(1);
+    expect(day4.remindersSkippedDeduped).toBe(0);
+
+    const dedupAfterDay4 = await db
+      .select()
+      .from(remindersSent)
+      .where(eq(remindersSent.documentId, fixture.docInWindowId));
+    expect(dedupAfterDay4).toHaveLength(2);
+    const kinds = dedupAfterDay4
+      .map((r) => r.reminderKind)
+      .sort();
+    expect(kinds).toEqual<ReminderKind[]>(["T-14", "T-7"].sort() as ReminderKind[]);
+
+    // Email mock called exactly twice — once per distinct slot.
     expect(sendEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it("failed sends do NOT insert a dedup row (so next run retries)", async () => {
+    const sendEmail = vi.fn<(args: SendEmailArgs) => Promise<SendEmailResult>>(
+      async () => ({ ok: false, error: "Resend down" }),
+    );
+
+    const first = await runExpirySweep(buildDeps({ sendEmail }));
+    expect(first.remindersFailed).toBe(1);
+
+    // No dedup row should exist for the failed send.
+    const sentRows = await db
+      .select()
+      .from(remindersSent)
+      .where(eq(remindersSent.documentId, fixture.docInWindowId));
+    expect(sentRows).toHaveLength(0);
+
+    // Next run with a working sender succeeds and now writes the dedup
+    // row. Crucially, the second-run skipped-deduped counter is zero —
+    // the failed first run did NOT block the retry.
+    const sendEmail2 = vi.fn<(args: SendEmailArgs) => Promise<SendEmailResult>>(
+      async () => ({ ok: true, id: "msg_test2" }),
+    );
+    const second = await runExpirySweep(buildDeps({ sendEmail: sendEmail2 }));
+    expect(second.remindersSucceeded).toBe(1);
+    expect(second.remindersSkippedDeduped).toBe(0);
   });
 });

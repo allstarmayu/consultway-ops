@@ -1001,3 +1001,104 @@ export type NewDocument = typeof documents.$inferInsert;
 
 /** Inferred select type - what a row looks like when read from the DB. */
 export type Document = typeof documents.$inferSelect;
+
+// -- Shared types: reminders_sent ------------------------------------------
+/**
+ * One of the four reminder slots a verified-with-expiry document can
+ * land in as it approaches `expires_at`. The expiry-sweep cron buckets
+ * each in-window row into exactly one of these:
+ *
+ *   - `T-30` — 15..30 days until expiry (the outer "heads up" reminder)
+ *   - `T-14` — 8..14 days  ("you should renew now")
+ *   - `T-7`  — 2..7 days   ("this is getting urgent")
+ *   - `T-1`  — 0..1 days   ("last call")
+ *
+ * Strict closed union. The expiry-sweep cron writes exactly one row per
+ * (document, kind) pair via the `(document_id, reminder_kind)` unique
+ * index — once a kind has been sent, subsequent same-day or same-week
+ * runs skip it. When a document crosses a slot boundary (e.g. day 8
+ * tomorrow becomes day 7), the new kind is freshly eligible because
+ * its `(document_id, reminder_kind)` tuple has never been seen.
+ */
+export type ReminderKind = "T-30" | "T-14" | "T-7" | "T-1";
+
+// -- reminders_sent --------------------------------------------------------
+/**
+ * Dedup ledger for document expiry-reminder emails.
+ *
+ * Before Day 12 the expiry-sweep cron would re-send the same reminder
+ * email every day a row sat inside the 30-day window, so a 30-days-out
+ * document generated 30 emails to the same contact. This table is the
+ * dedup substrate: one row per (document, reminder-slot) pair, written
+ * by the cron after a successful send. A subsequent same-day run finds
+ * the existing row and skips.
+ *
+ * Cascade: ON DELETE CASCADE on `document_id` — if the underlying
+ * document is removed (or its company is deleted, which cascades to
+ * documents which cascades here), the dedup history goes with it. The
+ * dedup history has no value outside the lifetime of its referent.
+ *
+ * No `updated_at`: rows are append-only. The cron never updates these;
+ * a missed send simply doesn't insert a row, leaving the slot eligible
+ * for the next run to retry.
+ *
+ * Schema reference: docs/05-database-schema.md (the doc lists this
+ * column as `reminder_type`; the code calls it `reminder_kind` — the
+ * Day 12 schema doc update aligns the spec to the code per the
+ * "code wins when docs disagree" convention).
+ */
+export const remindersSent = sqliteTable(
+  "reminders_sent",
+  {
+    /** UUID v7. Generated app-side via `newId()`. */
+    id: text("id").primaryKey().$defaultFn(newId),
+
+    /**
+     * The document this reminder was sent for. Cascade-delete when the
+     * document row is removed (no point keeping dedup history for a
+     * row that no longer exists).
+     */
+    documentId: text("document_id")
+      .notNull()
+      .references(() => documents.id, {
+        onDelete: "cascade",
+        onUpdate: "no action",
+      }),
+
+    /**
+     * Which slot this reminder filled. See `ReminderKind`. SQLite has
+     * no native enums; the `$type<>` narrows the TypeScript surface and
+     * the cron is the only writer, so a CHECK constraint would be
+     * belt-and-braces. Same convention as `DocumentStatus` etc.
+     */
+    reminderKind: text("reminder_kind").notNull().$type<ReminderKind>(),
+
+    /** ISO-8601 UTC timestamp of when the email actually went out. */
+    sentAt: text("sent_at").notNull(),
+
+    /** ISO-8601 UTC. Set by SQLite default on insert. */
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    // The dedup primitive: at most one row per (document, kind). The
+    // cron uses this index both for the "already sent?" lookup and as
+    // the conflict target — a duplicate insert (e.g. from two cron
+    // workers racing on the same minute) surfaces as a UNIQUE failure
+    // that the handler treats as "fine, somebody else got there first".
+    uniqueIndex("reminders_sent_document_kind_unique_idx").on(
+      table.documentId,
+      table.reminderKind,
+    ),
+    // "Show me everything sent for this document" — used during
+    // debugging and on the eventual per-document audit panel.
+    index("reminders_sent_document_id_idx").on(table.documentId),
+  ],
+);
+
+/** Inferred insert type - use for Zod parsing / insert validation. */
+export type NewReminderSent = typeof remindersSent.$inferInsert;
+
+/** Inferred select type - what a row looks like when read from the DB. */
+export type ReminderSent = typeof remindersSent.$inferSelect;
