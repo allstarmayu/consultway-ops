@@ -44,6 +44,7 @@ import { CompanyHeader } from "./_components/company-header";
 import { CompanyOverview } from "./_components/company-overview";
 import { DocumentsSection } from "./_components/documents-section";
 import { DocumentsSectionLoading } from "./_components/documents-section-loading";
+import { CompanyFinancialPanel } from "./_components/company-financial-panel";
 
 /**
  * Next.js App Router types `params` and `searchParams` as Promises
@@ -207,6 +208,16 @@ export default async function CompanyDetailPage({
           viewerRole={session.role}
         />
       </Card>
+
+      {/* Financial activity panel (Day 18) — admin-only. Mirrors the
+          per-project rollup card on the project detail page: per-type
+          breakdown + grand total + recent transactions mini-list. The
+          panel renders ONLY for admin viewers (transactions are admin-
+          only forever, even when they touch a company that staff or
+          the company-role user can otherwise read). */}
+      {session.role === "admin" && (
+        <CompanyFinancialPanel companyId={company.id} />
+      )}
 
       {/* Documents section (Day 10). Lists the company's uploaded
           documents with type / status badges and per-row download.

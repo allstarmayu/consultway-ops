@@ -229,3 +229,52 @@ export async function getProjectRecentTransactions(
     rows: rows.map((r) => ({ ...r, type: r.type as TransactionType })),
   };
 }
+
+// ── getCompanyRecentTransactions ───────────────────────────────────────────
+
+/**
+ * Latest N transactions for a company, ordered occurredOn DESC. Used by
+ * the per-company financial panel's "Recent transactions" mini-list.
+ *
+ * Mirrors `getProjectRecentTransactions` exactly but scoped to a company
+ * — and so INCLUDES both project-tagged and no-project rows, matching
+ * the per-company rollup's own semantics ("everything the company is
+ * party to, regardless of project").
+ */
+export async function getCompanyRecentTransactions(
+  companyId: string,
+  limit = 5,
+): Promise<
+  ActionResult<{
+    rows: Array<{
+      id: string;
+      type: TransactionType;
+      amountPaise: number;
+      occurredOn: string;
+      referenceNumber: string | null;
+      projectId: string | null;
+    }>;
+  }>
+> {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth;
+
+  const rows = await db
+    .select({
+      id: transactions.id,
+      type: transactions.type,
+      amountPaise: transactions.amountPaise,
+      occurredOn: transactions.occurredOn,
+      referenceNumber: transactions.referenceNumber,
+      projectId: transactions.projectId,
+    })
+    .from(transactions)
+    .where(eq(transactions.companyId, companyId))
+    .orderBy(sql`${transactions.occurredOn} desc`)
+    .limit(limit);
+
+  return {
+    ok: true,
+    rows: rows.map((r) => ({ ...r, type: r.type as TransactionType })),
+  };
+}

@@ -497,6 +497,77 @@ describe("updateTransaction", () => {
     if (result.ok) return;
     expect(result.error).toMatch(/administrator/i);
   });
+
+  it("captures metadata.typeChange when the patch changes type", async () => {
+    loginAs("admin", fixture);
+    const created = await createTransaction({
+      type: "invoice",
+      amountPaise: 100_000_00,
+      companyId: fixture.companyAId,
+      projectId: fixture.projectAId,
+      occurredOn: "2026-05-01",
+    });
+    if (!created.ok) throw new Error("setup failed");
+
+    const result = await updateTransaction({
+      id: created.id,
+      type: "payment",
+    });
+    expect(result.ok).toBe(true);
+
+    const audit = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.targetType, "transaction"),
+          eq(auditLog.targetId, created.id),
+          eq(auditLog.action, "updated"),
+        ),
+      )
+      .then((r) => r[0]);
+    expect(audit).toBeDefined();
+    const metadata = audit?.metadata as Record<string, unknown>;
+    expect(metadata).toBeDefined();
+    expect(metadata.typeChange).toEqual({ from: "invoice", to: "payment" });
+  });
+
+  it("omits metadata.typeChange when the patch leaves type unchanged", async () => {
+    loginAs("admin", fixture);
+    const created = await createTransaction({
+      type: "invoice",
+      amountPaise: 100_000_00,
+      companyId: fixture.companyAId,
+      projectId: fixture.projectAId,
+      occurredOn: "2026-05-01",
+    });
+    if (!created.ok) throw new Error("setup failed");
+
+    const result = await updateTransaction({
+      id: created.id,
+      notes: "Updated notes only — no type change",
+    });
+    expect(result.ok).toBe(true);
+
+    const audit = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.targetType, "transaction"),
+          eq(auditLog.targetId, created.id),
+          eq(auditLog.action, "updated"),
+        ),
+      )
+      .then((r) => r[0]);
+    // The notes-only update writes an audit row but no metadata — the
+    // typeChange branch only fires when type is actually changing.
+    expect(audit).toBeDefined();
+    const metadata = audit?.metadata as Record<string, unknown> | null;
+    if (metadata) {
+      expect(metadata.typeChange).toBeUndefined();
+    }
+  });
 });
 
 // ── deleteTransaction ─────────────────────────────────────────────────────

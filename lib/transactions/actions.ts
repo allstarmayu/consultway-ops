@@ -389,13 +389,19 @@ export async function updateTransaction(
     throw err;
   }
 
-  // 8. Audit. Before/after of only the fields the patch touched.
+  // 8. Audit. Before/after of only the fields the patch touched. When
+  //    `type` is changing, capture the from/to under `metadata.typeChange`
+  //    — same shape as the `metadata.statusChange` convention on the
+  //    tender/project transition actions. Forensic queries against
+  //    "show me every type re-tagging" pivot off that field cheaply.
   const touchedKeys = Object.keys(patch);
   const beforeSnapshot = buildPatchSnapshot(existing, touchedKeys);
   const afterSnapshot = buildPatchSnapshot(
     { ...existing, ...patch } as Transaction,
     touchedKeys,
   );
+  const typeChanged =
+    patch.type !== undefined && patch.type !== existing.type;
   await recordAuditEvent({
     actorId: auth.session.userId,
     actorRole: auth.session.role,
@@ -404,6 +410,13 @@ export async function updateTransaction(
     targetId: input.id,
     before: beforeSnapshot,
     after: afterSnapshot,
+    ...(typeChanged
+      ? {
+          metadata: {
+            typeChange: { from: existing.type, to: patch.type },
+          },
+        }
+      : {}),
   });
 
   log.info("transaction updated", {

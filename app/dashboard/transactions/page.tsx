@@ -34,6 +34,7 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { TableSectionLoading } from "@/components/dashboard/table-section-loading";
 import { TransactionsFiltersBar } from "./_components/transactions-filters-bar";
 import { TransactionsTableSection } from "./_components/transactions-table-section";
+import { CompanyRollupBanner } from "./_components/company-rollup-banner";
 
 export const metadata: Metadata = {
   title: "Transactions",
@@ -73,6 +74,18 @@ export default async function TransactionsPage({
   const exportHref = buildExportHref(params);
   const suspenseKey = JSON.stringify(params);
 
+  // When the URL narrows by a single company, surface the rollup
+  // banner above the table so the totals are visible without scrolling.
+  // Multi-company / unfiltered views skip the banner — there's no
+  // single rollup to summarise.
+  const scopedCompanyId =
+    typeof params.companyId === "string" && params.companyId !== ""
+      ? params.companyId
+      : null;
+  const scopedCompanyName = scopedCompanyId
+    ? (companyOptions.find((c) => c.id === scopedCompanyId)?.name ?? null)
+    : null;
+
   return (
     <>
       <PageHeader
@@ -95,6 +108,13 @@ export default async function TransactionsPage({
           </div>
         }
       />
+
+      {scopedCompanyId && (
+        <CompanyRollupBanner
+          companyId={scopedCompanyId}
+          companyName={scopedCompanyName}
+        />
+      )}
 
       <Card className="overflow-hidden p-0">
         <TransactionsFiltersBar

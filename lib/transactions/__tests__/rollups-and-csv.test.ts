@@ -45,6 +45,7 @@ import {
   getCompanyRollup,
   getProjectRollup,
   getProjectRecentTransactions,
+  getCompanyRecentTransactions,
 } from "../rollups";
 import { transactionsToCsv, csvFilenameDateStamp } from "../csv";
 
@@ -292,6 +293,43 @@ describe("getProjectRecentTransactions", () => {
   it("refuses a non-admin caller", async () => {
     loginAs("companyA", fixture);
     const result = await getProjectRecentTransactions(fixture.projectAId, 5);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/administrator/i);
+  });
+});
+
+describe("getCompanyRecentTransactions", () => {
+  it("returns the latest N rows for the company, occurredOn DESC", async () => {
+    loginAs("admin", fixture);
+    const result = await getCompanyRecentTransactions(fixture.companyAId, 3);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rows.length).toBe(3);
+    const dates = result.rows.map((r) => r.occurredOn);
+    for (let i = 1; i < dates.length; i++) {
+      expect(dates[i - 1] >= dates[i]).toBe(true);
+    }
+    // The newest row for Acme is 2026-06-01 (project payment).
+    expect(dates[0]).toBe("2026-06-01");
+  });
+
+  it("includes the no-project (company-level) row in the recent list", async () => {
+    loginAs("admin", fixture);
+    // Pull all 7 rows — the no-project office-rent expense should be
+    // one of them (it sits at 2026-05-05 in the fixture).
+    const result = await getCompanyRecentTransactions(fixture.companyAId, 10);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rows.length).toBe(7);
+    const noProjectRow = result.rows.find((r) => r.projectId === null);
+    expect(noProjectRow).toBeDefined();
+    expect(noProjectRow?.referenceNumber).toBe("OFFICE-RENT-MAY");
+  });
+
+  it("refuses a non-admin caller", async () => {
+    loginAs("companyA", fixture);
+    const result = await getCompanyRecentTransactions(fixture.companyAId, 5);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/administrator/i);
