@@ -1,12 +1,12 @@
-# Day 11 — Documents UX polish, tech-debt sweep, Phase 1 close-out, undo verify/reject
+# Day 11 — Documents UX polish, tech-debt sweep, Phase 1 close-out, undo + inline-undo + R2 CORS
 
 _Date: 2026-05-23_
 
 ## Scope
 
-Land the polish + close-out work Day 10's report flagged, with a small
-ad-hoc add-on near the end (undo verify/reject). Four deliverable
-chunks landed as separate commits on `dev`:
+Land the polish + close-out work Day 10's report flagged, plus a
+series of ad-hoc add-ons triggered by mid-session feedback. Six
+deliverable chunks landed as separate commits on `dev`:
 
 1. **Tech-debt sweep.** ActionResult lift to a shared types module,
    doc-sync passes against current code, env placeholder warnings.
@@ -17,11 +17,23 @@ chunks landed as separate commits on `dev`:
    skeleton-loader audit on list pages.
 4. **Undo verify/reject** (ad-hoc add-on). Toast action button to
    reverse an accidental review click within an 8-second window.
+5. **Toast Undo visibility fix + R2 CORS unblock.** The toast Undo
+   button rendered with low contrast against the richColors success
+   background and wasn't visible — fixed by explicit
+   `actionButton` Tailwind classes. Separately, the first real
+   in-browser upload failed with "Failed to fetch" because the R2
+   bucket had no CORS policy; applied + committed the policy as
+   `infra/r2-cors.json`.
+6. **Inline Undo button with 15-minute window.** Row-level Undo
+   affordance complementing the toast button — covers "I realized
+   10 minutes later this was wrong". 15 minutes mirrors iMessage's
+   edit window; auto-hides at expiry; server-side enforced.
 
 End-of-session verification: `pnpm exec tsc --noEmit` silent,
-`pnpm test --run` 169/169 green, `pnpm db:seed` clean + idempotent on
+`pnpm test --run` 170/170 green, `pnpm db:seed` clean + idempotent on
 re-run (18 fixtures created → 18 skipped), env placeholder warnings
-fire as expected on every `tsx`-based script invocation.
+fire as expected on every `tsx`-based script invocation, R2 CORS
+policy visible via `wrangler r2 bucket cors list consultway-docs`.
 
 ## What shipped
 
@@ -236,6 +248,114 @@ re-review between the toast appearing and the undo click.
 date — the list-view warning affordance still colours by expiry
 regardless of status. The reason for the change is in Gotchas below.
 
+### Chunk 5 — Toast Undo visibility + R2 CORS unblock (commits `ba04abc`, `f960d14`)
+
+Two unrelated fix-ups triggered by mid-session feedback.
+
+**Toast Undo button visibility (`ba04abc`).** First feedback after
+Chunk 4 was "I don't see the Undo button on the toast." Diagnosis:
+sonner v2 styles the toast background/text via `richColors` for
+`data-type=success`, but the action button styling stays on the
+default `--normal-bg` / `--normal-text` variables which the shadcn
+template re-maps to `var(--popover)` / `var(--popover-foreground)`.
+The resulting button was visually consistent with the toast but
+extremely low-contrast against the green success backdrop and easy
+to miss. Fixed by adding explicit `actionButton` and `cancelButton`
+classNames in `components/ui/sonner.tsx`'s `toastOptions`:
+`"!bg-primary !text-primary-foreground !font-medium"`. The `!important`
+modifiers override sonner's inline-style defaults.
+
+**R2 CORS unblock (`f960d14`).** Second feedback: "I can't upload
+any documents." Initial misdiagnosis was placeholder R2 creds, but
+the user surfaced their `.env.local` showing real account ID +
+keys. Re-diagnosed: `wrangler r2 bucket cors list consultway-docs`
+returned "The CORS configuration does not exist." The browser was
+preflighting the PUT (non-simple due to `Content-Type` header) and
+R2 was rejecting the OPTIONS, surfacing as a generic
+`TypeError: Failed to fetch` in the upload form. Applied a CORS
+policy via `wrangler r2 bucket cors set consultway-docs --file
+infra/r2-cors.json --force`:
+
+```json
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["http://localhost:3000"],
+        "methods": ["GET", "PUT"],
+        "headers": ["Content-Type"]
+      },
+      "exposeHeaders": ["ETag"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}
+```
+
+Committed `infra/r2-cors.json` so re-applying (or expanding to a
+prod origin later) is one command + a doc subsection in
+`docs/09-deployment.md` documents the workflow. User confirmed
+upload now works end-to-end against real R2.
+
+### Chunk 6 — Inline Undo button with 15-minute window (commit `9fccf19`)
+
+Follow-on feedback after the toast Undo became visible: "Undo
+should come here as an inline button and it should be available
+only for certain amount of time, just like we can edit messages
+sent on iMessage for certain amount of time." Built it.
+
+**`lib/documents/constants.ts`** — new plain-TS module exporting
+`REVIEW_REVERT_WINDOW_MINUTES = 15` plus a pure helper
+`reviewRevertEligibility(reviewedAt: string | null): { withinWindow,
+msRemaining }`. The module is import-safe from both server
+(`actions.ts`) and client (`document-row-actions.tsx`) without
+collision. 15 minutes mirrors iMessage's edit window — long enough
+to cover the "wait, let me re-check" case, short enough that the
+audit trail stays meaningful (no silent rewrites days later).
+
+**Server-side window guard.** `revertDocumentReview` gained a
+second guard after the existing status check:
+
+```ts
+const eligibility = reviewRevertEligibility(existing.reviewedAt);
+if (!eligibility.withinWindow) {
+  return {
+    ok: false,
+    error: `Undo window has expired (${REVIEW_REVERT_WINDOW_MINUTES} minutes after review)`,
+  };
+}
+```
+
+Authoritative gate. The client-side button is cosmetic — a tab left
+open past the window or a direct action call gets refused here.
+
+**Inline button surface.** `DocumentRowActions`' row prop gained
+`reviewedAt`. New `RotateCcw` (lucide) icon button slots in between
+the verify/reject cluster (now never shown together — verify/reject
+only on `pending_review`) and the delete affordance. Visible to
+admin/staff on `verified` or `rejected` rows while
+`reviewRevertEligibility` returns `withinWindow: true`. A
+`setTimeout` inside `useEffect` flips local state at the precise
+window-expiry moment so the button disappears without needing
+`router.refresh()`. Static tooltip shows minutes remaining
+("Undo review — 12m left (window: 15m)") — deliberately not a live
+ticking countdown (re-render cost vs cosmetic value).
+
+The toast Undo button still works for the immediate-undo case.
+Both surfaces flow through the same `handleUndo` and the same
+server action — the client-side button is just a longer-window
+discovery surface.
+
+**+1 test.** `lib/documents/__tests__/review-actions.test.ts`
+extended with a window-expired refusal test (backdates `reviewedAt`
+30 minutes, asserts the action refuses with "window has expired"
+and leaves the row's status unchanged). Existing tests updated to
+seed `reviewedAt` at "now - 1 minute" per `seedFixture` invocation
+(was a static 2-day-old timestamp that would have failed the new
+window guard); the audit-snapshot assertion now references the
+fixture's dynamic `recentReviewedAt` value instead of a literal
+string.
+
 ## Key decisions
 
 **Lift only the generic `ActionResult<T>` — leave `lib/auth` and
@@ -301,6 +421,34 @@ still works, and the cron's verified-only filter excludes it).
 Chose (c). The deeper fix is `:memory:` SQLite for tests, flagged as
 a Day-12 candidate.
 
+**15 minutes for the inline-Undo window (matches iMessage edit).**
+Long enough to cover the "wait, let me re-check the GST cert" case;
+short enough that the audit log stays meaningful. Tunable via a
+single constant in `lib/documents/constants.ts`; no spread of magic
+numbers. Day-5's tender `RECALL_WINDOW_DAYS = 14` is the closest
+prior art, but document review is a faster-cadence decision and
+the toast surface already covers the immediate moment — so the
+window measures in minutes, not days.
+
+**Both toast Undo and inline Undo, not one or the other.** The
+toast button is the natural "I clicked wrong" affordance — fires
+within the action's reflexive moment. The inline button covers
+delayed reconsideration. Both flow through the same handler and
+the same server action; the inline button is a longer-window
+discovery surface, the toast is the immediate one. Cost of the
+duplication is one extra button on the row; benefit is two natural
+discovery paths for the same operation.
+
+**CORS-policy-in-repo over CORS-via-dashboard.** The bucket CORS
+config now lives at `infra/r2-cors.json` instead of just being
+configured in the Cloudflare dashboard. Three reasons:
+(a) reapplying after a bucket recreation is one command rather
+than a dashboard click-through,
+(b) the policy is reviewable in PRs (catches "let me allow * for
+testing" creeping in),
+(c) adding a prod origin before deploy is an edit-and-re-apply
+rather than a dashboard task that's easy to forget.
+
 ## Gotchas surfaced
 
 **Seed data contamination of the cron test.** Day 10's seed had no
@@ -356,6 +504,48 @@ square brackets in the path needed quoting. The actual brackets in
 the Next.js dynamic-segment path tripped up shell glob expansion.
 Quoting the path with double quotes worked.
 
+**R2 buckets have no CORS policy by default.** Day 9's upload smoke
+test in the report was server-to-server (signed PUT from a Node
+script, no preflight); first real in-browser upload tripped on the
+missing CORS. The browser surfaces this as `TypeError: Failed to
+fetch` — same shape as a DNS failure, easy to misdiagnose. Future
+fresh-bucket setups need to remember the CORS step; the now-
+committed `infra/r2-cors.json` + the deployment doc subsection
+prevent re-discovering this.
+
+**Sonner v2 `richColors` doesn't restyle the action button.** The
+CSS rule `[data-rich-colors=true][data-sonner-toast][data-type=success]`
+in sonner's stylesheet only overrides the toast container's
+background/border/text — it does NOT restyle the `[data-button]`
+selector. Combined with the shadcn template's
+`--normal-bg: var(--popover)` / `--normal-text: var(--popover-foreground)`
+overrides, the action button on a success toast renders as
+popover-fg-on-popover-bg, which is high-contrast against a normal
+toast but near-invisible against the light-green rich-colors
+success backdrop. Fix is explicit `actionButton` classNames in
+`toastOptions` — sonner respects those via its component-level
+`cn()` merge.
+
+**Static `reviewedAt` fixture timestamps break time-windowed actions.**
+The pre-Chunk-6 fixture had `reviewedAt: "2026-05-22T10:00:00.000Z"`
+on the verified/rejected documents — that's a literal date string
+that ran fine against the Day-10 tests (no time window then) but
+broke the Chunk-6 revert-window guard (the row was apparently 1
+day old, well past the 15-minute window). Fix: compute
+`reviewedAt` per-seed as `now - 60s`. Any future time-windowed
+action needs to either accept a `now`-injection for tests or seed
+its time fields dynamically.
+
+**Wrangler CORS-set wants a `rules` array.** First attempt at
+`wrangler r2 bucket cors set` with a bare JSON array (matching the
+S3 CORS shape) failed with "The CORS configuration file must
+contain a 'rules' array as expected by the R2 API". Wrangler's
+expected shape is `{ "rules": [...] }` with snake-case nested keys
+(`allowed.origins`, `allowed.methods`, `allowed.headers`,
+`exposeHeaders`, `maxAgeSeconds`). The R2 API REST docs use a
+different shape than the wrangler CLI — wrangler's is the one
+that works.
+
 ## Surfaces touched
 
 ```
@@ -405,6 +595,17 @@ lib/documents/actions.ts                                            (modified - 
 components/documents/document-row-actions.tsx                       (modified - Undo action button + 8s)
 lib/documents/__tests__/review-actions.test.ts                      (modified - 10 new tests)
 scripts/seed.ts                                                     (modified - Acme trade license status nudge)
+
+# Chunk 5 — Toast Undo visibility fix + R2 CORS (commits ba04abc, f960d14)
+components/ui/sonner.tsx                                            (modified - explicit actionButton + cancelButton classNames)
+infra/r2-cors.json                                                  (new - committed CORS policy)
+docs/09-deployment.md                                               (modified - CORS subsection under R2 setup)
+
+# Chunk 6 — Inline Undo with 15-minute window (commit 9fccf19)
+lib/documents/constants.ts                                          (new - REVIEW_REVERT_WINDOW_MINUTES + helper)
+lib/documents/actions.ts                                            (modified - server-side window guard)
+components/documents/document-row-actions.tsx                       (modified - inline Undo button + auto-hide)
+lib/documents/__tests__/review-actions.test.ts                      (modified - fixture timestamps recalibrated + 1 new test)
 ```
 
 ## Test totals
@@ -412,13 +613,15 @@ scripts/seed.ts                                                     (modified - 
 Before this session: **159 tests across 7 files**, all green (Day 10
 report's end state).
 
-After this session: **169 tests across 7 files**, all green every
-run. Net: +10 tests, all in `lib/documents/__tests__/review-actions.test.ts`
-covering the new `revertDocumentReview` action. No tests in the UI-
-only chunks (toast / filter bar / side-sheet are presentation; the
+After this session: **170 tests across 7 files**, all green every
+run. Net: +11 tests, all in `lib/documents/__tests__/review-actions.test.ts`
+— 10 covering the Chunk-4 `revertDocumentReview` action and 1 covering
+the Chunk-6 window-expired refusal path. No tests in the UI-only
+chunks (toast / filter bar / side-sheet are presentation; the
 filter URL-state round-trip wasn't tested per the briefing's "if you
-can swing it"). No tests for the seed-data expansion or the
-404/error boundaries (UI shells, not asked for).
+can swing it"). No tests for the seed-data expansion, the 404/error
+boundaries, the toast button styling, or the CORS infra (UI shells +
+infra, not asked for).
 
 ## Followups for Day 12+
 
@@ -482,6 +685,13 @@ can swing it"). No tests for the seed-data expansion or the
 - Day 10 followup #10 (document detail page UI consumer) — done as
   the side-sheet.
 - Day 10 followup #11 (filter UI in documents-section header) — done.
+- Mid-session followup: R2 bucket CORS policy (was blocking real
+  in-browser upload) — applied + committed at `infra/r2-cors.json`,
+  documented under `docs/09-deployment.md`.
+- Mid-session followup: toast Undo button visibility — fixed via
+  explicit `actionButton` classNames in `components/ui/sonner.tsx`.
+- Mid-session followup: inline-row Undo affordance with a time
+  window — shipped as Chunk 6.
 
 ## Carry-forward to Day 12
 
@@ -492,11 +702,27 @@ can swing it"). No tests for the seed-data expansion or the
   plan is now mostly delivered; what remains is the production-
   deploy hygiene (Resend domain, wrangler cron config, real R2
   fixtures if we want functional downloads in the demo).
-- **`dev` is 4 commits ahead of `origin/dev`** at session end:
-  `47a6d6d`, `3ed8f52`, `54e2591`, `e129d43`. Push when ready
-  (would need explicit approval per `<permissions>`).
-- **169 tests passing on every run.** No flakes observed across the
-  session's ~6 test runs.
+- **`dev` ended at 8 commits past Day 10's `8e51844`** (latest at the
+  time of writing). The full session list:
+  - `47a6d6d` chore(tech-debt): centralise ActionResult, env
+    placeholder warnings, doc sync
+  - `3ed8f52` feat(documents): toast notifications, filter bar,
+    detail side-sheet
+  - `54e2591` chore(phase-1): seed docs, demo creds, 404/error,
+    list-page Suspense
+  - `e129d43` feat(documents): undo verify/reject via toast action
+    button
+  - `65287ae` docs: add Day 11 progress report (initial draft)
+  - `ba04abc` fix(documents): make Undo toast button visible
+  - `f960d14` chore(infra): commit R2 CORS policy + deployment doc
+  - `9fccf19` feat(documents): inline Undo button with 15-minute
+    review window
+  Some of these may have already been pushed to `origin/dev` mid-
+  session. Run `git log origin/dev..dev --oneline` to see the
+  current outstanding set. Pushing the rest needs explicit
+  approval per `<permissions>`.
+- **170 tests passing on every run.** No flakes observed across the
+  session's ~8 test runs.
 - **Local DB is seeded** with 18 document fixtures across 5
   companies. `acme@example.local` company-role user is linked to Acme
   Construction Pvt Ltd, which has 5 documents covering the full mix
