@@ -311,12 +311,14 @@ export default async function DashboardPage() {
             icon={Briefcase}
             totalLabel={`${totalProjects} total`}
             items={buildProjectItems(projectsByStatus)}
+            donut
           />
           <StatusBreakdownCard
             title="Tenders by status"
             icon={FileText}
             totalLabel={`${totalTenders} total`}
             items={buildTenderItems(tendersByStatus)}
+            donut
           />
         </section>
       ) : (
@@ -329,6 +331,7 @@ export default async function DashboardPage() {
             icon={Briefcase}
             totalLabel={`${totalProjects} total`}
             items={buildProjectItems(projectsByStatus)}
+            donut
           />
         </section>
       )}
@@ -390,6 +393,24 @@ function emptyTendersByStatus(): Record<TenderStatus, number> {
   return { draft: 0, published: 0, closed: 0, awarded: 0 };
 }
 
+// Donut palette — pulls from the warm-ambient chart tokens defined in
+// app/globals.css. Each status maps to one of `--chart-1..5` so the
+// chart stays palette-aligned with any other recharts surface.
+const PROJECT_STATUS_COLORS: Record<ProjectStatus, string> = {
+  planning: "var(--color-chart-3)",   // Driftwood — neutral / not yet started
+  active: "var(--color-chart-1)",     // Terracotta — primary, in motion
+  on_hold: "var(--color-chart-2)",    // Walnut — paused
+  completed: "var(--color-chart-4)",  // Espresso — done
+  cancelled: "var(--color-destructive)",
+};
+
+const TENDER_STATUS_COLORS: Record<TenderStatus, string> = {
+  draft: "var(--color-chart-5)",       // Linen — quietest, unpublished
+  published: "var(--color-chart-1)",   // Terracotta — live
+  closed: "var(--color-chart-3)",      // Driftwood — wrapped
+  awarded: "var(--color-chart-4)",     // Espresso — concluded
+};
+
 function buildProjectItems(
   byStatus: Record<ProjectStatus, number>,
 ): StatusBreakdownItem[] {
@@ -398,6 +419,8 @@ function buildProjectItems(
     badge: <ProjectStatusBadge status={opt.value} iconless />,
     count: byStatus[opt.value] ?? 0,
     href: `/dashboard/projects?status=${opt.value}`,
+    color: PROJECT_STATUS_COLORS[opt.value],
+    donutLabel: opt.label,
   }));
 }
 
@@ -409,5 +432,7 @@ function buildTenderItems(
     badge: <TenderStatusBadge status={status} iconless />,
     count: byStatus[status] ?? 0,
     href: `/dashboard/tenders?status=${status}`,
+    color: TENDER_STATUS_COLORS[status],
+    donutLabel: status.charAt(0).toUpperCase() + status.slice(1),
   }));
 }
