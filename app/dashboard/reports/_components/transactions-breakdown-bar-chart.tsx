@@ -2,11 +2,10 @@
  * Client-side bar chart for the report's per-month transactions
  * breakdown over the selected period.
  *
- * Pure presentation — receives pre-shaped `{ month, totalPaise, count }[]`
- * from its Server Component parent and renders a recharts `<BarChart>`
- * with rupee-formatted Y-axis ticks and tooltip. Same styling vocabulary
- * as the dashboard's `<TransactionsTrendChart />` so the two read as
- * siblings.
+ * Rewritten on top of the shadcn chart primitives (Day 25) — same
+ * shape as the dashboard's `<TransactionsTrendChart />` so the two
+ * read as siblings. Single series ("Total"), rounded bars, palette
+ * colour pulled from `--chart-1`.
  *
  * @module app/dashboard/reports/_components/transactions-breakdown-bar-chart
  */
@@ -16,12 +15,16 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
 
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 import { formatRupeesFromPaise } from "@/lib/format/inr";
 
 // ── Props ─────────────────────────────────────────────────────────────────
@@ -33,6 +36,15 @@ export interface TransactionsBreakdownBarChartProps {
     count: number;
   }>;
 }
+
+// ── Chart config ─────────────────────────────────────────────────────────
+
+const BREAKDOWN_CONFIG = {
+  totalPaise: {
+    label: "Total",
+    color: "var(--chart-1)",
+  },
+} satisfies ChartConfig;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -61,62 +73,73 @@ export function TransactionsBreakdownBarChart({
   }));
 
   return (
-    <ResponsiveContainer width="100%" height={220}>
+    <ChartContainer
+      config={BREAKDOWN_CONFIG}
+      className="aspect-auto h-[220px] w-full"
+    >
       <BarChart
         data={points}
         margin={{ top: 8, right: 12, left: 12, bottom: 0 }}
       >
-        <CartesianGrid
-          strokeDasharray="3 3"
-          stroke="var(--color-border)"
-          vertical={false}
-        />
+        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+
         <XAxis
           dataKey="label"
-          tick={{ fontSize: 11, fill: "var(--color-muted-foreground)" }}
           tickLine={false}
-          axisLine={{ stroke: "var(--color-border)" }}
+          axisLine={false}
+          tickMargin={8}
           minTickGap={16}
         />
         <YAxis
           dataKey="totalPaise"
-          tick={{ fontSize: 11, fill: "var(--color-muted-foreground)" }}
           tickLine={false}
-          axisLine={{ stroke: "var(--color-border)" }}
+          axisLine={false}
+          tickMargin={8}
           tickFormatter={formatRupeesAxis}
           width={80}
         />
-        <Tooltip
-          cursor={{ fill: "var(--color-muted)", opacity: 0.3 }}
-          contentStyle={{
-            background: "var(--color-card)",
-            border: "1px solid var(--color-border)",
-            borderRadius: "6px",
-            fontSize: "12px",
-          }}
-          labelStyle={{ color: "var(--color-foreground)", fontWeight: 600 }}
-          formatter={(value, _name, item) => {
-            const paise = Number(value) || 0;
-            const point = (item?.payload ?? {}) as {
-              count?: number;
-              totalPaise?: number;
-            };
-            const count = point.count ?? 0;
-            return [
-              `${formatRupeesFromPaise(paise)} · ${count} ${
-                count === 1 ? "entry" : "entries"
-              }`,
-              "Total",
-            ];
-          }}
+
+        <ChartTooltip
+          cursor={{ fill: "var(--color-muted)", opacity: 0.4 }}
+          content={
+            <ChartTooltipContent
+              labelKey="label"
+              formatter={(value, _name, item) => {
+                const paise = Number(value) || 0;
+                const point = (item?.payload ?? {}) as {
+                  count?: number;
+                };
+                const count = point.count ?? 0;
+                return (
+                  <div className="flex w-full items-center justify-between gap-3">
+                    <span className="flex items-center gap-2 text-muted-foreground">
+                      <span
+                        className="size-2.5 shrink-0 rounded-[2px]"
+                        style={{ background: "var(--color-totalPaise)" }}
+                        aria-hidden
+                      />
+                      Total
+                    </span>
+                    <span className="font-mono font-medium tabular-nums text-foreground">
+                      {formatRupeesFromPaise(paise)}
+                      <span className="ml-1 text-muted-foreground">
+                        · {count} {count === 1 ? "entry" : "entries"}
+                      </span>
+                    </span>
+                  </div>
+                );
+              }}
+            />
+          }
         />
+
         <Bar
           dataKey="totalPaise"
-          fill="var(--color-primary)"
-          radius={[4, 4, 0, 0]}
+          fill="var(--color-totalPaise)"
+          radius={[6, 6, 0, 0]}
           isAnimationActive={false}
         />
       </BarChart>
-    </ResponsiveContainer>
+    </ChartContainer>
   );
 }

@@ -1,18 +1,16 @@
 /**
  * Client-side chart for the 12-month transactions trend.
  *
- * Pure presentation — receives the pre-computed `{ month, totalPaise,
- * count }[]` payload from its Server Component parent and renders a
- * recharts `<AreaChart>` with rupee-formatted Y-axis ticks and tooltip.
+ * Rewritten on top of the shadcn chart primitives (Day 25). The
+ * `<ChartContainer>` wrapper handles theming + the responsive
+ * envelope; `<ChartTooltipContent>` ships the card-shaped tooltip
+ * that ties back to the chart config's labels and colours via a
+ * dot indicator. Net effect: smaller component file, palette-cohesive
+ * tooltip, and a chart that picks up the warm-ambient theme tokens
+ * automatically.
  *
- * Lives in its own file (not inline in the card) because recharts
- * requires the DOM, which means the wrapping component has to carry
- * the `"use client"` directive. Splitting keeps the Server Component
- * card free of that constraint.
- *
- * The chart is intentionally minimal — no legend (single series), no
- * brush, no zoom. Phase-1 dashboards favour at-a-glance over
- * interactive deep-dives; the reports page is where the latter live.
+ * Single data series ("Total") drawn as a smooth area with a soft
+ * gradient fill below the curve.
  *
  * @module app/dashboard/_components/transactions-trend-chart
  */
@@ -22,12 +20,16 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
 
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 import { formatRupeesFromPaise } from "@/lib/format/inr";
 
 // ── Props ─────────────────────────────────────────────────────────────────
@@ -45,15 +47,25 @@ export interface TransactionsTrendChartProps {
   }>;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// ── Chart config ─────────────────────────────────────────────────────────
 
 /**
- * Format a YYYY-MM key as a compact "MMM YY" label for the X-axis
- * (e.g. "May 26"). Locale-fixed to en-GB so the abbreviation is
- * consistent across hosts; deliberately not Indian-locale because the
- * Indian months in en-IN match en-GB anyway and en-GB is more widely
- * present in the Intl polyfills.
+ * One entry per data series. The key (`totalPaise`) MUST match the
+ * `dataKey` on the chart's `<Area />` element — the chart container
+ * uses the key to inject CSS variables (var(--color-totalPaise)) that
+ * the chart elements then reference. Colour pulls from the warm-
+ * ambient palette's `--chart-1` token so the trend reads as the
+ * "primary metric" in the same vocabulary as the donut.
  */
+const TREND_CONFIG = {
+  totalPaise: {
+    label: "Total",
+    color: "var(--chart-1)",
+  },
+} satisfies ChartConfig;
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
 function formatMonthLabel(yearMonth: string): string {
   const [y, m] = yearMonth.split("-").map(Number);
   const d = new Date(Date.UTC(y, m - 1, 1));
@@ -65,107 +77,115 @@ function formatMonthLabel(yearMonth: string): string {
 }
 
 /**
- * Compact rupee formatter for Y-axis ticks. Reuses the en-IN grouping
- * via the existing `formatRupeesFromPaise` helper but strips the
- * fractional paise — at axis-tick density "₹ 1,00,00,000" reads
- * better than "₹ 1,00,00,000.00" and the precision isn't useful at
- * this zoom level.
+ * Compact rupee formatter for Y-axis ticks. Drops the fractional paise
+ * — at axis-tick density "₹ 1,00,00,000" reads better than
+ * "₹ 1,00,00,000.00" and the precision isn't useful at this zoom level.
  */
 function formatRupeesAxis(paise: number): string {
-  // formatRupeesFromPaise returns "₹ 1,00,00,000.00" — drop the trailing
-  // ".00" / ".XY" for the axis ticks. The tooltip keeps the full value.
   return formatRupeesFromPaise(paise).replace(/\.\d{2}$/, "");
 }
 
 // ── Component ────────────────────────────────────────────────────────────
 
 export function TransactionsTrendChart({ data }: TransactionsTrendChartProps) {
-  // Pre-shape: recharts wants a writable array. Also pre-compute the
-  // display label so the tooltip and the X-axis share one source.
   const points = data.map((d) => ({
     ...d,
     label: formatMonthLabel(d.month),
   }));
 
   return (
-    <ResponsiveContainer width="100%" height={240}>
+    <ChartContainer
+      config={TREND_CONFIG}
+      className="aspect-auto h-[240px] w-full"
+    >
       <AreaChart
         data={points}
         margin={{ top: 8, right: 12, left: 12, bottom: 0 }}
       >
         <defs>
-          {/* Use the warm-ambient primary token as the fill, fading
-              to transparent at the bottom. The gradient id is local
-              to this component instance — collisions are theoretically
-              possible if recharts ever renders two of these on one
-              page, but at Phase-1 scale there's only ever one. */}
+          {/* Soft gradient fill below the curve. Both stops use the
+              chart-config CSS var so a future palette tweak only needs
+              to touch TREND_CONFIG. */}
           <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
             <stop
               offset="0%"
-              stopColor="var(--color-primary)"
-              stopOpacity={0.35}
+              stopColor="var(--color-totalPaise)"
+              stopOpacity={0.4}
             />
             <stop
               offset="100%"
-              stopColor="var(--color-primary)"
-              stopOpacity={0}
+              stopColor="var(--color-totalPaise)"
+              stopOpacity={0.02}
             />
           </linearGradient>
         </defs>
 
-        <CartesianGrid
-          strokeDasharray="3 3"
-          stroke="var(--color-border)"
-          vertical={false}
-        />
+        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+
         <XAxis
           dataKey="label"
-          tick={{ fontSize: 11, fill: "var(--color-muted-foreground)" }}
           tickLine={false}
-          axisLine={{ stroke: "var(--color-border)" }}
+          axisLine={false}
+          tickMargin={8}
           minTickGap={16}
         />
         <YAxis
           dataKey="totalPaise"
-          tick={{ fontSize: 11, fill: "var(--color-muted-foreground)" }}
           tickLine={false}
-          axisLine={{ stroke: "var(--color-border)" }}
+          axisLine={false}
+          tickMargin={8}
           tickFormatter={formatRupeesAxis}
           width={80}
         />
-        <Tooltip
-          cursor={{ stroke: "var(--color-border)", strokeWidth: 1 }}
-          contentStyle={{
-            background: "var(--color-card)",
-            border: "1px solid var(--color-border)",
-            borderRadius: "6px",
-            fontSize: "12px",
-          }}
-          labelStyle={{ color: "var(--color-foreground)", fontWeight: 600 }}
-          formatter={(value, _name, item) => {
-            const paise = Number(value) || 0;
-            const point = (item?.payload ?? {}) as {
-              count?: number;
-              totalPaise?: number;
-            };
-            const count = point.count ?? 0;
-            return [
-              `${formatRupeesFromPaise(paise)} · ${count} ${
-                count === 1 ? "entry" : "entries"
-              }`,
-              "Total",
-            ];
-          }}
+
+        <ChartTooltip
+          cursor={{ strokeWidth: 1 }}
+          content={
+            <ChartTooltipContent
+              labelKey="label"
+              formatter={(value, _name, item) => {
+                const paise = Number(value) || 0;
+                const point = (item?.payload ?? {}) as {
+                  count?: number;
+                };
+                const count = point.count ?? 0;
+                return (
+                  <div className="flex w-full items-center justify-between gap-3">
+                    <span className="flex items-center gap-2 text-muted-foreground">
+                      <span
+                        className="size-2.5 shrink-0 rounded-[2px]"
+                        style={{ background: "var(--color-totalPaise)" }}
+                        aria-hidden
+                      />
+                      Total
+                    </span>
+                    <span className="font-mono font-medium tabular-nums text-foreground">
+                      {formatRupeesFromPaise(paise)}
+                      <span className="ml-1 text-muted-foreground">
+                        · {count} {count === 1 ? "entry" : "entries"}
+                      </span>
+                    </span>
+                  </div>
+                );
+              }}
+            />
+          }
         />
+
         <Area
           type="monotone"
           dataKey="totalPaise"
-          stroke="var(--color-primary)"
-          strokeWidth={2}
+          stroke="var(--color-totalPaise)"
+          strokeWidth={2.5}
           fill="url(#trendFill)"
+          activeDot={{
+            r: 5,
+            strokeWidth: 2,
+            stroke: "var(--color-card)",
+          }}
           isAnimationActive={false}
         />
       </AreaChart>
-    </ResponsiveContainer>
+    </ChartContainer>
   );
 }
