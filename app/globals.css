@@ -2,7 +2,12 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-@custom-variant dark (&:is(.dark *));
+/* Tailwind `dark:` variant — fires when an ancestor carries `.dark` OR a
+   data-theme attribute that we've classified as dark in lib/themes.ts.
+   This lets shadcn primitives' pre-baked `dark:` utility classes (Switch,
+   Tabs, Input, etc.) render correctly under both dark palettes without us
+   having to manually mirror the `.dark` class onto <html>. */
+@custom-variant dark (&:is(.dark *, [data-theme="midnight-espresso"] *, [data-theme="ocean-depth"] *));
 
 /*
   Theme bindings — wire CSS custom properties through Tailwind v4's
@@ -55,108 +60,290 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* ───────────────────────────────────────────────────────────────────────────
+   THEME SYSTEM (Day 25)
+
+   The app supports 6 user-selectable palettes, persisted via `next-themes`
+   onto a `data-theme` attribute on <html>. Each palette is a self-contained
+   set of CSS variables scoped to a matching `[data-theme="<id>"]` selector.
+
+   Themes:
+     [data-theme="warm-ambient"]       — default; espresso / parchment / terracotta
+     [data-theme="midnight-espresso"]  — dark variant of warm-ambient
+     [data-theme="slate-pro"]          — cool slate + blue accent (Vercel/Linear feel)
+     [data-theme="forest-calm"]        — sage cream + emerald accent
+     [data-theme="ocean-depth"]        — dark navy + cyan accent
+     [data-theme="sunset-glow"]        — soft peach + coral accent
+
+   :root carries the radius + non-color tokens shared across themes, plus
+   the warm-ambient defaults so an unthemed render (SSR before next-themes
+   hydration, edge fallback, etc.) still looks correct.
+
+   The two dark palettes (midnight-espresso, ocean-depth) also activate
+   shadcn's `dark:` Tailwind variant via the `@custom-variant dark` rule
+   above — no extra class mirroring required.
+
+   Adding a new palette:
+     1. Define `[data-theme="<id>"]` with the same 22 variables.
+     2. Add an entry to lib/themes.ts.
+     3. If the palette is dark, add its id to the `@custom-variant dark`
+        selector list above so the shadcn `dark:` utilities activate.
+
+   The public marketing site (consultway.info) uses its own navy + red
+   palette per Consultway_Website_Requirements.pdf — none of this applies
+   there. This file is internal-portal only.
+   ─────────────────────────────────────────────────────────────────────── */
+
 :root {
-  /* ─────────────────────────────────────────────────────────────────────────
-     Consultway Ops — Warm Ambient palette (internal ops portal)
-     Source of truth: docs/design/palette/warm-ambient-palette.pdf
-
-     Palette anchors (sRGB / hex → oklch):
-       Espresso     #2C1F0E  → oklch(0.235 0.024 60)   headings, body text, sidebar bg
-       Walnut       #7A6652  → oklch(0.494 0.029 60)   body copy, nav links
-       Driftwood    #A89880  → oklch(0.667 0.027 65)   sub-labels, placeholders
-       Terracotta   #B85C38  → oklch(0.578 0.131 38)   CTAs, active nav, accent bars
-       Blush tint   #FAE8DC  → oklch(0.939 0.025 50)   badge bg, tag pills, icon containers
-       Parchment    #FDFAF6  → oklch(0.987 0.005 80)   page background
-       Cream        #FDF7EF  → oklch(0.979 0.011 80)   highlights, hero surfaces
-       Sand         #F5EFE6  → oklch(0.952 0.015 80)   alternating sections
-       Linen        #EDE5D8  → oklch(0.917 0.017 75)   dividers, borders, hover states
-       White        #FFFFFF  → oklch(1     0    0)     card bg, form inputs
-
-     Public marketing site (consultway.info) intentionally uses a different
-     palette (navy + red, per Consultway_Website_Requirements.pdf). That's
-     by design — marketing aesthetics and ops-portal aesthetics serve
-     different goals.
-     ───────────────────────────────────────────────────────────────────── */
-
-  /* Surfaces — light and editorial. Page sits on Parchment, cards on white. */
-  --background: oklch(0.987 0.005 80);              /* Parchment #FDFAF6 */
-  --foreground: oklch(0.235 0.024 60);              /* Espresso #2C1F0E — primary text on light bg */
-  --card: oklch(1 0 0);                             /* White — card bg */
-  --card-foreground: oklch(0.235 0.024 60);         /* Espresso */
-  --popover: oklch(1 0 0);                          /* White */
-  --popover-foreground: oklch(0.235 0.024 60);      /* Espresso */
-
-  /* Primary — Espresso. Used as default solid-button bg, dense surfaces. */
-  --primary: oklch(0.235 0.024 60);                 /* Espresso */
-  --primary-foreground: oklch(0.987 0.005 80);      /* Parchment */
-
-  /* Secondary — Walnut. Slightly softer than primary, used for hover and
-     subtler emphases. */
-  --secondary: oklch(0.494 0.029 60);               /* Walnut #7A6652 */
-  --secondary-foreground: oklch(0.987 0.005 80);    /* Parchment */
-
-  /* Muted — Sand backgrounds and Walnut secondary text. The palette guide
-     says Sand goes on alternating sections; in app UI that maps to muted
-     surfaces (table header rows, inactive panels). Driftwood is the
-     placeholder/sub-label color — assigned to muted-foreground. */
-  --muted: oklch(0.952 0.015 80);                   /* Sand #F5EFE6 */
-  --muted-foreground: oklch(0.667 0.027 65);        /* Driftwood #A89880 */
-
-  /* Accent — Terracotta. Reserved for CTAs, active states, focus rings,
-     step numbers, accent bars. Use sparingly per the palette doc. */
-  --accent: oklch(0.578 0.131 38);                  /* Terracotta #B85C38 */
-  --accent-foreground: oklch(1 0 0);                /* White on terracotta */
-
-  /* Destructive — a deeper, redder shade of terracotta so destructive
-     actions don't look identical to primary CTAs. Same hue family,
-     pulled toward red and darker so it reads "danger" without breaking
-     palette discipline. */
-  --destructive: oklch(0.510 0.165 28);             /* deep terracotta-red */
-
-  /* Borders, inputs, focus rings — Linen for borders, terracotta for focus
-     so the brand colour appears on every active interaction. */
-  --border: oklch(0.917 0.017 75);                  /* Linen #EDE5D8 */
-  --input: oklch(0.917 0.017 75);                   /* Linen */
-  --ring: oklch(0.578 0.131 38);                    /* Terracotta focus ring */
-
-  /* Chart palette — five colors that read as a coherent set on Parchment.
-     Built around the brand anchors so charts feel native to the app. */
-  --chart-1: oklch(0.578 0.131 38);                 /* Terracotta — primary metric */
-  --chart-2: oklch(0.494 0.029 60);                 /* Walnut */
-  --chart-3: oklch(0.667 0.027 65);                 /* Driftwood */
-  --chart-4: oklch(0.235 0.024 60);                 /* Espresso */
-  --chart-5: oklch(0.917 0.017 75);                 /* Linen (lightest, often used for "rest" / inactive slice) */
-
   --radius: 0.5rem;
-
-  /* Sidebar — Espresso (dark warm brown, not navy). The figma uses dark
-     navy; we use Espresso so the sidebar stays in palette. Terracotta is
-     the active-item highlight, matching how the public site uses
-     terracotta for active nav. */
-  --sidebar: oklch(0.235 0.024 60);                 /* Espresso bg */
-  --sidebar-foreground: oklch(0.987 0.005 80);      /* Parchment text */
-  --sidebar-primary: oklch(0.578 0.131 38);         /* Terracotta — active item */
-  --sidebar-primary-foreground: oklch(1 0 0);       /* White on terracotta */
-  --sidebar-accent: oklch(0.310 0.027 60);          /* Slightly-lifted espresso — hover state */
-  --sidebar-accent-foreground: oklch(0.987 0.005 80);
-  --sidebar-border: oklch(0.310 0.027 60);          /* Same lift as hover — invisible-but-present dividers */
-  --sidebar-ring: oklch(0.578 0.131 38);            /* Terracotta focus ring */
 }
 
-/*
-  Dark mode — intentionally not yet defined for production use.
+/* ── Warm Ambient (default) ──────────────────────────────────────────────
+   Source of truth: docs/design/palette/warm-ambient-palette.pdf
+   Anchors: Espresso #2C1F0E, Walnut #7A6652, Driftwood #A89880,
+            Terracotta #B85C38, Parchment #FDFAF6, Sand #F5EFE6,
+            Linen #EDE5D8.                                                */
+:root,
+[data-theme="warm-ambient"] {
+  --background: oklch(0.987 0.005 80);
+  --foreground: oklch(0.235 0.024 60);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.235 0.024 60);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.235 0.024 60);
+  --primary: oklch(0.235 0.024 60);
+  --primary-foreground: oklch(0.987 0.005 80);
+  --secondary: oklch(0.494 0.029 60);
+  --secondary-foreground: oklch(0.987 0.005 80);
+  --muted: oklch(0.952 0.015 80);
+  --muted-foreground: oklch(0.667 0.027 65);
+  --accent: oklch(0.578 0.131 38);
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.510 0.165 28);
+  --border: oklch(0.917 0.017 75);
+  --input: oklch(0.917 0.017 75);
+  --ring: oklch(0.578 0.131 38);
+  --chart-1: oklch(0.578 0.131 38);
+  --chart-2: oklch(0.494 0.029 60);
+  --chart-3: oklch(0.667 0.027 65);
+  --chart-4: oklch(0.235 0.024 60);
+  --chart-5: oklch(0.917 0.017 75);
+  --sidebar: oklch(0.235 0.024 60);
+  --sidebar-foreground: oklch(0.987 0.005 80);
+  --sidebar-primary: oklch(0.578 0.131 38);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.310 0.027 60);
+  --sidebar-accent-foreground: oklch(0.987 0.005 80);
+  --sidebar-border: oklch(0.310 0.027 60);
+  --sidebar-ring: oklch(0.578 0.131 38);
+}
 
-  Day 1 set up a navy-based dark mode that no longer matches the Warm
-  Ambient palette. Rather than half-build a dark variant now and ship
-  something that mixes palettes, we keep the dark block empty for now.
-  When dark mode comes back as a real requirement, we'll design it
-  deliberately (probably an inverted-espresso surface with terracotta
-  accents preserved, NOT a navy/grey shadcn default).
+/* ── Midnight Espresso (dark variant of warm-ambient) ────────────────────
+   Inverts the lightness scale while preserving the terracotta accent.   */
+[data-theme="midnight-espresso"] {
+  --background: oklch(0.180 0.018 60);              /* deep espresso */
+  --foreground: oklch(0.952 0.011 80);              /* parchment text */
+  --card: oklch(0.225 0.020 60);                    /* lifted espresso */
+  --card-foreground: oklch(0.952 0.011 80);
+  --popover: oklch(0.225 0.020 60);
+  --popover-foreground: oklch(0.952 0.011 80);
+  --primary: oklch(0.952 0.011 80);                 /* parchment as primary on dark */
+  --primary-foreground: oklch(0.180 0.018 60);
+  --secondary: oklch(0.350 0.025 60);
+  --secondary-foreground: oklch(0.952 0.011 80);
+  --muted: oklch(0.260 0.020 60);
+  --muted-foreground: oklch(0.700 0.025 65);
+  --accent: oklch(0.640 0.145 38);                  /* brightened terracotta for contrast */
+  --accent-foreground: oklch(0.180 0.018 60);
+  --destructive: oklch(0.570 0.175 28);
+  --border: oklch(0.310 0.024 60);
+  --input: oklch(0.310 0.024 60);
+  --ring: oklch(0.640 0.145 38);
+  --chart-1: oklch(0.640 0.145 38);
+  --chart-2: oklch(0.700 0.025 65);
+  --chart-3: oklch(0.494 0.029 60);
+  --chart-4: oklch(0.952 0.011 80);
+  --chart-5: oklch(0.350 0.025 60);
+  --sidebar: oklch(0.150 0.016 60);                 /* even darker than bg for depth */
+  --sidebar-foreground: oklch(0.952 0.011 80);
+  --sidebar-primary: oklch(0.640 0.145 38);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.245 0.022 60);
+  --sidebar-accent-foreground: oklch(0.952 0.011 80);
+  --sidebar-border: oklch(0.245 0.022 60);
+  --sidebar-ring: oklch(0.640 0.145 38);
+}
 
-  Tailwind only consults `.dark` when the class is present on an
-  ancestor, so omitting the block has zero effect today — the app is
-  light-mode-only and renders fine.
-*/
+/* ── Slate Pro (light, cool neutral + blue accent) ───────────────────────
+   Vercel/Linear-style cool slate. Crisp and information-dense.           */
+[data-theme="slate-pro"] {
+  --background: oklch(0.992 0.002 250);
+  --foreground: oklch(0.205 0.020 250);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.205 0.020 250);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.205 0.020 250);
+  --primary: oklch(0.205 0.020 250);
+  --primary-foreground: oklch(0.985 0.005 250);
+  --secondary: oklch(0.455 0.025 250);
+  --secondary-foreground: oklch(0.985 0.005 250);
+  --muted: oklch(0.965 0.008 250);
+  --muted-foreground: oklch(0.555 0.020 250);
+  --accent: oklch(0.555 0.180 260);                 /* blue-600-ish */
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.560 0.205 25);
+  --border: oklch(0.925 0.008 250);
+  --input: oklch(0.925 0.008 250);
+  --ring: oklch(0.555 0.180 260);
+  --chart-1: oklch(0.555 0.180 260);
+  --chart-2: oklch(0.455 0.025 250);
+  --chart-3: oklch(0.660 0.150 200);
+  --chart-4: oklch(0.205 0.020 250);
+  --chart-5: oklch(0.925 0.008 250);
+  --sidebar: oklch(0.205 0.020 250);
+  --sidebar-foreground: oklch(0.985 0.005 250);
+  --sidebar-primary: oklch(0.555 0.180 260);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.285 0.022 250);
+  --sidebar-accent-foreground: oklch(0.985 0.005 250);
+  --sidebar-border: oklch(0.285 0.022 250);
+  --sidebar-ring: oklch(0.555 0.180 260);
+}
+
+/* ── Forest Calm (light, sage cream + emerald accent) ────────────────────
+   Quiet, organic palette. Cream surfaces, deep forest text.              */
+[data-theme="forest-calm"] {
+  --background: oklch(0.982 0.011 130);             /* sage cream */
+  --foreground: oklch(0.245 0.030 150);             /* deep forest */
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.245 0.030 150);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.245 0.030 150);
+  --primary: oklch(0.245 0.030 150);
+  --primary-foreground: oklch(0.982 0.011 130);
+  --secondary: oklch(0.470 0.040 145);
+  --secondary-foreground: oklch(0.982 0.011 130);
+  --muted: oklch(0.945 0.020 130);
+  --muted-foreground: oklch(0.540 0.035 145);
+  --accent: oklch(0.595 0.155 155);                 /* emerald */
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.530 0.175 28);
+  --border: oklch(0.905 0.022 130);
+  --input: oklch(0.905 0.022 130);
+  --ring: oklch(0.595 0.155 155);
+  --chart-1: oklch(0.595 0.155 155);
+  --chart-2: oklch(0.470 0.040 145);
+  --chart-3: oklch(0.680 0.110 110);
+  --chart-4: oklch(0.245 0.030 150);
+  --chart-5: oklch(0.905 0.022 130);
+  --sidebar: oklch(0.245 0.030 150);
+  --sidebar-foreground: oklch(0.982 0.011 130);
+  --sidebar-primary: oklch(0.595 0.155 155);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.315 0.034 150);
+  --sidebar-accent-foreground: oklch(0.982 0.011 130);
+  --sidebar-border: oklch(0.315 0.034 150);
+  --sidebar-ring: oklch(0.595 0.155 155);
+}
+
+/* ── Ocean Depth (dark, deep navy + cyan accent) ─────────────────────────
+   Dark-mode navy with a bright cyan accent.                              */
+[data-theme="ocean-depth"] {
+  --background: oklch(0.190 0.045 245);             /* deep navy */
+  --foreground: oklch(0.965 0.018 230);
+  --card: oklch(0.235 0.050 245);
+  --card-foreground: oklch(0.965 0.018 230);
+  --popover: oklch(0.235 0.050 245);
+  --popover-foreground: oklch(0.965 0.018 230);
+  --primary: oklch(0.965 0.018 230);
+  --primary-foreground: oklch(0.190 0.045 245);
+  --secondary: oklch(0.395 0.060 240);
+  --secondary-foreground: oklch(0.965 0.018 230);
+  --muted: oklch(0.275 0.045 245);
+  --muted-foreground: oklch(0.720 0.040 230);
+  --accent: oklch(0.770 0.135 215);                 /* bright cyan */
+  --accent-foreground: oklch(0.190 0.045 245);
+  --destructive: oklch(0.620 0.190 22);
+  --border: oklch(0.320 0.055 245);
+  --input: oklch(0.320 0.055 245);
+  --ring: oklch(0.770 0.135 215);
+  --chart-1: oklch(0.770 0.135 215);
+  --chart-2: oklch(0.620 0.130 195);
+  --chart-3: oklch(0.520 0.110 270);
+  --chart-4: oklch(0.965 0.018 230);
+  --chart-5: oklch(0.395 0.060 240);
+  --sidebar: oklch(0.150 0.040 245);
+  --sidebar-foreground: oklch(0.965 0.018 230);
+  --sidebar-primary: oklch(0.770 0.135 215);
+  --sidebar-primary-foreground: oklch(0.190 0.045 245);
+  --sidebar-accent: oklch(0.260 0.050 245);
+  --sidebar-accent-foreground: oklch(0.965 0.018 230);
+  --sidebar-border: oklch(0.260 0.050 245);
+  --sidebar-ring: oklch(0.770 0.135 215);
+}
+
+/* ── Sunset Glow (light, soft peach + coral accent) ──────────────────────
+   Warm and inviting. Soft pinkish backgrounds, coral CTAs.               */
+[data-theme="sunset-glow"] {
+  --background: oklch(0.978 0.018 40);              /* soft peach */
+  --foreground: oklch(0.265 0.045 15);              /* dark plum-brown */
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.265 0.045 15);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.265 0.045 15);
+  --primary: oklch(0.265 0.045 15);
+  --primary-foreground: oklch(0.978 0.018 40);
+  --secondary: oklch(0.495 0.055 25);
+  --secondary-foreground: oklch(0.978 0.018 40);
+  --muted: oklch(0.948 0.028 40);
+  --muted-foreground: oklch(0.585 0.045 25);
+  --accent: oklch(0.660 0.170 28);                  /* coral */
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.520 0.190 22);
+  --border: oklch(0.910 0.030 40);
+  --input: oklch(0.910 0.030 40);
+  --ring: oklch(0.660 0.170 28);
+  --chart-1: oklch(0.660 0.170 28);
+  --chart-2: oklch(0.730 0.145 50);
+  --chart-3: oklch(0.585 0.045 25);
+  --chart-4: oklch(0.265 0.045 15);
+  --chart-5: oklch(0.910 0.030 40);
+  --sidebar: oklch(0.265 0.045 15);
+  --sidebar-foreground: oklch(0.978 0.018 40);
+  --sidebar-primary: oklch(0.660 0.170 28);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.345 0.045 18);
+  --sidebar-accent-foreground: oklch(0.978 0.018 40);
+  --sidebar-border: oklch(0.345 0.045 18);
+  --sidebar-ring: oklch(0.660 0.170 28);
+}
+
+/* Smooth out the visual jolt when the user switches themes. Only the
+   bg + text + border + shadows transition — leaves layout-y properties
+   alone so resizes / scroll don't pick up an unwanted ease. */
+html {
+  transition:
+    background-color 240ms ease,
+    color 240ms ease;
+}
+html *,
+html *::before,
+html *::after {
+  transition:
+    background-color 240ms ease,
+    border-color 240ms ease,
+    color 240ms ease,
+    fill 240ms ease,
+    stroke 240ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  html,
+  html *,
+  html *::before,
+  html *::after {
+    transition: none;
+  }
+}
 
 @layer base {
   * {

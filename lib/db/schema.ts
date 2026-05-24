@@ -1693,3 +1693,114 @@ export type NewTransaction = typeof transactions.$inferInsert;
 
 /** Inferred select type — what a row looks like when read from the DB. */
 export type Transaction = typeof transactions.$inferSelect;
+
+// -- user_preferences (Day 25) ----------------------------------------------
+/**
+ * Per-user UI + notification preferences for the Settings page.
+ *
+ * One row per user, keyed by `userId` (also the primary key). Created on
+ * demand the first time the user saves something on /dashboard/settings —
+ * lazy creation keeps the table light during a Day-1 user surge and
+ * means missing rows are never an error case (the action layer just
+ * upserts).
+ *
+ * Why a dedicated table rather than columns on `users`?
+ *   - These knobs are display-layer only — adding 8+ TEXT/INTEGER columns
+ *     to `users` would bloat every read of a row whose primary purpose is
+ *     auth / RBAC.
+ *   - Future preferences (locale, default landing page, table density
+ *     per module) can land here without another schema migration on the
+ *     hot path.
+ *
+ * Theme id is stored as TEXT and validated app-side against the catalog
+ * in `lib/themes.ts` — SQLite has no enums, and the catalog can grow
+ * without a column constraint change.
+ *
+ * Cascade: ON DELETE CASCADE on `userId`. When a user is removed, their
+ * preferences are noise — keep them around and we'd leak rows forever.
+ */
+export const userPreferences = sqliteTable(
+  "user_preferences",
+  {
+    /**
+     * FK + primary key. One preferences row per user, by construction.
+     * Avoids an extra surrogate id and gives us upsert-by-user-id for free.
+     */
+    userId: text("user_id")
+      .primaryKey()
+      .references(() => users.id, {
+        onDelete: "cascade",
+        onUpdate: "no action",
+      }),
+
+    // ── Appearance ────────────────────────────────────────────────────
+    /**
+     * Selected palette. One of the ids in `lib/themes.ts::THEME_IDS`.
+     * Default mirrors `DEFAULT_THEME` ("warm-ambient"). Validated app-side
+     * — SQLite has no enums, and we don't want a CHECK constraint
+     * fighting every palette addition.
+     */
+    themeId: text("theme_id").notNull().default("warm-ambient"),
+
+    /** UI density — "comfortable" or "compact". */
+    density: text("density")
+      .notNull()
+      .default("comfortable")
+      .$type<"comfortable" | "compact">(),
+
+    /** Reduced-motion override. Independent of the OS-level setting. */
+    reducedMotion: integer("reduced_motion", { mode: "boolean" })
+      .notNull()
+      .default(false),
+
+    // ── Notifications — email digests ─────────────────────────────────
+    /** Weekly Monday digest. Default on. */
+    weeklyDigest: integer("weekly_digest", { mode: "boolean" })
+      .notNull()
+      .default(true),
+
+    /** First-of-month report. Default off (opt-in). */
+    monthlyReport: integer("monthly_report", { mode: "boolean" })
+      .notNull()
+      .default(false),
+
+    // ── Notifications — real-time alerts ──────────────────────────────
+    /** 30/14/7-day document-expiry heads-up. Default on. */
+    documentExpiry: integer("document_expiry", { mode: "boolean" })
+      .notNull()
+      .default(true),
+
+    /** New-tender alerts matching the user's eligibility. Default on. */
+    tenderAlerts: integer("tender_alerts", { mode: "boolean" })
+      .notNull()
+      .default(true),
+
+    /** Assigned-to-X notifications. Default on. */
+    assignmentAlerts: integer("assignment_alerts", { mode: "boolean" })
+      .notNull()
+      .default(true),
+
+    /** Critical incidents (failed payments, compliance flags). Default on. */
+    incidentAlerts: integer("incident_alerts", { mode: "boolean" })
+      .notNull()
+      .default(true),
+
+    /** ISO-8601 UTC. Set by SQLite default on insert. */
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+
+    /** ISO-8601 UTC. Updated app-side via Drizzle $onUpdate hook. */
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(datetime('now'))`)
+      .$onUpdate(() => new Date().toISOString()),
+  },
+  // No secondary indexes — userId is the PK, every read hits it.
+);
+
+/** Inferred insert type — use for Zod parsing / insert validation. */
+export type NewUserPreferences = typeof userPreferences.$inferInsert;
+
+/** Inferred select type — what a row looks like when read from the DB. */
+export type UserPreferences = typeof userPreferences.$inferSelect;
