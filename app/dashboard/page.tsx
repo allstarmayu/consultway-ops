@@ -62,6 +62,10 @@ import {
 import { RecentActivityCard } from "./_components/recent-activity-card";
 import { MonthTransactionsSummaryCard } from "./_components/month-transactions-summary-card";
 import { TransactionsTrendCard } from "./_components/transactions-trend-card";
+import {
+  resolveTrendMonths,
+  resolveTrendType,
+} from "./_components/trend-filters";
 import { ActivityFeedLoading } from "./_components/activity-feed-loading";
 
 export const metadata: Metadata = {
@@ -76,9 +80,33 @@ const TENDER_STATUSES: TenderStatus[] = [
   "awarded",
 ];
 
-export default async function DashboardPage() {
+interface DashboardPageProps {
+  /**
+   * Next.js App Router 15+ — `searchParams` is a Promise. We read
+   * `?trendMonths` and `?trendType` here to drive the
+   * `TransactionsTrendCard` filters (URL-driven so the page stays a
+   * Server Component).
+   */
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+function singleParam(
+  v: string | string[] | undefined,
+): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: DashboardPageProps) {
   const session = await readSession();
   if (!session) redirect("/login");
+
+  // Resolve the trend-chart filter pair from the URL. Both default to
+  // sensible values when absent / bogus (see resolveTrend* helpers).
+  const params = await searchParams;
+  const trendMonths = resolveTrendMonths(singleParam(params.trendMonths));
+  const trendType = resolveTrendType(singleParam(params.trendType));
 
   const isAdmin = session.role === "admin";
   const isCompany = session.role === "company";
@@ -346,7 +374,7 @@ export default async function DashboardPage() {
           aria-label="Transactions trend"
           className="mb-6 sm:mb-8"
         >
-          <TransactionsTrendCard months={12} />
+          <TransactionsTrendCard months={trendMonths} type={trendType} />
         </section>
       )}
 

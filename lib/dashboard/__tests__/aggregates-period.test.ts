@@ -764,4 +764,61 @@ describe("getMonthlyTransactionsTrend", () => {
     if (result.ok) return;
     expect(result.error).toMatch(/administrator/i);
   });
+
+  it("defaults transactionType to 'all' and echoes it on the result", async () => {
+    loginAs("admin", fixture);
+    const result = await getMonthlyTransactionsTrend({ months: 6 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.transactionType).toBe("all");
+  });
+
+  it("narrows to a single transaction type when specified", async () => {
+    loginAs("admin", fixture);
+    // Window large enough to include the fixture's May 2026 + April
+    // 2026 + June 2026 rows.
+    const all = await getMonthlyTransactionsTrend({ months: 36 });
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    const allInvoiceCount = all.months.reduce((acc, m) => acc + m.count, 0);
+    expect(allInvoiceCount).toBeGreaterThan(0);
+
+    const invoicesOnly = await getMonthlyTransactionsTrend({
+      months: 36,
+      transactionType: "invoice",
+    });
+    expect(invoicesOnly.ok).toBe(true);
+    if (!invoicesOnly.ok) return;
+    expect(invoicesOnly.transactionType).toBe("invoice");
+
+    // Fixture has: 2 invoices in May + 1 invoice in April + 0 invoices
+    // in June. Total invoice count across the 36-month window = 3.
+    const invoiceCountTotal = invoicesOnly.months.reduce(
+      (acc, m) => acc + m.count,
+      0,
+    );
+    expect(invoiceCountTotal).toBe(3);
+
+    // Sanity: invoice-only sum is strictly less than the cross-type sum.
+    const invoicePaiseTotal = invoicesOnly.months.reduce(
+      (acc, m) => acc + m.totalPaise,
+      0,
+    );
+    const allPaiseTotal = all.months.reduce(
+      (acc, m) => acc + m.totalPaise,
+      0,
+    );
+    expect(invoicePaiseTotal).toBeLessThan(allPaiseTotal);
+  });
+
+  it("refuses an invalid transactionType value", async () => {
+    loginAs("admin", fixture);
+    const result = await getMonthlyTransactionsTrend({
+      months: 12,
+      transactionType: "bogus",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("transactionType");
+  });
 });

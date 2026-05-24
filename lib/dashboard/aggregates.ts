@@ -463,11 +463,20 @@ export async function getTransactionsSummaryThisMonth(
 
 /**
  * Schema for the rolling-trend helper. Caller picks the window size in
- * whole months; `now` is overridable for tests so the fixture can pin a
- * known end month.
+ * whole months and (optionally) narrows to a single transaction type.
+ *
+ * `transactionType: "all"` is treated identically to "absent" — both
+ * yield the cross-type rolling total. Any other value narrows the
+ * aggregate to that single type, which drives the
+ * "Monthly Invoice Trend" Figma variant when the URL carries
+ * `?trendType=invoice`.
  */
 const monthlyTrendInputSchema = z.object({
   months: z.coerce.number().int().min(1).max(36).default(12),
+  transactionType: z
+    .enum(["all", "invoice", "payment", "expense", "advance", "refund"])
+    .optional()
+    .default("all"),
 });
 
 /**
@@ -493,6 +502,8 @@ export async function getMonthlyTransactionsTrend(
     /** Echoed UTC year-month strings ("YYYY-MM") for the window's first + last buckets. */
     start: string;
     end: string;
+    /** Echoed transaction-type filter — "all" when unfiltered. */
+    transactionType: "all" | TransactionType;
   }>
 > {
   const auth = await requireAdmin();
@@ -507,7 +518,7 @@ export async function getMonthlyTransactionsTrend(
       field: first?.path.join(".") || undefined,
     };
   }
-  const { months } = parsed.data;
+  const { months, transactionType } = parsed.data;
 
   // Compute the window: `months` calendar months ending with the current
   // one (UTC). Returned buckets are oldest-first.
@@ -522,6 +533,15 @@ export async function getMonthlyTransactionsTrend(
   const startDate = `${startMonth}-01`;
   const endDate = lastDayOfMonth(endMonth);
 
+  // Optional type narrow — "all" stays unfiltered (same shape as before).
+  const filters: SQL[] = [
+    gte(transactions.occurredOn, startDate),
+    lte(transactions.occurredOn, endDate),
+  ];
+  if (transactionType !== "all") {
+    filters.push(eq(transactions.type, transactionType));
+  }
+
   const rows = await db
     .select({
       month: sql<string>`substr(${transactions.occurredOn}, 1, 7)`,
@@ -529,12 +549,7 @@ export async function getMonthlyTransactionsTrend(
       count: sql<number>`count(*)`,
     })
     .from(transactions)
-    .where(
-      and(
-        gte(transactions.occurredOn, startDate),
-        lte(transactions.occurredOn, endDate),
-      ),
-    )
+    .where(and(...filters))
     .groupBy(sql`substr(${transactions.occurredOn}, 1, 7)`);
 
   // Zero-fill: build a map of every month in the window, then overlay
@@ -562,6 +577,7 @@ export async function getMonthlyTransactionsTrend(
     months: monthsOut,
     start: startMonth,
     end: endMonth,
+    transactionType,
   };
 }
 
