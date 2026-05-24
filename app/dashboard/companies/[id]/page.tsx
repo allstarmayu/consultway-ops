@@ -197,6 +197,7 @@ export default async function CompanyDetailPage({
     <>
       <CompanyHeader
         company={company}
+        viewerRole={session.role}
         canEdit={canEdit}
         canDelete={canDelete}
       />

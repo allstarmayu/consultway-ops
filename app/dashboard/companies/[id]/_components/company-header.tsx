@@ -24,8 +24,9 @@
  * @module app/dashboard/companies/[id]/_components/company-header
  */
 import Link from "next/link";
-import { ArrowLeft, Pencil, Trash2 } from "lucide-react";
-import type { Company } from "@/lib/db/schema";
+import { ArrowLeft, Ban, Pencil, Trash2 } from "lucide-react";
+import type { Company, UserRole } from "@/lib/db/schema";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ComplianceBadge, JvBadge } from "../../_components/badges";
 
@@ -34,6 +35,15 @@ import { ComplianceBadge, JvBadge } from "../../_components/badges";
 export interface CompanyHeaderProps {
   /** Full company row - used for name, compliance, JV flag. */
   company: Company;
+
+  /**
+   * Viewer role. Used to gate the rejection-reason callout — only
+   * admin / staff see WHY a company was rejected. Company-role users
+   * never reach this branch because `getCompany` strips the field, but
+   * we re-check here so a future refactor can't accidentally surface
+   * internal moderation context to the company itself.
+   */
+  viewerRole: UserRole;
 
   /** Whether the viewer may edit. Controls Edit button visibility. */
   canEdit: boolean;
@@ -46,57 +56,79 @@ export interface CompanyHeaderProps {
 
 export function CompanyHeader({
   company,
+  viewerRole,
   canEdit,
   canDelete,
 }: CompanyHeaderProps) {
-  return (
-    <header className="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-start sm:justify-between">
-      {/* Left: title + chips. min-w-0 lets long names truncate. */}
-      <div className="min-w-0">
-        <h1 className="break-words text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-          {company.name}
-        </h1>
+  // Day 23: rejection-reason callout. Only shown to admin / staff,
+  // only on rows that actually carry a reason. Defence in depth — the
+  // company-role strip in `getCompany` already nulls the field, but the
+  // role check here keeps the component honest if it's ever rendered
+  // with an un-stripped row.
+  const showRejectionCallout =
+    (viewerRole === "admin" || viewerRole === "staff") &&
+    company.complianceStatus === "rejected" &&
+    typeof company.rejectionReason === "string" &&
+    company.rejectionReason.trim().length > 0;
 
-        {/* Chips row - compliance + optional JV. */}
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <ComplianceBadge status={company.complianceStatus} />
-          {company.isJv && <JvBadge />}
+  return (
+    <header className="mb-6 flex flex-col gap-4 sm:mb-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        {/* Left: title + chips. min-w-0 lets long names truncate. */}
+        <div className="min-w-0">
+          <h1 className="break-words text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
+            {company.name}
+          </h1>
+
+          {/* Chips row - compliance + optional JV. */}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <ComplianceBadge status={company.complianceStatus} />
+            {company.isJv && <JvBadge />}
+          </div>
+        </div>
+
+        {/* Right: action buttons. Back is always shown; Edit and Delete
+            are role-gated by the parent page. Button order is left-to-
+            right by destructiveness: navigation -> edit-in-place ->
+            destructive. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button asChild variant="outline">
+            <Link href="/dashboard/companies">
+              <ArrowLeft className="h-4 w-4" aria-hidden />
+              Back
+            </Link>
+          </Button>
+
+          {canEdit && (
+            <Button asChild variant="outline">
+              <Link href={`/dashboard/companies/${company.id}/edit`}>
+                <Pencil className="h-4 w-4" aria-hidden />
+                Edit
+              </Link>
+            </Button>
+          )}
+
+          {canDelete && (
+            <Button
+              asChild
+              variant="destructive"
+            >
+              <Link href={`/dashboard/companies/${company.id}/delete`}>
+                <Trash2 className="h-4 w-4" aria-hidden />
+                Delete
+              </Link>
+            </Button>
+          )}
         </div>
       </div>
 
-      {/* Right: action buttons. Back is always shown; Edit and Delete
-          are role-gated by the parent page. Button order is left-to-
-          right by destructiveness: navigation -> edit-in-place ->
-          destructive. */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2">
-        <Button asChild variant="outline">
-          <Link href="/dashboard/companies">
-            <ArrowLeft className="h-4 w-4" aria-hidden />
-            Back
-          </Link>
-        </Button>
-
-        {canEdit && (
-          <Button asChild variant="outline">
-            <Link href={`/dashboard/companies/${company.id}/edit`}>
-              <Pencil className="h-4 w-4" aria-hidden />
-              Edit
-            </Link>
-          </Button>
-        )}
-
-        {canDelete && (
-          <Button
-            asChild
-            variant="destructive"
-          >
-            <Link href={`/dashboard/companies/${company.id}/delete`}>
-              <Trash2 className="h-4 w-4" aria-hidden />
-              Delete
-            </Link>
-          </Button>
-        )}
-      </div>
+      {showRejectionCallout && (
+        <Alert variant="destructive">
+          <Ban aria-hidden />
+          <AlertTitle>Rejection reason</AlertTitle>
+          <AlertDescription>{company.rejectionReason}</AlertDescription>
+        </Alert>
+      )}
     </header>
   );
 }

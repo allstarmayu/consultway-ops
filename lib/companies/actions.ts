@@ -55,6 +55,7 @@ import {
   assertTransitionCompliance,
   ComplianceTransitionError,
 } from "./state-machine";
+import { stripAdminOnlyFields } from "./field-strip";
 
 const log = logger.child({ module: "companies-actions" });
 
@@ -588,8 +589,7 @@ export async function getCompany(
   }
 
   // Strip admin-only fields for company-role callers.
-  const sanitized: Company =
-    scope.session.role === "company" ? { ...row, internalNotes: null } : row;
+  const sanitized = stripAdminOnlyFields(row, scope.session.role);
 
   return { ok: true, company: sanitized };
 }
@@ -692,11 +692,10 @@ export async function listCompanies(
       .then((r) => r[0]),
   ]);
 
-  // Strip internal notes for company-role callers.
-  const sanitized: Company[] =
-    scope.session.role === "company"
-      ? rows.map((r) => ({ ...r, internalNotes: null }))
-      : rows;
+  // Strip admin-only fields for company-role callers.
+  const sanitized: Company[] = rows.map((r) =>
+    stripAdminOnlyFields(r, scope.session.role),
+  );
 
   return {
     ok: true,
@@ -728,3 +727,4 @@ function buildPatchSnapshot(
   }
   return snapshot;
 }
+
