@@ -93,6 +93,12 @@ export interface SettingsShellProps {
   userEmail: string;
   userRole: UserRole;
   /**
+   * Persisted display name from `users.name`. Hydrates the Profile
+   * section's form so the user sees their current name on first
+   * paint instead of an empty field.
+   */
+  initialName: string;
+  /**
    * Persisted preferences row from `getPreferences()`. Sections hydrate
    * their initial form state from this, so a refresh shows what the user
    * actually has saved.
@@ -106,6 +112,7 @@ export function SettingsShell({
   userId,
   userEmail,
   userRole,
+  initialName,
   initialPreferences,
 }: SettingsShellProps) {
   const visibleSections = useMemo(
@@ -155,6 +162,7 @@ export function SettingsShell({
             {activeSection.id === "profile" && (
               <ProfileSection
                 userId={userId}
+                initialName={initialName}
                 initialEmail={userEmail}
                 userRole={userRole}
               />

@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { FormField } from "@/components/forms/form-field";
@@ -120,8 +121,7 @@ export function SecuritySection() {
       >
         <div className="grid grid-cols-1 gap-5 sm:max-w-md">
           <FormField name="current-password" label="Current password" required>
-            <Input
-              type="password"
+            <PasswordInput
               value={pwd.current}
               autoComplete="current-password"
               onChange={(e) =>
@@ -130,8 +130,7 @@ export function SecuritySection() {
             />
           </FormField>
           <FormField name="new-password" label="New password" required>
-            <Input
-              type="password"
+            <PasswordInput
               value={pwd.next}
               autoComplete="new-password"
               onChange={(e) =>

@@ -27,7 +27,7 @@
 import { useTransition } from "react";
 import { useTheme } from "next-themes";
 import Link from "next/link";
-import { Check, LogOut, Palette, Settings, UserCircle2 } from "lucide-react";
+import { LogOut, Palette, Settings, UserCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { logout } from "@/lib/auth/actions";
 import {
@@ -39,12 +39,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ThemePickerList } from "@/components/theme-picker-list";
 import { updatePreferences } from "@/lib/preferences/actions";
 import {
   buildStaleSessionRedirectUrl,
   isStaleSessionError,
 } from "@/lib/auth/stale-session";
-import { THEMES, getThemeById } from "@/lib/themes";
+import { getThemeById } from "@/lib/themes";
 import { cn } from "@/lib/utils";
 import type { UserRole } from "@/lib/db/schema";
 
@@ -146,50 +147,13 @@ export function UserPill({ email, role }: UserPillProps) {
           Theme
         </DropdownMenuLabel>
         <DropdownMenuGroup>
-          {THEMES.map((t) => {
-            const isActive = theme === t.id;
-            return (
-              <DropdownMenuItem
-                key={t.id}
-                onSelect={(e) => {
-                  // onSelect closes the menu by default; we WANT that
-                  // here (it's a one-click action), but we also want to
-                  // run our handler before the dismiss.
-                  e.preventDefault();
-                  handleSelectTheme(t.id);
-                }}
-                className="gap-2"
-              >
-                {/* Tiny swatch trio — gives the dropdown a visual
-                    fingerprint per palette without ballooning the row. */}
-                <span
-                  className="flex h-4 w-7 shrink-0 overflow-hidden rounded-sm ring-1 ring-border"
-                  aria-hidden
-                >
-                  <span
-                    className="h-full flex-1"
-                    style={{ background: t.swatches[0] }}
-                  />
-                  <span
-                    className="h-full flex-1"
-                    style={{ background: t.swatches[2] }}
-                  />
-                  <span
-                    className="h-full flex-1"
-                    style={{ background: t.swatches[3] }}
-                  />
-                </span>
-                <span className="flex-1 truncate">{t.name}</span>
-                {isActive && (
-                  <Check
-                    className="h-3.5 w-3.5 text-accent"
-                    aria-hidden
-                    strokeWidth={3}
-                  />
-                )}
-              </DropdownMenuItem>
-            );
-          })}
+          {/* Shared swatch-list rendering. Kept here as a group so the
+              dropdown's structure (Settings → separator → Theme →
+              separator → Sign out) stays under user-pill's control. */}
+          <ThemePickerList
+            activeThemeId={theme}
+            onSelect={handleSelectTheme}
+          />
         </DropdownMenuGroup>
 
         <DropdownMenuSeparator />

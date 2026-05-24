@@ -25,6 +25,9 @@
  * @module app/dashboard/settings/page
  */
 import { redirect } from "next/navigation";
+import { eq } from "drizzle-orm";
+import { db } from "@/lib/db";
+import { users } from "@/lib/db/schema";
 import { readSession } from "@/lib/auth/session";
 import { buildStaleSessionRedirectUrl } from "@/lib/auth/stale-session";
 import { getPreferences } from "@/lib/preferences/actions";
@@ -56,6 +59,17 @@ export default async function SettingsPage() {
     redirect(buildStaleSessionRedirectUrl("/dashboard/settings"));
   }
 
+  // Read the user's current display name so the Profile section can
+  // hydrate its form with the persisted value instead of blank. We
+  // don't need to defend against missing here — `getPreferences`
+  // already ran the stale-session guard above, so the row exists.
+  const [userRow] = await db
+    .select({ name: users.name })
+    .from(users)
+    .where(eq(users.id, session.userId))
+    .limit(1);
+  const initialName = userRow?.name ?? "";
+
   return (
     <div className="flex flex-col">
       <PageHeader
@@ -67,6 +81,7 @@ export default async function SettingsPage() {
         userEmail={session.email}
         userRole={session.role}
         userId={session.userId}
+        initialName={initialName}
         initialPreferences={prefs.preferences}
       />
     </div>

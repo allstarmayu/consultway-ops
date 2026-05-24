@@ -28,9 +28,18 @@ import { db } from "@/lib/db";
 import { users, userPreferences, type UserRole } from "@/lib/db/schema";
 import { newId } from "@/lib/db/ids";
 
-vi.mock("@/lib/auth/session", () => ({
-  readSession: vi.fn(async () => null),
-}));
+// Mock only `readSession` — keep `assertUserExists` as the real
+// implementation so the "ghost session" tests below actually exercise
+// the DB existence check (the ghost userId is never inserted, so the
+// real helper returns false naturally).
+vi.mock("@/lib/auth/session", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/auth/session")>();
+  return {
+    ...actual,
+    readSession: vi.fn(async () => null),
+  };
+});
 
 import { readSession } from "@/lib/auth/session";
 import { getPreferences, updatePreferences } from "../actions";

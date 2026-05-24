@@ -30,12 +30,8 @@
 
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import {
-  userPreferences,
-  users,
-  type UserPreferences,
-} from "@/lib/db/schema";
-import { readSession } from "@/lib/auth/session";
+import { userPreferences, type UserPreferences } from "@/lib/db/schema";
+import { assertUserExists, readSession } from "@/lib/auth/session";
 import { STALE_SESSION_ERROR } from "@/lib/auth/stale-session";
 import { logger } from "@/lib/logger";
 import { DEFAULT_THEME } from "@/lib/themes";
@@ -46,24 +42,6 @@ import {
 } from "./schemas";
 
 const log = logger.child({ module: "preferences-actions" });
-
-/**
- * Guard against a stale session — JWT cookie still valid (signed, not
- * expired) but the user row it points at was deleted, or the DB was
- * reseeded since the cookie was issued. Without this guard,
- * `updatePreferences` blows up at the FK constraint when it tries to
- * insert a `user_preferences` row keyed on a non-existent `user_id`.
- *
- * One indexed lookup per pref action — cheap.
- */
-async function userExists(userId: string): Promise<boolean> {
-  const rows = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
-  return rows.length > 0;
-}
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
@@ -114,7 +92,7 @@ export async function getPreferences(): Promise<
   // Settings page's load fails cleanly and the layout redirects to login
   // instead of rendering a half-broken settings shell that will FK-fault
   // on the first save.
-  if (!(await userExists(session.userId))) {
+  if (!(await assertUserExists(session.userId))) {
     log.warn("stale session — user no longer exists", {
       userId: session.userId,
     });
@@ -154,7 +132,7 @@ export async function updatePreferences(
   // Same stale-session guard as getPreferences — without this the insert
   // path below crashes with a SQLITE_CONSTRAINT_FOREIGNKEY when the
   // session JWT points at a user row that no longer exists.
-  if (!(await userExists(session.userId))) {
+  if (!(await assertUserExists(session.userId))) {
     log.warn("stale session — user no longer exists", {
       userId: session.userId,
     });

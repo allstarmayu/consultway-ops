@@ -15,6 +15,8 @@ import { cookies } from 'next/headers';
 import { Toaster } from '@/components/ui/sonner';
 import { ThemeProvider } from '@/components/theme-provider';
 import { ThemeCookieSync } from '@/components/theme-cookie-sync';
+import { readSession } from '@/lib/auth/session';
+import { getPreferencesForSSR } from '@/lib/preferences/server';
 import {
   THEME_COOKIE,
   resolveThemeFromCookie,
@@ -57,10 +59,29 @@ export default async function RootLayout({
     cookieStore.get(THEME_COOKIE)?.value,
   );
 
+  // Resolve density + reduced-motion from the DB for signed-in users so
+  // SSR emits the right `<html data-density>` / `data-reduced-motion`
+  // on first paint. Without this, AppearanceSection's client useEffect
+  // is the only writer — so a full page reload (F5) outside Settings
+  // would drop the preference until the user re-visits that section.
+  //
+  // For unauthenticated callers (/login, /register, public pages) we
+  // skip the DB query entirely and let the CSS defaults apply — the
+  // attrs are dashboard-affordance hints and have no meaning before
+  // sign-in.
+  //
+  // The DB read is one indexed lookup keyed on user_id; the read is
+  // wrapped so a hiccup falls back to defaults rather than blocking
+  // the render.
+  const session = await readSession();
+  const prefs = session ? await getPreferencesForSSR(session.userId) : null;
+
   return (
     <html
       lang="en"
       data-theme={initialTheme}
+      data-density={prefs?.density ?? undefined}
+      data-reduced-motion={prefs?.reducedMotion ? "true" : undefined}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >

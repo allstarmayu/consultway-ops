@@ -29,7 +29,10 @@
  */
 import { SignJWT, jwtVerify, type JWTPayload } from "jose";
 import { cookies } from "next/headers";
+import { eq } from "drizzle-orm";
 import { env, isProd } from "@/lib/env";
+import { db } from "@/lib/db";
+import { users } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
 import type { UserRole } from "@/lib/db/schema";
 
@@ -159,6 +162,54 @@ export async function destroySession(): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.delete(SESSION_COOKIE);
   log.info("session destroyed");
+}
+
+/**
+ * Verify the session's userId still maps to a live row in `users`.
+ *
+ * Use case: defending against a "stale JWT" — the cookie is signed
+ * correctly and not expired, but the userId it carries no longer
+ * exists in the DB. Common causes:
+ *   - Local dev DB was reseeded between issuing the cookie and the
+ *     current request.
+ *   - The user account was deleted (admin action, GDPR purge) while
+ *     the user still had an active session.
+ *
+ * Without this check, any action that takes the session userId and
+ * writes to a child table (e.g. inserting into `user_preferences`)
+ * blows up at the FK constraint with `SQLITE_CONSTRAINT_FOREIGNKEY`.
+ * Callers should branch on `false` to short-circuit with a friendly
+ * `STALE_SESSION_ERROR` (see `lib/auth/stale-session.ts`) and route
+ * the user through `/auth/clear-session` so the dead cookie gets
+ * deleted before `proxy.ts` can bounce them.
+ *
+ * One indexed lookup per call — cheap. Returns `false` on any DB
+ * error so callers can fail-closed without try/catching every site.
+ *
+ * @example
+ *   const session = await readSession();
+ *   if (!session) return { ok: false, error: "Sign in" };
+ *   if (!(await assertUserExists(session.userId))) {
+ *     return { ok: false, error: STALE_SESSION_ERROR };
+ *   }
+ *
+ * @param userId The session payload's userId.
+ * @returns true if a row exists, false otherwise (including on error).
+ */
+export async function assertUserExists(userId: string): Promise<boolean> {
+  try {
+    const rows = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return rows.length > 0;
+  } catch (err) {
+    // Fail closed — better to surface a stale-session toast than to
+    // proceed and FK-fault one query later.
+    log.warn("assertUserExists failed, treating as missing", { err, userId });
+    return false;
+  }
 }
 
 // -- Exports for proxy.ts ---------------------------------------------------

@@ -66,5 +66,9 @@ Thumbs.db
 .vercel
 tsconfig.tsbuildinfo
 
-# Auto-generated Claude Project context — don't commit
+# Auto-generated Claude Project context ï¿½ don't commit
 project-snapshot.md
+
+# Claude Code local-only files (Preview MCP launch config, local settings)
+.claude/launch.json
+.claude/settings.local.json

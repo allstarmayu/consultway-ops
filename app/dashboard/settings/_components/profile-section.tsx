@@ -1,32 +1,44 @@
 /**
  * ProfileSection — name / email / phone / role / avatar.
  *
- * Local form state only this round (no DB write). The mock save handler
- * returns success after a short delay so the sticky save bar's animation
- * is testable without a backend dep. When the `users` table grows
- * `displayName` / `phone` columns, swap the mock for a real Server Action
- * and remove the `await sleep(...)` line.
+ * Day 27: `fullName` is now real — wires to `lib/profile/actions.ts::
+ * updateProfile`, which writes through to `users.name` and emits an
+ * audit event. The other three fields (email, phone, jobTitle) stay
+ * cosmetic this round:
+ *   - email change needs a verification flow (verify-old + verify-new)
+ *   - phone has no column on `users` yet (micro-migration deferred)
+ *   - jobTitle is purely decorative, no persistence target yet
+ * The form still accepts typing into all four so the layout doesn't
+ * feel broken; only `fullName` is persisted on save.
  *
- * The avatar's initials are derived from the email's localpart — easy
- * to upgrade later when we add `users.displayName`.
+ * The avatar's initials are derived from the current `fullName` value
+ * (falling back to the email localpart when blank), so renaming
+ * yourself updates the avatar in real time before save.
  *
  * @module app/dashboard/settings/_components/profile-section
  */
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Camera, Mail } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/components/forms/form-field";
+import { updateProfile } from "@/lib/profile/actions";
+import {
+  buildStaleSessionRedirectUrl,
+  isStaleSessionError,
+} from "@/lib/auth/stale-session";
 import type { UserRole } from "@/lib/db/schema";
 import { SectionCard } from "./section-card";
 import { StickySaveBar } from "./sticky-save-bar";
 
 export interface ProfileSectionProps {
   userId: string;
+  /** Persisted display name from `users.name`. */
+  initialName: string;
   initialEmail: string;
   userRole: UserRole;
 }
@@ -45,27 +57,30 @@ const roleLabels: Record<UserRole, string> = {
 };
 
 export function ProfileSection({
+  initialName,
   initialEmail,
   userRole,
 }: ProfileSectionProps) {
-  const initial = useMemo<FormState>(
+  // `useState` for `initial` so we can advance the baseline after a
+  // successful save (otherwise `isDirty` stays true forever even
+  // after the name persists).
+  const initialMemo = useMemo<FormState>(
     () => ({
-      fullName: "",
+      fullName: initialName,
       email: initialEmail,
       phone: "",
       jobTitle: "",
     }),
-    [initialEmail],
+    [initialName, initialEmail],
   );
+  const [initial, setInitial] = useState<FormState>(initialMemo);
+  const [form, setForm] = useState<FormState>(initialMemo);
+  const [isPending, startTransition] = useTransition();
 
-  const [form, setForm] = useState<FormState>(initial);
-  const [isSaving, setIsSaving] = useState(false);
-
-  const isDirty =
-    form.fullName !== initial.fullName ||
-    form.email !== initial.email ||
-    form.phone !== initial.phone ||
-    form.jobTitle !== initial.jobTitle;
+  // Only the name actually persists — see the module docstring. The
+  // other three fields are still tracked in local state so the form
+  // feels live, but they don't gate the save indicator either.
+  const isDirty = form.fullName !== initial.fullName;
 
   const initials = deriveInitials(form.fullName || initial.email);
 
@@ -73,16 +88,36 @@ export function ProfileSection({
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
-  async function handleSave() {
-    setIsSaving(true);
-    // Stub: persistence pending — see <notes> in the PR description.
-    await new Promise((r) => setTimeout(r, 600));
-    setIsSaving(false);
-    // `id` deduplicates — saving twice in a row updates the existing
-    // toast in place rather than stacking a second card behind it.
-    toast.success("Profile updated", {
-      id: "profile-saved",
-      description: "Your changes have been saved.",
+  function handleSave() {
+    startTransition(async () => {
+      const result = await updateProfile({ name: form.fullName });
+      if (!result.ok) {
+        toast.error("Couldn't save profile", {
+          id: "profile-save-error",
+          description: result.error,
+        });
+        // Stale-session: the JWT outlived the user row. Hard-nav to
+        // the clear-session route so the bad cookie is deleted before
+        // the browser lands on /login (otherwise proxy.ts bounces the
+        // still-valid-looking cookie back to /dashboard).
+        if (isStaleSessionError(result.error)) {
+          window.location.assign(
+            buildStaleSessionRedirectUrl("/dashboard/settings"),
+          );
+        }
+        return;
+      }
+      // Advance the baseline so the save bar collapses and a follow-up
+      // edit can be detected as a fresh dirty state.
+      const nextInitial: FormState = { ...form, fullName: result.name };
+      setInitial(nextInitial);
+      setForm(nextInitial);
+      // `id` deduplicates — saving twice in a row updates the existing
+      // toast in place rather than stacking a second card behind it.
+      toast.success("Profile updated", {
+        id: "profile-saved",
+        description: "Your name has been saved.",
+      });
     });
   }
 
@@ -204,7 +239,7 @@ export function ProfileSection({
 
       <StickySaveBar
         isDirty={isDirty}
-        isSaving={isSaving}
+        isSaving={isPending}
         onSave={handleSave}
         onCancel={handleCancel}
       />

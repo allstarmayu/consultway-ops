@@ -55,7 +55,9 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
+import { ThemePickerDropdown } from "@/components/theme-picker-dropdown";
 
 /**
  * Outer shell. Owns the Suspense boundary required by
@@ -65,8 +67,25 @@ import { Label } from "@/components/ui/label";
  */
 export default function LoginPage() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-muted px-6 py-12">
-      <div className="w-full max-w-md">
+    <main
+      className="relative flex min-h-screen items-center justify-center px-6 py-12"
+      style={{
+        // Subtle radial backdrop using the active theme's accent. Far
+        // more interesting than a flat bg-muted, and tracks every
+        // palette via `--accent` and `--background` — terracotta glow
+        // on Warm Ambient, cyan glow on Ocean Depth, etc.
+        background:
+          "radial-gradient(ellipse at 50% 0%, color-mix(in oklab, var(--accent) 10%, var(--background)) 0%, var(--background) 60%)",
+      }}
+    >
+      {/* Theme preview picker — lets first-time visitors browse the 6
+          palettes before signing in. Cookie-only persistence (no DB
+          write) since the visitor isn't authenticated yet; the gradient
+          re-tints immediately and the choice carries through to first
+          paint after sign-in via the `cw-theme` cookie. */}
+      <ThemePickerDropdown />
+
+      <div className="animate-fade-up w-full max-w-md">
         {/* Brand header - identical loading and loaded so the layout
             doesn't shift while Suspense resolves. */}
         <Link
@@ -291,9 +310,8 @@ function LoginForm() {
                 Forgot password?
               </Link>
             </div>
-            <Input
+            <PasswordInput
               id="password"
-              type="password"
               autoComplete="current-password"
               aria-invalid={!!errors.password}
               aria-describedby={

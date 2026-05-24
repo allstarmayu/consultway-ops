@@ -16,6 +16,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { Building2 } from "lucide-react";
 import { readSession } from "@/lib/auth/session";
+import { ThemePickerDropdown } from "@/components/theme-picker-dropdown";
 import { RegisterForm } from "./_components/register-form";
 
 export const metadata: Metadata = {
@@ -33,8 +34,21 @@ export default async function RegisterPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-muted px-6 py-12">
-      <div className="w-full max-w-xl">
+    <main
+      className="relative flex min-h-screen items-center justify-center px-6 py-12"
+      style={{
+        // Mirrors the login page — accent-tinted radial backdrop that
+        // tracks the active theme via CSS vars.
+        background:
+          "radial-gradient(ellipse at 50% 0%, color-mix(in oklab, var(--accent) 10%, var(--background)) 0%, var(--background) 60%)",
+      }}
+    >
+      {/* Theme preview picker — mirrors the one on /login so the two
+          unauthenticated entry points feel like siblings. Cookie-only
+          persistence; the gradient re-tints on each pick. */}
+      <ThemePickerDropdown />
+
+      <div className="animate-fade-up w-full max-w-xl">
         <Link
           href="/"
           className="mb-8 flex items-center justify-center gap-3"

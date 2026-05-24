@@ -27,6 +27,7 @@
 import { redirect } from "next/navigation";
 import { readSession } from "@/lib/auth/session";
 import { Sidebar } from "@/components/dashboard/sidebar";
+import { MobileSidebar } from "@/components/dashboard/mobile-sidebar";
 
 export default async function DashboardLayout({
   children,
@@ -39,9 +40,10 @@ export default async function DashboardLayout({
       data-dashboard-root
       className="flex min-h-screen bg-background"
     >
-      {/* Sidebar — fixed width, Espresso bg, full-height. Client Component
-          for usePathname() active-state. Props are plain serializable
-          values passed from the server. */}
+      {/* Desktop sidebar — fixed width, Espresso bg, full-height. Hidden
+          on `< lg` (the mobile drawer takes over there). Client
+          Component for usePathname() active-state. Props are plain
+          serializable values passed from the server. */}
       <Sidebar
         userEmail={session.email}
         userRole={session.role}
@@ -52,6 +54,14 @@ export default async function DashboardLayout({
           (companies list, transactions) don't sprawl on ultra-wide
           monitors. */}
       <main className="flex-1 overflow-x-hidden">
+        {/* Mobile-only top bar — renders the hamburger trigger + a
+            compact brand mark on `< lg`. The desktop sidebar covers
+            both roles at `>= lg` so this disappears there. */}
+        <MobileSidebar
+          userEmail={session.email}
+          userRole={session.role}
+        />
+
         <div className="mx-auto w-full max-w-screen-2xl px-6 py-8 lg:px-10 lg:py-10">
           {children}
         </div>

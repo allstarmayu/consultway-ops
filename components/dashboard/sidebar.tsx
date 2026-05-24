@@ -17,12 +17,21 @@
  * if a `company`-role user clicks Reports, they get a 403 page when that
  * module is built, not a missing nav item.
  *
+ * Day 26 changes:
+ *   - Active background swap replaced with a framer-motion `layoutId`
+ *     pill that physically slides between nav items (same pattern as
+ *     the Settings nav).
+ *   - Body extracted into `<SidebarContent>` so the desktop aside and
+ *     the mobile drawer ([mobile-sidebar.tsx](./mobile-sidebar.tsx))
+ *     share one source of truth for the brand header + nav + user pill.
+ *
  * @module components/dashboard/sidebar
  */
 "use client";
 
 import { usePathname } from "next/navigation";
 import Link from "next/link";
+import { motion } from "motion/react";
 import {
   LayoutDashboard,
   Building2,
@@ -77,20 +86,60 @@ export interface SidebarProps {
   userRole: UserRole;
 }
 
-// ── Component ───────────────────────────────────────────────────────────────
+interface SidebarContentProps extends SidebarProps {
+  /**
+   * Distinguishes the desktop aside from the mobile sheet. Used purely
+   * for the `layoutId` on the active-pill — desktop and mobile each get
+   * their own pill identity so framer doesn't try to morph between the
+   * two simultaneously-rendered instances of the same active item.
+   */
+  variant: "desktop" | "mobile";
+}
 
+// ── Desktop wrapper ─────────────────────────────────────────────────────────
+
+/**
+ * Desktop sidebar. Hidden on `< lg` viewports — the mobile drawer
+ * (`<MobileSidebar>`) takes over there.
+ */
 export function Sidebar({ userEmail, userRole }: SidebarProps) {
-  const pathname = usePathname();
-
   return (
     <aside
       aria-label="Primary navigation"
       className={cn(
-        "sticky top-0 flex h-screen w-64 shrink-0 flex-col",
+        "sticky top-0 hidden h-screen w-64 shrink-0 flex-col lg:flex",
         "bg-sidebar text-sidebar-foreground",
         "border-r border-sidebar-border",
       )}
     >
+      <SidebarContent
+        userEmail={userEmail}
+        userRole={userRole}
+        variant="desktop"
+      />
+    </aside>
+  );
+}
+
+// ── Shared content ──────────────────────────────────────────────────────────
+
+/**
+ * Brand header + nav + user pill — the actual sidebar UI. Rendered
+ * inside the desktop `<aside>` AND inside the mobile drawer's
+ * `<SheetContent>`. Keeps the two surfaces in lock-step without
+ * duplicating markup.
+ */
+export function SidebarContent({
+  userEmail,
+  userRole,
+  variant,
+}: SidebarContentProps) {
+  const pathname = usePathname();
+  const pillLayoutId =
+    variant === "desktop" ? "sidebar-nav-pill" : "mobile-sidebar-nav-pill";
+
+  return (
+    <>
       {/* Brand header */}
       <div className="flex items-center gap-3 px-5 py-5">
         <div className="flex h-9 w-9 items-center justify-center rounded-md bg-sidebar-primary">
@@ -123,24 +172,46 @@ export function Sidebar({ userEmail, userRole }: SidebarProps) {
                   href={item.href}
                   aria-current={isActive ? "page" : undefined}
                   className={cn(
-                    "group flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                    // Inactive state — quiet, muted text
+                    "group relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    // Inactive state — quiet, muted text + hover lift
                     "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground",
-                    // Active state — Terracotta accent, full opacity
+                    // Active state colour comes from the foreground +
+                    // icon classes below; the terracotta background is
+                    // a separate motion.span (the layoutId pill) that
+                    // physically slides between items rather than
+                    // hard-swapping bg classes.
                     isActive &&
-                      "bg-sidebar-primary text-sidebar-primary-foreground hover:bg-sidebar-primary hover:text-sidebar-primary-foreground",
+                      "text-sidebar-primary-foreground hover:bg-transparent hover:text-sidebar-primary-foreground",
                   )}
                 >
+                  {/* Active pill — framer-motion shared layout. When the
+                      active item changes, motion animates this element
+                      from its previous position to the new one (spring
+                      physics) instead of an instant bg swap. */}
+                  {isActive && (
+                    <motion.span
+                      layoutId={pillLayoutId}
+                      className="absolute inset-0 -z-0 rounded-md bg-sidebar-primary"
+                      transition={{
+                        type: "spring",
+                        stiffness: 380,
+                        damping: 30,
+                        mass: 0.8,
+                      }}
+                      aria-hidden
+                    />
+                  )}
+
                   <Icon
                     className={cn(
-                      "h-4 w-4 shrink-0",
+                      "relative z-10 h-4 w-4 shrink-0",
                       isActive
                         ? "text-sidebar-primary-foreground"
                         : "text-sidebar-foreground/60 group-hover:text-sidebar-foreground",
                     )}
                     aria-hidden
                   />
-                  <span>{item.label}</span>
+                  <span className="relative z-10">{item.label}</span>
                 </Link>
               </li>
             );
@@ -152,7 +223,7 @@ export function Sidebar({ userEmail, userRole }: SidebarProps) {
       <div className="border-t border-sidebar-border p-3">
         <UserPill email={userEmail} role={userRole} />
       </div>
-    </aside>
+    </>
   );
 }
 

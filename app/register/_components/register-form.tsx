@@ -34,6 +34,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { FormField } from "@/components/forms/form-field";
 import { FormSection } from "@/components/forms/form-section";
 
@@ -302,8 +303,7 @@ export function RegisterForm() {
               description="At least 10 characters, with letters and numbers."
               error={errors.password?.message}
             >
-              <Input
-                type="password"
+              <PasswordInput
                 autoComplete="new-password"
                 {...register("password")}
                 disabled={isPending}
