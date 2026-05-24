@@ -134,7 +134,8 @@ export function StatusDonutChart({
             paddingAngle={2}
             stroke="var(--color-card)"
             strokeWidth={2}
-            isAnimationActive={false}
+            animationDuration={600}
+            animationEasing="ease-out"
           >
             {slices.map((s) => (
               <Cell key={s.key} fill={`var(--color-${s.key})`} />

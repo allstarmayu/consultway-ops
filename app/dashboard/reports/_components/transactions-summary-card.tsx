@@ -77,7 +77,7 @@ export async function TransactionsSummaryCard({
     monthlyBuckets.length >= 2 && result.totalCount > 0;
 
   return (
-    <Card className="overflow-hidden p-0">
+    <Card className="interactive-card overflow-hidden p-0">
       <header className="flex items-center justify-between border-b border-border bg-card p-4">
         <div className="flex items-center gap-2">
           <Wallet className="h-4 w-4 text-muted-foreground" aria-hidden />

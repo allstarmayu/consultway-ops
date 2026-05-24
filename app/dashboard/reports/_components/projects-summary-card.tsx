@@ -2,15 +2,16 @@
  * ProjectsSummaryCard — per-status breakdown of projects CREATED inside
  * the report's selected period.
  *
- * Server Component. Reads from `getProjectsByStatusForPeriod`. Same
- * visual chrome as the Day-18 `StatusBreakdownCard` but the rows are
- * static (no drill-through links) — the figures pivot the report, not a
- * deeper navigation, and a click that left the report and lost the
- * period would feel jarring.
+ * Server Component. Reads from `getProjectsByStatusForPeriod` and
+ * renders via the shared `StatusBreakdownCard` (with `donut={true}`)
+ * so the reports page picks up the same chart vocabulary the
+ * dashboard's breakdown cards use. Rows are static — no drill-through
+ * `href` per item — because a click that left the report would lose
+ * the period context.
  *
- * Empty period: when zero projects were created in the window, the card
- * renders a friendly "No projects created in this period." in place of
- * the rows.
+ * Empty period: when zero projects were created in the window, the
+ * `StatusBreakdownCard` collapses to a "no slices" donut (returns
+ * null) and the rows just show 0 / 0 / 0 / 0 / 0.
  *
  * @module app/dashboard/reports/_components/projects-summary-card
  */
@@ -23,6 +24,25 @@ import {
   PROJECT_STATUS_OPTIONS,
   ProjectStatusBadge,
 } from "@/app/dashboard/projects/_components/badges";
+import type { ProjectStatus } from "@/lib/db/schema";
+
+import {
+  StatusBreakdownCard,
+  type StatusBreakdownItem,
+} from "@/app/dashboard/_components/status-breakdown-card";
+
+/**
+ * Status → donut colour map. Same palette as the dashboard so the two
+ * cards stay visually aligned. Pulls from the warm-ambient chart
+ * tokens defined in app/globals.css.
+ */
+const PROJECT_STATUS_COLORS: Record<ProjectStatus, string> = {
+  planning: "var(--color-chart-3)",
+  active: "var(--color-chart-1)",
+  on_hold: "var(--color-chart-2)",
+  completed: "var(--color-chart-4)",
+  cancelled: "var(--color-destructive)",
+};
 
 export interface ProjectsSummaryCardProps {
   start: string;
@@ -43,7 +63,7 @@ export async function ProjectsSummaryCard({
 
   if (!result.ok) {
     return (
-      <Card className="p-4">
+      <Card className="interactive-card p-4">
         <Alert variant="destructive">
           <AlertDescription>{result.error}</AlertDescription>
         </Alert>
@@ -56,42 +76,22 @@ export async function ProjectsSummaryCard({
     0,
   );
 
-  return (
-    <Card className="overflow-hidden p-0">
-      <header className="flex items-center justify-between border-b border-border bg-card p-4">
-        <div className="flex items-center gap-2">
-          <Briefcase className="h-4 w-4 text-muted-foreground" aria-hidden />
-          <h2 className="text-base font-semibold text-foreground">
-            Projects created
-          </h2>
-        </div>
-        <span className="text-xs text-muted-foreground">{total} total</span>
-      </header>
+  const items: StatusBreakdownItem[] = PROJECT_STATUS_OPTIONS.map((opt) => ({
+    key: opt.value,
+    badge: <ProjectStatusBadge status={opt.value} iconless />,
+    count: result.byStatus[opt.value] ?? 0,
+    color: PROJECT_STATUS_COLORS[opt.value],
+    donutLabel: opt.label,
+    // No href — static rows on the reports page.
+  }));
 
-      {total === 0 ? (
-        <p className="p-6 text-sm italic text-muted-foreground">
-          No projects created in this period.
-        </p>
-      ) : (
-        <ul className="divide-y divide-border">
-          {PROJECT_STATUS_OPTIONS.map((opt) => {
-            const count = result.byStatus[opt.value] ?? 0;
-            return (
-              <li
-                key={opt.value}
-                className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm"
-              >
-                <span className="shrink-0">
-                  <ProjectStatusBadge status={opt.value} iconless />
-                </span>
-                <span className="font-mono text-base tabular-nums text-foreground">
-                  {count}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </Card>
+  return (
+    <StatusBreakdownCard
+      title="Projects created"
+      icon={Briefcase}
+      totalLabel={`${total} total`}
+      items={items}
+      donut
+    />
   );
 }

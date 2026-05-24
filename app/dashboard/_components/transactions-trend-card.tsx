@@ -76,7 +76,7 @@ export async function TransactionsTrendCard({
   const isEmpty = grandTotalCount === 0;
 
   return (
-    <Card className="overflow-hidden p-0">
+    <Card className="interactive-card overflow-hidden p-0">
       <header className="flex flex-col gap-3 border-b border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <TrendingUp

@@ -203,3 +203,85 @@
   user-select: text;
   -webkit-user-select: text;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+   Animation foundation (Day 25)
+
+   Three small utilities that together give the app a consistent
+   "smooth, modern" feel without leaning on a motion library:
+
+   1. `animate-fade-up` — single-element entry. Translates from 8px
+      below and fades to opaque over 400ms with a soft ease-out.
+      Used on a card / section that wants to animate in on mount.
+
+   2. `stagger-children` — applies fade-up to every direct child with
+      a 60ms cascade. The first 8 children get explicit delays;
+      anything beyond falls back to no delay (a 9th card is rare on
+      our screens). Works entirely in CSS so the page paints during
+      SSR with the right starting state — no flash, no JS, no
+      hydration mismatch.
+
+   3. `interactive-card` — hover-lift utility for cards that aren't
+      themselves links but want the same "this is alive" feedback as
+      a button. 200ms transition on transform + shadow; raises 2px on
+      hover and adds a small shadow. Pairs cleanly with the existing
+      `Card` primitive.
+
+   Honours `prefers-reduced-motion` — every animation collapses to
+   a static no-op when the user has the OS preference set.
+
+   ────────────────────────────────────────────────────────────────────── */
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.stagger-children > * {
+  animation: fade-up 400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2) { animation-delay: 60ms; }
+.stagger-children > *:nth-child(3) { animation-delay: 120ms; }
+.stagger-children > *:nth-child(4) { animation-delay: 180ms; }
+.stagger-children > *:nth-child(5) { animation-delay: 240ms; }
+.stagger-children > *:nth-child(6) { animation-delay: 300ms; }
+.stagger-children > *:nth-child(7) { animation-delay: 360ms; }
+.stagger-children > *:nth-child(8) { animation-delay: 420ms; }
+
+.interactive-card {
+  transition:
+    transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.interactive-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -12px rgb(0 0 0 / 0.12);
+  border-color: var(--color-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-up,
+  .stagger-children > * {
+    animation: none;
+  }
+  .interactive-card {
+    transition: none;
+  }
+  .interactive-card:hover {
+    transform: none;
+  }
+}

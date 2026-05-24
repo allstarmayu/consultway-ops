@@ -28,8 +28,13 @@ export interface StatusBreakdownItem {
   badge: ReactNode;
   /** The row's count figure. */
   count: number;
-  /** Where the "drill into this slice" click should land. */
-  href: string;
+  /**
+   * Optional drill-through destination. When set, the row renders as a
+   * Link with a hover affordance + a trailing arrow chevron. When
+   * omitted, the row renders as a static `<div>` — used by the
+   * reports page where a click would leave the period context.
+   */
+  href?: string;
   /**
    * Optional CSS color (var or hex) for the donut slice — used only
    * when the host opted into the donut layout via the `donut` prop.
@@ -82,7 +87,7 @@ export function StatusBreakdownCard({
     : [];
 
   return (
-    <Card className={cn("overflow-hidden p-0", className)}>
+    <Card className={cn("interactive-card overflow-hidden p-0", className)}>
       <header className="flex items-center justify-between border-b border-border bg-card p-4">
         <div className="flex items-center gap-2">
           <Icon className="h-4 w-4 text-muted-foreground" aria-hidden />
@@ -109,28 +114,41 @@ export function StatusBreakdownCard({
         )}
 
         <ul className={cn("divide-y divide-border", donut && "border-t border-border sm:border-t-0")}>
-          {items.map((item) => (
-            <li key={item.key}>
-              <Link
-                href={item.href}
-                className={cn(
-                  "flex items-center justify-between gap-3 text-sm hover:bg-muted/40",
-                  donut ? "px-2 py-2" : "px-4 py-2.5",
-                )}
-              >
+          {items.map((item) => {
+            const rowClass = cn(
+              "flex items-center justify-between gap-3 text-sm transition-colors",
+              item.href && "hover:bg-muted/40",
+              donut ? "px-2 py-2" : "px-4 py-2.5",
+            );
+            const body = (
+              <>
                 <span className="shrink-0">{item.badge}</span>
                 <span className="flex items-center gap-2">
                   <span className="font-mono text-base tabular-nums text-foreground">
                     {item.count}
                   </span>
-                  <ArrowRight
-                    className="h-3.5 w-3.5 text-muted-foreground"
-                    aria-hidden
-                  />
+                  {item.href && (
+                    <ArrowRight
+                      className="h-3.5 w-3.5 text-muted-foreground"
+                      aria-hidden
+                    />
+                  )}
                 </span>
-              </Link>
-            </li>
-          ))}
+              </>
+            );
+
+            return (
+              <li key={item.key}>
+                {item.href ? (
+                  <Link href={item.href} className={rowClass}>
+                    {body}
+                  </Link>
+                ) : (
+                  <div className={rowClass}>{body}</div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </div>
     </Card>

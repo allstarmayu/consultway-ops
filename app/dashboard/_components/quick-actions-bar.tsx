@@ -45,7 +45,7 @@ export function QuickActionsBar({ canCreateTransactions }: QuickActionsBarProps)
         </h2>
       </header>
 
-      <div className="flex flex-wrap gap-2 p-4">
+      <div className="stagger-children flex flex-wrap gap-2 p-4">
         <Button asChild>
           <Link href="/dashboard/companies/new">
             <Building2 className="h-4 w-4" aria-hidden />

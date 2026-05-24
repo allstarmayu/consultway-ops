@@ -183,7 +183,8 @@ export function TransactionsTrendChart({ data }: TransactionsTrendChartProps) {
             strokeWidth: 2,
             stroke: "var(--color-card)",
           }}
-          isAnimationActive={false}
+          animationDuration={500}
+          animationEasing="ease-out"
         />
       </AreaChart>
     </ChartContainer>

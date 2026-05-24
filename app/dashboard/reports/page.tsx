@@ -43,6 +43,7 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { CompanyPicker } from "./_components/company-picker";
 import { PeriodPicker } from "./_components/period-picker";
 import { ProjectsSummaryCard } from "./_components/projects-summary-card";
+import { ReportsKpiStrip } from "./_components/reports-kpi-strip";
 import { TendersSummaryCard } from "./_components/tenders-summary-card";
 import { TransactionsSummaryCard } from "./_components/transactions-summary-card";
 
@@ -102,9 +103,25 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
         </div>
       </div>
 
+      {/* Day-25: KPI strip at the top. Same vocabulary as the dashboard
+          so the two pages read as siblings. Wrapped in its own Suspense
+          so the strip streams independently of the breakdown cards
+          below. */}
+      <Suspense
+        key={`kpi_${suspenseKey}`}
+        fallback={<SummaryCardLoading />}
+      >
+        <ReportsKpiStrip
+          start={start}
+          end={end}
+          companyId={companyId}
+          isAdmin={isAdmin}
+        />
+      </Suspense>
+
       <section
         aria-label="Period summaries"
-        className="grid gap-4 lg:grid-cols-2"
+        className="stagger-children grid gap-4 lg:grid-cols-2"
       >
         <Suspense
           key={`projects_${suspenseKey}`}

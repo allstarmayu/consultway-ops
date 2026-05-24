@@ -137,7 +137,8 @@ export function TransactionsBreakdownBarChart({
           dataKey="totalPaise"
           fill="var(--color-totalPaise)"
           radius={[6, 6, 0, 0]}
-          isAnimationActive={false}
+          animationDuration={500}
+          animationEasing="ease-out"
         />
       </BarChart>
     </ChartContainer>

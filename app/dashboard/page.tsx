@@ -192,7 +192,7 @@ export default async function DashboardPage({
           shape. */}
       <section
         aria-label="At-a-glance metrics"
-        className="mb-6 grid grid-cols-2 gap-4 sm:mb-8 lg:grid-cols-4"
+        className="stagger-children mb-6 grid grid-cols-2 gap-4 sm:mb-8 lg:grid-cols-4"
       >
         {/* Total Companies — admin/staff only. Hint surfaces "+N this
             month" when recent additions are non-zero so the card carries
@@ -307,7 +307,7 @@ export default async function DashboardPage({
       {isAdmin && txMonthResult && txMonthResult.ok && (
         <section
           aria-label="This month's transactions"
-          className="mb-6 grid grid-cols-1 gap-4 sm:mb-8 sm:grid-cols-2 lg:grid-cols-4"
+          className="stagger-children mb-6 grid grid-cols-1 gap-4 sm:mb-8 sm:grid-cols-2 lg:grid-cols-4"
         >
           <KpiStatCard
             label="Transactions this month"
@@ -333,7 +333,7 @@ export default async function DashboardPage({
       {!isCompany ? (
         <section
           aria-label="Status breakdowns"
-          className="mb-6 grid gap-4 sm:mb-8 lg:grid-cols-2"
+          className="stagger-children mb-6 grid gap-4 sm:mb-8 lg:grid-cols-2"
         >
           <StatusBreakdownCard
             title="Projects by status"

@@ -39,7 +39,7 @@ export async function MonthTransactionsSummaryCard() {
   const types = Object.keys(result.countByType) as TransactionType[];
 
   return (
-    <Card className="overflow-hidden p-0">
+    <Card className="interactive-card overflow-hidden p-0">
       <header className="flex items-center justify-between border-b border-border bg-card p-4">
         <div className="flex items-center gap-2">
           <Wallet className="h-4 w-4 text-muted-foreground" aria-hidden />

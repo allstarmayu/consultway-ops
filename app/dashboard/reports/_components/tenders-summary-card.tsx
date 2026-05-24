@@ -2,14 +2,11 @@
  * TendersSummaryCard — per-status breakdown of tenders PUBLISHED inside
  * the report's selected period.
  *
- * Server Component. Reads from `getTendersByStatusForPeriod`. Note the
- * helper filters on `publishedAt`, not `createdAt` — drafts that never
- * publish don't belong to any period's "what went to market" view. See
- * the helper's docstring for the full rationale.
- *
- * Empty period: when no tenders were published in the window, the card
- * renders a friendly "No tenders published in this period." in place of
- * the rows.
+ * Server Component. Reads from `getTendersByStatusForPeriod` (filters
+ * on `publishedAt`, not `createdAt` — drafts that never publish don't
+ * belong to any period's "what went to market" view, see the
+ * helper's docstring). Renders via the shared `StatusBreakdownCard`
+ * (with `donut={true}`) for visual parity with the dashboard.
  *
  * @module app/dashboard/reports/_components/tenders-summary-card
  */
@@ -21,6 +18,11 @@ import { getTendersByStatusForPeriod } from "@/lib/dashboard/aggregates";
 import { TenderStatusBadge } from "@/app/dashboard/tenders/_components/badges";
 import type { TenderStatus } from "@/lib/db/schema";
 
+import {
+  StatusBreakdownCard,
+  type StatusBreakdownItem,
+} from "@/app/dashboard/_components/status-breakdown-card";
+
 // Order of display — matches the dashboard's tender breakdown card.
 const TENDER_STATUSES: TenderStatus[] = [
   "draft",
@@ -28,6 +30,13 @@ const TENDER_STATUSES: TenderStatus[] = [
   "closed",
   "awarded",
 ];
+
+const TENDER_STATUS_COLORS: Record<TenderStatus, string> = {
+  draft: "var(--color-chart-5)",
+  published: "var(--color-chart-1)",
+  closed: "var(--color-chart-3)",
+  awarded: "var(--color-chart-4)",
+};
 
 export interface TendersSummaryCardProps {
   start: string;
@@ -48,7 +57,7 @@ export async function TendersSummaryCard({
 
   if (!result.ok) {
     return (
-      <Card className="p-4">
+      <Card className="interactive-card p-4">
         <Alert variant="destructive">
           <AlertDescription>{result.error}</AlertDescription>
         </Alert>
@@ -61,42 +70,22 @@ export async function TendersSummaryCard({
     0,
   );
 
-  return (
-    <Card className="overflow-hidden p-0">
-      <header className="flex items-center justify-between border-b border-border bg-card p-4">
-        <div className="flex items-center gap-2">
-          <FileText className="h-4 w-4 text-muted-foreground" aria-hidden />
-          <h2 className="text-base font-semibold text-foreground">
-            Tenders published
-          </h2>
-        </div>
-        <span className="text-xs text-muted-foreground">{total} total</span>
-      </header>
+  const items: StatusBreakdownItem[] = TENDER_STATUSES.map((status) => ({
+    key: status,
+    badge: <TenderStatusBadge status={status} iconless />,
+    count: result.byStatus[status] ?? 0,
+    color: TENDER_STATUS_COLORS[status],
+    donutLabel: status.charAt(0).toUpperCase() + status.slice(1),
+    // No href — static rows on the reports page.
+  }));
 
-      {total === 0 ? (
-        <p className="p-6 text-sm italic text-muted-foreground">
-          No tenders published in this period.
-        </p>
-      ) : (
-        <ul className="divide-y divide-border">
-          {TENDER_STATUSES.map((status) => {
-            const count = result.byStatus[status] ?? 0;
-            return (
-              <li
-                key={status}
-                className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm"
-              >
-                <span className="shrink-0">
-                  <TenderStatusBadge status={status} iconless />
-                </span>
-                <span className="font-mono text-base tabular-nums text-foreground">
-                  {count}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </Card>
+  return (
+    <StatusBreakdownCard
+      title="Tenders published"
+      icon={FileText}
+      totalLabel={`${total} total`}
+      items={items}
+      donut
+    />
   );
 }

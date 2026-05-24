@@ -50,7 +50,7 @@ export function KpiStatCard({
   accent = "muted",
 }: KpiStatCardProps) {
   return (
-    <Card className="p-4">
+    <Card className="interactive-card p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1 space-y-1">
           <p className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
