@@ -391,3 +391,52 @@ export type ListCompaniesQuery = z.infer<typeof listCompaniesQuerySchema>;
  * Tiny but reused everywhere — better than re-inlining the uuid regex.
  */
 export const companyIdSchema = z.object({ id: uuidSchema });
+
+// ── Transition compliance status (Day 24) ───────────────────────────────────
+
+/**
+ * Minimum trimmed length of a reason supplied with a transition into
+ * `rejected`. Matches the dialog-side guard in `<ConfirmDialog>`'s
+ * `reasonField="required"` mode (REQUIRED_REASON_MIN_LENGTH = 5). When
+ * one changes the other should change too.
+ */
+const REJECTION_REASON_MIN_LENGTH = 5;
+
+/**
+ * Input schema for the `transitionComplianceStatus` Server Action.
+ *
+ * Three fields:
+ *   - `id`        — company being transitioned
+ *   - `toStatus`  — target ComplianceStatus
+ *   - `reason`    — optional unless `toStatus === "rejected"`, in which
+ *                   case a min-5-char trimmed reason is required
+ *                   (mirrors the schema-layer superRefine on
+ *                   `updateCompanySchema`).
+ *
+ * `from` is intentionally NOT a field — the action reads the existing
+ * row's status from the DB so a stale client can't drive a transition
+ * the row never actually started from.
+ */
+export const transitionComplianceStatusSchema = z
+  .object({
+    id: uuidSchema,
+    toStatus: complianceStatusSchema,
+    reason: z.string().trim().max(2000).optional().nullable(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.toStatus === "rejected") {
+      const reason = data.reason;
+      const trimmed = typeof reason === "string" ? reason.trim() : "";
+      if (trimmed.length < REJECTION_REASON_MIN_LENGTH) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: `Provide a rejection reason (at least ${REJECTION_REASON_MIN_LENGTH} characters)`,
+        });
+      }
+    }
+  });
+
+export type TransitionComplianceStatusInput = z.infer<
+  typeof transitionComplianceStatusSchema
+>;

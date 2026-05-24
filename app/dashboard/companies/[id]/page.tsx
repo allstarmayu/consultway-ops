@@ -42,6 +42,7 @@ import { EntityHistory } from "@/components/audit/entity-history";
 import { EntityHistoryLoading } from "@/components/audit/entity-history-loading";
 import { CompanyHeader } from "./_components/company-header";
 import { CompanyOverview } from "./_components/company-overview";
+import { ComplianceTransitionPanel } from "./_components/compliance-transition-panel";
 import { DocumentsSection } from "./_components/documents-section";
 import { DocumentsSectionLoading } from "./_components/documents-section-loading";
 import { CompanyFinancialPanel } from "./_components/company-financial-panel";
@@ -188,6 +189,11 @@ export default async function CompanyDetailPage({
   //     the boolean flows to that component instead of CompanyHeader.
   const canEdit = session.role === "admin" || session.role === "staff";
   const canDelete = session.role === "admin";
+  // Day 24: per-status transition panel sits below the overview card
+  // for admin/staff. Same gate as edit — managing compliance state is
+  // a staff-side workflow.
+  const canManageCompliance =
+    session.role === "admin" || session.role === "staff";
   const canUploadDocument =
     session.role === "admin" ||
     session.role === "staff" ||
@@ -209,6 +215,16 @@ export default async function CompanyDetailPage({
           viewerRole={session.role}
         />
       </Card>
+
+      {/* Compliance transition panel (Day 24) — admin/staff only. Sits
+          immediately below the overview so it's discoverable without
+          scrolling past the documents / history sections. The panel
+          itself renders nothing for a row in a terminal state
+          (`rejected`), so we don't need a status check here — only the
+          role gate. */}
+      {canManageCompliance && (
+        <ComplianceTransitionPanel company={company} />
+      )}
 
       {/* Financial activity panel (Day 18) — admin-only. Mirrors the
           per-project rollup card on the project detail page: per-type

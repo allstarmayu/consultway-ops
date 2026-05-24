@@ -48,7 +48,7 @@ vi.mock("@/lib/auth/session", () => ({
 }));
 
 import { readSession } from "@/lib/auth/session";
-import { updateCompany } from "../actions";
+import { transitionComplianceStatus, updateCompany } from "../actions";
 
 const mockedReadSession = readSession as MockedFunction<typeof readSession>;
 
@@ -513,5 +513,229 @@ describe("updateCompany — company-role caller", () => {
     const audit = await latestAuditForCompany(fixture.companyAId);
     // No state move, so the verb stays as plain `updated`.
     expect(audit?.action).toBe("updated");
+  });
+});
+
+// ── Day 24: transitionComplianceStatus action ────────────────────────────
+
+describe("transitionComplianceStatus — RBAC", () => {
+  it("refuses unauthenticated callers", async () => {
+    const result = await transitionComplianceStatus({
+      id: fixture.companyAId,
+      toStatus: "compliant",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/signed in/i);
+  });
+
+  it("refuses company-role callers (admin/staff only)", async () => {
+    loginAs("companyA", fixture);
+    await setCompanyStatus(fixture.companyAId, "pending");
+    const result = await transitionComplianceStatus({
+      id: fixture.companyAId,
+      toStatus: "compliant",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/permission/i);
+
+    const row = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, fixture.companyAId))
+      .then((r) => r[0]);
+    expect(row?.complianceStatus).toBe("pending");
+  });
+});
+
+describe("transitionComplianceStatus — no-op short-circuit", () => {
+  it("returns ok:true without writing an audit row on same-state target", async () => {
+    loginAs("admin", fixture);
+    await setCompanyStatus(fixture.companyAId, "compliant");
+
+    const result = await transitionComplianceStatus({
+      id: fixture.companyAId,
+      toStatus: "compliant",
+    });
+    expect(result.ok).toBe(true);
+
+    const audit = await latestAuditForCompany(fixture.companyAId);
+    expect(audit).toBeUndefined();
+  });
+});
+
+describe("transitionComplianceStatus — illegal transitions", () => {
+  it("compliant → pending refuses with field=toStatus", async () => {
+    loginAs("staff", fixture);
+    await setCompanyStatus(fixture.companyAId, "compliant");
+
+    const result = await transitionComplianceStatus({
+      id: fixture.companyAId,
+      toStatus: "pending",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("toStatus");
+    expect(result.error).toMatch(/compliant/);
+    expect(result.error).toMatch(/pending/);
+  });
+
+  it("rejected → anything refuses (terminal)", async () => {
+    loginAs("admin", fixture);
+    await setCompanyStatus(
+      fixture.companyAId,
+      "rejected",
+      "Failed background check.",
+    );
+
+    const result = await transitionComplianceStatus({
+      id: fixture.companyAId,
+      toStatus: "compliant",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("toStatus");
+
+    const row = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, fixture.companyAId))
+      .then((r) => r[0]);
+    expect(row?.complianceStatus).toBe("rejected");
+    expect(row?.rejectionReason).toBe("Failed background check.");
+  });
+});
+
+describe("transitionComplianceStatus — legal transitions", () => {
+  it("pending → compliant succeeds; emits compliance_status_changed", async () => {
+    loginAs("staff", fixture);
+    await setCompanyStatus(fixture.companyAId, "pending");
+
+    const result = await transitionComplianceStatus({
+      id: fixture.companyAId,
+      toStatus: "compliant",
+    });
+    expect(result.ok).toBe(true);
+
+    const row = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, fixture.companyAId))
+      .then((r) => r[0]);
+    expect(row?.complianceStatus).toBe("compliant");
+    // rejectionReason untouched on non-rejected targets.
+    expect(row?.rejectionReason).toBeNull();
+
+    const audit = await latestAuditForCompany(fixture.companyAId);
+    expect(audit?.action).toBe("compliance_status_changed");
+    const before = audit?.before as Record<string, unknown>;
+    const after = audit?.after as Record<string, unknown>;
+    expect(before.complianceStatus).toBe("pending");
+    expect(after.complianceStatus).toBe("compliant");
+    const meta = audit?.metadata as {
+      statusChange?: { from: string; to: string };
+      reason?: string;
+    };
+    expect(meta.statusChange).toEqual({ from: "pending", to: "compliant" });
+    expect(meta.reason).toBeUndefined();
+  });
+
+  it("suspended → compliant captures optional reason in metadata", async () => {
+    loginAs("admin", fixture);
+    await setCompanyStatus(fixture.companyAId, "suspended");
+
+    const result = await transitionComplianceStatus({
+      id: fixture.companyAId,
+      toStatus: "compliant",
+      reason: "Suspension lifted after commercial dispute resolved.",
+    });
+    expect(result.ok).toBe(true);
+
+    const audit = await latestAuditForCompany(fixture.companyAId);
+    expect(audit?.action).toBe("compliance_status_changed");
+    const meta = audit?.metadata as { reason?: string };
+    expect(meta.reason).toBe(
+      "Suspension lifted after commercial dispute resolved.",
+    );
+  });
+});
+
+describe("transitionComplianceStatus — rejected requires reason", () => {
+  it("pending → rejected without reason fails at the schema", async () => {
+    loginAs("admin", fixture);
+    await setCompanyStatus(fixture.companyAId, "pending");
+
+    const result = await transitionComplianceStatus({
+      id: fixture.companyAId,
+      toStatus: "rejected",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("reason");
+
+    const row = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, fixture.companyAId))
+      .then((r) => r[0]);
+    expect(row?.complianceStatus).toBe("pending");
+  });
+
+  it("pending → rejected with a populated reason writes both fields", async () => {
+    loginAs("admin", fixture);
+    await setCompanyStatus(fixture.companyAId, "pending");
+
+    const result = await transitionComplianceStatus({
+      id: fixture.companyAId,
+      toStatus: "rejected",
+      reason: "Failed background check on key directors at intake review.",
+    });
+    expect(result.ok).toBe(true);
+
+    const row = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, fixture.companyAId))
+      .then((r) => r[0]);
+    expect(row?.complianceStatus).toBe("rejected");
+    expect(row?.rejectionReason).toBe(
+      "Failed background check on key directors at intake review.",
+    );
+
+    const audit = await latestAuditForCompany(fixture.companyAId);
+    expect(audit?.action).toBe("compliance_status_changed");
+    const after = audit?.after as Record<string, unknown>;
+    expect(after.complianceStatus).toBe("rejected");
+    expect(after.rejectionReason).toBe(
+      "Failed background check on key directors at intake review.",
+    );
+  });
+
+  it("schema rejects a too-short reason (<5 chars)", async () => {
+    loginAs("admin", fixture);
+    await setCompanyStatus(fixture.companyAId, "pending");
+
+    const result = await transitionComplianceStatus({
+      id: fixture.companyAId,
+      toStatus: "rejected",
+      reason: "no",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("reason");
+  });
+});
+
+describe("transitionComplianceStatus — missing row", () => {
+  it("returns ok:false for unknown company id", async () => {
+    loginAs("admin", fixture);
+    const result = await transitionComplianceStatus({
+      id: "00000000-0000-0000-0000-000000000000",
+      toStatus: "compliant",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/not found/i);
   });
 });

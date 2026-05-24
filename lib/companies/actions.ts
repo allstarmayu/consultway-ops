@@ -47,6 +47,7 @@ import {
   updateCompanySchema,
   listCompaniesQuerySchema,
   companyIdSchema,
+  transitionComplianceStatusSchema,
   type CreateCompanyInput,
   type UpdateCompanyInput,
   type ListCompaniesQuery,
@@ -582,6 +583,163 @@ export async function deleteCompany(rawId: unknown): Promise<ActionResult> {
   log.info("company deleted", {
     id: parsed.data.id,
     actorId: auth.session.userId,
+  });
+  return { ok: true };
+}
+
+// ── transitionComplianceStatus (Day 24) ─────────────────────────────────────
+
+/**
+ * Dedicated action for moving a company's compliance status, used by
+ * the per-status transition panel on the detail page. Same write path
+ * as `updateCompany` for a status-only patch, but with a smaller
+ * surface (id + toStatus + optional reason) and a clearer audit
+ * payload that always carries `before` / `after` plus the
+ * `statusChange` metadata block.
+ *
+ * Mirrors `transitionProjectStatus` in `lib/projects/actions.ts`.
+ *
+ * Pipeline:
+ *   1. AuthZ — admin/staff only.
+ *   2. Validate input via Zod (schema enforces "rejected ⇒ reason").
+ *   3. Load existing row.
+ *   4. No-op short-circuit if target === current.
+ *   5. State-machine assert (throws via `assertTransitionCompliance`;
+ *      caught and converted into a typed ActionResult failure).
+ *   6. Apply the update — `complianceStatus` always; `rejectionReason`
+ *      only on a transition INTO rejected (the reason field on this
+ *      schema is dedicated to that case).
+ *   7. Audit with the `compliance_status_changed` verb, before/after
+ *      snapshots, and `metadata.statusChange + reason`.
+ *
+ * @returns `{ ok: true }` on success, `{ ok: false, error, field? }`
+ *          on RBAC failure / validation failure / illegal transition.
+ */
+export async function transitionComplianceStatus(
+  rawInput: unknown,
+): Promise<ActionResult> {
+  // 1. AuthZ
+  const auth = await requireAdminOrStaff();
+  if (!auth.ok) return auth;
+
+  // 2. Validate
+  const parsed = transitionComplianceStatusSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const input = parsed.data;
+
+  // 3. Load existing row.
+  const existing = await db
+    .select()
+    .from(companies)
+    .where(eq(companies.id, input.id))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (!existing) {
+    return { ok: false, error: "Company not found" };
+  }
+
+  // 4. No-op short-circuit. Same convention as `transitionProjectStatus`
+  //    — a same-state transition is treated as idempotent success, no
+  //    audit row written.
+  if (existing.complianceStatus === input.toStatus) {
+    return { ok: true };
+  }
+
+  // 5. State-machine gate. The schema-layer "rejected ⇒ reason" check
+  //    already ran in step 2; here we enforce the legal-transitions
+  //    table itself.
+  try {
+    assertTransitionCompliance(existing.complianceStatus, input.toStatus);
+  } catch (err) {
+    if (err instanceof ComplianceTransitionError) {
+      log.info("transitionComplianceStatus illegal transition", {
+        id: input.id,
+        actorId: auth.session.userId,
+        from: err.from,
+        to: err.to,
+      });
+      return {
+        ok: false,
+        field: "toStatus",
+        error: err.message,
+      };
+    }
+    throw err;
+  }
+
+  // 6. Apply. On a transition INTO rejected, populate the
+  //    rejectionReason column from the input — that's exactly what the
+  //    schema guaranteed is non-empty for this target. For every other
+  //    target, leave rejectionReason untouched (a transition OUT of
+  //    rejected keeps the historical reason intact for audit context).
+  const patch: Partial<typeof companies.$inferInsert> = {
+    complianceStatus: input.toStatus,
+  };
+  if (input.toStatus === "rejected") {
+    patch.rejectionReason = input.reason?.trim() ?? null;
+  }
+
+  try {
+    await db.update(companies).set(patch).where(eq(companies.id, input.id));
+  } catch (err) {
+    log.error("transitionComplianceStatus failed", {
+      err,
+      from: existing.complianceStatus,
+      to: input.toStatus,
+      actorId: auth.session.userId,
+    });
+    throw err;
+  }
+
+  // 7. Audit. Always the `compliance_status_changed` verb on this
+  //    action — every successful path is, by definition, a real state
+  //    move (the same-state short-circuit returned earlier). The
+  //    before/after snapshots carry both compliance_status and the
+  //    rejection_reason when relevant.
+  const trimmedReason = input.reason?.trim() ?? null;
+  await recordAuditEvent({
+    actorId: auth.session.userId,
+    actorRole: auth.session.role,
+    action: "compliance_status_changed",
+    targetType: "company",
+    targetId: existing.id,
+    before: {
+      complianceStatus: existing.complianceStatus,
+      rejectionReason: existing.rejectionReason,
+    },
+    after: {
+      complianceStatus: input.toStatus,
+      // After-snapshot reflects what the row will look like: on a
+      // transition INTO rejected the new reason; on any other target
+      // the existing reason carries through (we didn't write it).
+      rejectionReason:
+        input.toStatus === "rejected"
+          ? trimmedReason
+          : existing.rejectionReason,
+    },
+    metadata: {
+      statusChange: {
+        from: existing.complianceStatus,
+        to: input.toStatus,
+      },
+      ...(trimmedReason ? { reason: trimmedReason } : {}),
+    },
+  });
+
+  log.info("company compliance status transitioned", {
+    id: existing.id,
+    from: existing.complianceStatus,
+    to: input.toStatus,
+    actorId: auth.session.userId,
+    ...(trimmedReason ? { reason: trimmedReason } : {}),
   });
   return { ok: true };
 }

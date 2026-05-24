@@ -135,3 +135,30 @@ export function assertTransitionCompliance(
   if (canTransitionCompliance(from, to)) return;
   throw new ComplianceTransitionError(from, to);
 }
+
+/**
+ * Set of statuses the company can move to from its current status.
+ * Used by the per-status transition panel on the detail page to decide
+ * which buttons to render — only legal next states get a button.
+ *
+ * Mirrors `legalNextStatuses` in `lib/projects/state-machine.ts`. The
+ * returned array excludes the same-state no-op (callers don't render a
+ * "stay in current state" button). Terminal `rejected` returns `[]`,
+ * which the UI uses to suppress the panel entirely.
+ */
+export function legalNextStatuses(
+  from: ComplianceStatus,
+): ReadonlyArray<ComplianceStatus> {
+  return Array.from(COMPLIANCE_STATUS_TRANSITIONS[from]);
+}
+
+/**
+ * Whether the status has any legal forward move. False only for the
+ * terminal `rejected` state. Used by the UI to decide whether to render
+ * the transition panel at all.
+ */
+export function hasAnyLegalComplianceTransition(
+  status: ComplianceStatus,
+): boolean {
+  return COMPLIANCE_STATUS_TRANSITIONS[status].size > 0;
+}

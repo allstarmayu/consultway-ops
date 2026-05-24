@@ -23,6 +23,8 @@ import {
   ComplianceTransitionError,
   assertTransitionCompliance,
   canTransitionCompliance,
+  hasAnyLegalComplianceTransition,
+  legalNextStatuses,
 } from "../state-machine";
 
 const ALL_STATUSES: readonly ComplianceStatus[] = [
@@ -168,4 +170,56 @@ describe("same-state transitions are no-ops (do not throw)", () => {
       expect(canTransitionCompliance(s, s)).toBe(true);
     });
   }
+});
+
+// ── legalNextStatuses ────────────────────────────────────────────────────
+
+describe("legalNextStatuses surfaces the right set per status", () => {
+  it("pending → [compliant, non_compliant, rejected]", () => {
+    expect(new Set(legalNextStatuses("pending"))).toEqual(
+      new Set(["compliant", "non_compliant", "rejected"]),
+    );
+  });
+  it("compliant → [non_compliant, expired, suspended]", () => {
+    expect(new Set(legalNextStatuses("compliant"))).toEqual(
+      new Set(["non_compliant", "expired", "suspended"]),
+    );
+  });
+  it("non_compliant → [compliant, suspended]", () => {
+    expect(new Set(legalNextStatuses("non_compliant"))).toEqual(
+      new Set(["compliant", "suspended"]),
+    );
+  });
+  it("expired → [compliant, non_compliant, suspended]", () => {
+    expect(new Set(legalNextStatuses("expired"))).toEqual(
+      new Set(["compliant", "non_compliant", "suspended"]),
+    );
+  });
+  it("suspended → [compliant, non_compliant]", () => {
+    expect(new Set(legalNextStatuses("suspended"))).toEqual(
+      new Set(["compliant", "non_compliant"]),
+    );
+  });
+  it("rejected → [] (terminal)", () => {
+    expect(legalNextStatuses("rejected")).toEqual([]);
+  });
+
+  it("never includes the from-state in its own list", () => {
+    for (const s of ALL_STATUSES) {
+      expect(legalNextStatuses(s)).not.toContain(s);
+    }
+  });
+});
+
+describe("hasAnyLegalComplianceTransition", () => {
+  it("returns true for every non-terminal state", () => {
+    for (const s of ALL_STATUSES) {
+      if (s === "rejected") continue;
+      expect(hasAnyLegalComplianceTransition(s)).toBe(true);
+    }
+  });
+
+  it("returns false only for rejected (terminal)", () => {
+    expect(hasAnyLegalComplianceTransition("rejected")).toBe(false);
+  });
 });
