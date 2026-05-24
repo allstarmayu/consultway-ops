@@ -66,7 +66,7 @@ import { TransactionsTrendCard } from "./_components/transactions-trend-card";
 import {
   resolveTrendMonths,
   resolveTrendType,
-} from "./_components/trend-filters";
+} from "./_components/trend-filters-config";
 import { ActivityFeedLoading } from "./_components/activity-feed-loading";
 
 export const metadata: Metadata = {

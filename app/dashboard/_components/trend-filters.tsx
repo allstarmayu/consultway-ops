@@ -35,36 +35,16 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
-// ── Shape constants ──────────────────────────────────────────────────────
+import {
+  MONTH_OPTIONS,
+  TYPE_OPTIONS,
+  type MonthOption,
+  type TrendType,
+} from "./trend-filters-config";
 
-/**
- * Months presets surfaced as pills. Keep in sync with the
- * `monthlyTrendInputSchema.months` validator on the server — anything
- * outside 1..36 gets rejected, so we stick to a small curated set.
- */
-const MONTH_OPTIONS = [6, 12, 24] as const;
-type MonthOption = (typeof MONTH_OPTIONS)[number];
-
-/**
- * Transaction-type select options. Mirrors the `transactionType` enum
- * on the server-side schema. "all" is the default / unfiltered view.
- */
-const TYPE_OPTIONS: Array<{ value: TrendType; label: string }> = [
-  { value: "all", label: "All types" },
-  { value: "invoice", label: "Invoices only" },
-  { value: "payment", label: "Payments only" },
-  { value: "expense", label: "Expenses only" },
-  { value: "advance", label: "Advances only" },
-  { value: "refund", label: "Refunds only" },
-];
-
-export type TrendType =
-  | "all"
-  | "invoice"
-  | "payment"
-  | "expense"
-  | "advance"
-  | "refund";
+// Re-export the type so existing consumers that imported it from this
+// file keep working (the trend card imports TrendType from here).
+export type { TrendType };
 
 // ── Props ────────────────────────────────────────────────────────────────
 
@@ -158,34 +138,6 @@ export function TrendFilters({ months, type }: TrendFiltersProps) {
   );
 }
 
-// ── URL-param resolvers (consumed by the page) ────────────────────────────
-
-/**
- * Pick a valid month preset out of a raw URL value. Defaults to 12 on
- * absent / bogus input. Exposed so the dashboard page can resolve the
- * value once and pass the result to both the aggregate and the filter
- * strip — keeps the source of truth tight.
- */
-export function resolveTrendMonths(raw: string | null | undefined): MonthOption {
-  const n = Number(raw);
-  if (n === 6 || n === 12 || n === 24) return n;
-  return 12;
-}
-
-/**
- * Pick a valid type filter out of a raw URL value. Defaults to "all"
- * on absent / bogus input. Same single-resolution rationale as
- * `resolveTrendMonths`.
- */
-export function resolveTrendType(raw: string | null | undefined): TrendType {
-  if (
-    raw === "invoice" ||
-    raw === "payment" ||
-    raw === "expense" ||
-    raw === "advance" ||
-    raw === "refund"
-  ) {
-    return raw;
-  }
-  return "all";
-}
+// URL-param resolvers + the TrendType / MonthOption types live in
+// ./trend-filters-config so the Server Component dashboard page can
+// import them without crossing the "use client" boundary.
