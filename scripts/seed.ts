@@ -38,6 +38,7 @@ import {
   tenderApplications,
   projects,
   transactions,
+  remindersSent,
   type ComplianceStatus,
   type DocumentStatus,
   type DocumentType,
@@ -51,6 +52,7 @@ import {
 import { newId } from "@/lib/db/ids";
 import { hashPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
+import { recordAuditEvent } from "@/lib/audit/log";
 
 const log = logger.child({ module: "seed" });
 
@@ -164,7 +166,7 @@ export function resolveSeedScale(raw: string | undefined = process.env.SEED_SCAL
 
 // ── Seed data: Consultway staff users (no company link) ───────────────────
 
-interface StaffUserSeed {
+export interface StaffUserSeed {
   email: string;
   plaintextPassword: string;
   role: UserRole;
@@ -214,7 +216,7 @@ const SEED_STAFF_USERS: StaffUserSeed[] = [
  * seeder looks it up. Fails loudly if the named company doesn't exist
  * (would mean the standalones didn't seed, which is itself a bug).
  */
-interface CompanyUserSeed {
+export interface CompanyUserSeed {
   email: string;
   plaintextPassword: string;
   name: string;
@@ -279,8 +281,10 @@ const SEED_COMPANY_USERS: CompanyUserSeed[] = [
  * `NewCompany` minus the columns the seed script sets itself (`id`,
  * `isJv`, `parentCompanyIds`).
  */
-type StandaloneSeed = Omit<NewCompany, "id" | "isJv" | "parentCompanyIds"> & {
+export type StandaloneSeed = Omit<NewCompany, "id" | "isJv" | "parentCompanyIds"> & {
   complianceStatus: ComplianceStatus;
+  /** Free-text reason populated when complianceStatus = 'rejected'. */
+  rejectionReason?: string | null;
 };
 
 const STANDALONE_COMPANIES: StandaloneSeed[] = [
@@ -469,7 +473,7 @@ const JV_COMPANIES: JvSeed[] = [
  * time. Using emails (not UUIDs) keeps the fixtures readable in this
  * file and decoupled from `newId()`'s output.
  */
-interface DocumentSeed {
+export interface DocumentSeed {
   documentType: DocumentType;
   fileName: string;
   status: DocumentStatus;
@@ -1679,6 +1683,7 @@ export async function seedConsultwayPublisher(): Promise<SeedResult> {
     pincode: null as string | null,
     internalNotes:
       "Internal sentinel company. Used as the publisher of Consultway-run tenders. Do not delete." as string | null,
+    rejectionReason: null as string | null,
   };
 
   if (!existing) {
@@ -1727,7 +1732,8 @@ export async function seedStandaloneCompany(
 
   // Frozen: id, name (natural key), isJv (architectural — non-JV
   // companies can't morph into JVs at seed time), createdAt, updatedAt.
-  // Everything else is fixture-driven and safe to update.
+  // Everything else is fixture-driven and safe to update — including
+  // the Day-22 `rejectionReason` column so a fixture edit propagates.
   const updatable = {
     sector: spec.sector,
     geography: spec.geography,
@@ -1745,6 +1751,7 @@ export async function seedStandaloneCompany(
     state: spec.state ?? null,
     pincode: spec.pincode ?? null,
     internalNotes: spec.internalNotes ?? null,
+    rejectionReason: spec.rejectionReason ?? null,
   };
 
   if (!existing) {
@@ -1819,6 +1826,7 @@ export async function seedJvCompany(spec: JvSeed): Promise<SeedResult> {
     state: spec.state ?? null,
     pincode: spec.pincode ?? null,
     internalNotes: spec.internalNotes ?? null,
+    rejectionReason: null as string | null,
   };
 
   if (!existing) {
@@ -2021,6 +2029,125 @@ async function lookupCompanyId(name: string): Promise<string> {
     );
   }
   return row.id;
+}
+
+/**
+ * Look up a user UUID by email. Used by the audit-on-insert helper for
+ * generator-emitted rows. Throws if absent — would mean an upstream
+ * generator emitted a user we haven't seeded yet.
+ */
+async function lookupUserId(email: string): Promise<string> {
+  const row = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1)
+    .then((rows) => rows[0]);
+  if (!row) {
+    throw new Error(`Seed lookup: user "${email}" not found.`);
+  }
+  return row.id;
+}
+
+/**
+ * Same lookup, but returns the SYSTEM sentinel id when the user is
+ * absent. Used at startup to find the admin actor id without forcing
+ * the seed to fail if someone has renamed the admin email.
+ */
+async function lookupUserIdOptional(email: string): Promise<string> {
+  const row = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1)
+    .then((rows) => rows[0]);
+  return row?.id ?? "00000000-0000-0000-0000-000000000000";
+}
+
+/**
+ * Thin wrapper around `recordAuditEvent` that:
+ *   - defaults the actorId to the system sentinel when omitted,
+ *   - never throws (matches `recordAuditEvent`'s contract).
+ *
+ * Called only from generator paths after an `inserted` result — the
+ * existing hand-curated seeders intentionally don't audit (would have
+ * added cross-cutting noise to the Day-21 baseline tests).
+ */
+async function recordSeedAudit(event: {
+  actorId?: string;
+  actorRole: "admin" | "staff" | "company" | "system";
+  action: Parameters<typeof recordAuditEvent>[0]["action"];
+  targetType: Parameters<typeof recordAuditEvent>[0]["targetType"];
+  targetId: string;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await recordAuditEvent({
+    actorId: event.actorId ?? "00000000-0000-0000-0000-000000000000",
+    actorRole: event.actorRole,
+    action: event.action,
+    targetType: event.targetType,
+    targetId: event.targetId,
+    before: event.before,
+    after: event.after,
+    metadata: event.metadata,
+  });
+}
+
+/**
+ * Seed one `reminders_sent` row. Idempotent on
+ * `(documentId, reminderKind)` — the DB-level UNIQUE index would
+ * refuse a duplicate anyway, but checking ahead surfaces the skip
+ * cleanly instead of a UNIQUE failure.
+ */
+export async function seedReminderSent(spec: {
+  companyName: string;
+  fileName: string;
+  kind: "T-30" | "T-14" | "T-7" | "T-1";
+  sentInDays: number;
+}): Promise<SeedResult> {
+  const companyId = await lookupCompanyId(spec.companyName);
+  const doc = await db
+    .select({ id: documents.id })
+    .from(documents)
+    .where(
+      and(eq(documents.companyId, companyId), eq(documents.fileName, spec.fileName)),
+    )
+    .limit(1)
+    .then((rows) => rows[0]);
+  if (!doc) {
+    throw new Error(
+      `Seed reminder references document "${spec.fileName}" on company "${spec.companyName}" but no such document exists.`,
+    );
+  }
+
+  const existing = await db
+    .select({ id: remindersSent.id })
+    .from(remindersSent)
+    .where(
+      and(
+        eq(remindersSent.documentId, doc.id),
+        eq(remindersSent.reminderKind, spec.kind),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  if (existing) {
+    return "unchanged";
+  }
+
+  const sentAt = new Date(
+    Date.now() + spec.sentInDays * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  await db.insert(remindersSent).values({
+    id: newId(),
+    documentId: doc.id,
+    reminderKind: spec.kind,
+    sentAt,
+  });
+  return "inserted";
 }
 
 /**
@@ -2498,6 +2625,32 @@ export async function main(): Promise<void> {
     bumpTally(coreStats, await seedStaffUser(spec));
   }
 
+  // 1b. Scale-driven additional staff/admin users (Day 22 Chunk 3).
+  //     Pulls the targets from SEED_SCALE_PROFILES via the generator.
+  //     The dynamic import keeps the seed.ts → seed-generators.ts edge
+  //     non-circular at parse time (generators import types from us).
+  const generators = await import("./seed-generators");
+  const generatedStaff = generators.generateStaffUsers(scale);
+  for (const spec of generatedStaff) {
+    const r = await seedStaffUser(spec);
+    bumpTally(coreStats, r);
+    if (r === "inserted") {
+      const userId = await lookupUserId(spec.email);
+      await recordSeedAudit({
+        actorRole: "system",
+        action: "created",
+        targetType: "user",
+        targetId: userId,
+        after: { email: spec.email, role: spec.role, name: spec.name },
+      });
+    }
+  }
+
+  // Capture the admin actor id — used by the audit-on-insert helper
+  // for generator-emitted rows. Falls back to the system actor id if
+  // for some reason the admin isn't there.
+  const adminActorId = await lookupUserIdOptional("admin@consultway.local");
+
   // 2. Consultway publisher sentinel — must exist before any tender seed
   //    runs since `tenders.publisherCompanyId` is NOT NULL.
   bumpTally(coreStats, await seedConsultwayPublisher());
@@ -2505,6 +2658,35 @@ export async function main(): Promise<void> {
   // 3. Standalone companies — must exist before JVs that reference them.
   for (const spec of STANDALONE_COMPANIES) {
     bumpTally(coreStats, await seedStandaloneCompany(spec));
+  }
+
+  // 3b. Scale-driven additional standalone companies.
+  const existingStandaloneCount =
+    STANDALONE_COMPANIES.length + JV_COMPANIES.length;
+  const generatedCompanies = generators.generateStandaloneCompanies(
+    scale,
+    existingStandaloneCount,
+  );
+  for (const spec of generatedCompanies) {
+    const r = await seedStandaloneCompany(spec);
+    bumpTally(coreStats, r);
+    if (r === "inserted") {
+      const companyId = await lookupCompanyId(spec.name);
+      await recordSeedAudit({
+        actorId: adminActorId,
+        actorRole: "admin",
+        action: "created",
+        targetType: "company",
+        targetId: companyId,
+        after: {
+          name: spec.name,
+          sector: spec.sector,
+          geography: spec.geography,
+          complianceStatus: spec.complianceStatus,
+          isMsme: spec.isMsme,
+        },
+      });
+    }
   }
 
   // 4. JVs — they look up their partners by name.
@@ -2518,6 +2700,29 @@ export async function main(): Promise<void> {
     bumpTally(coreStats, await seedCompanyUser(spec));
   }
 
+  // 5b. Scale-driven additional company-role users (one per generated
+  //     company that isn't rejected). Skipped for `small` profile when
+  //     the generator emitted zero new companies.
+  const generatedCompanyUsers = generators.generateCompanyUsers(
+    scale,
+    generatedCompanies,
+  );
+  for (const spec of generatedCompanyUsers) {
+    const r = await seedCompanyUser(spec);
+    bumpTally(coreStats, r);
+    if (r === "inserted") {
+      const userId = await lookupUserId(spec.email);
+      await recordSeedAudit({
+        actorId: adminActorId,
+        actorRole: "admin",
+        action: "created",
+        targetType: "user",
+        targetId: userId,
+        after: { email: spec.email, role: "company", companyName: spec.companyName },
+      });
+    }
+  }
+
   // 6. Document fixtures. Documents reference both a company
   //    (FK companyId) and users (FK uploadedBy, reviewedBy), so all
   //    earlier steps must have run.
@@ -2527,6 +2732,79 @@ export async function main(): Promise<void> {
     docStats.inserted += tally.inserted;
     docStats.updated += tally.updated;
     docStats.unchanged += tally.unchanged;
+  }
+
+  // 6b. Scale-driven additional documents across the generated companies.
+  //     Uploader pool = staff (baseline + generated); reviewer pool = admins.
+  const allStaffEmails = [
+    ...SEED_STAFF_USERS.filter((u) => u.role === "staff").map((u) => u.email),
+    ...generatedStaff.filter((u) => u.role === "staff").map((u) => u.email),
+  ];
+  const allAdminEmails = [
+    ...SEED_STAFF_USERS.filter((u) => u.role === "admin").map((u) => u.email),
+    ...generatedStaff.filter((u) => u.role === "admin").map((u) => u.email),
+  ];
+  const existingDocCount = Object.values(DOCUMENTS_PER_COMPANY).reduce(
+    (s, xs) => s + xs.length,
+    0,
+  );
+  const generatedDocs = generators.generateDocuments(
+    scale,
+    generatedCompanies,
+    allStaffEmails.length > 0 ? allStaffEmails : allAdminEmails,
+    allAdminEmails,
+    existingDocCount,
+  );
+  // Group by company so the existing per-company seeder can process
+  // them in one batch (it resolves the uploader/reviewer ids once
+  // per call).
+  const generatedByCompany = new Map<string, DocumentSeed[]>();
+  for (const entry of generatedDocs) {
+    const arr = generatedByCompany.get(entry.companyName) ?? [];
+    arr.push(entry.spec);
+    generatedByCompany.set(entry.companyName, arr);
+  }
+  for (const [companyName, specs] of generatedByCompany) {
+    const before = await db
+      .select({ id: documents.id, fileName: documents.fileName })
+      .from(documents)
+      .innerJoin(companies, eq(documents.companyId, companies.id))
+      .where(eq(companies.name, companyName));
+    const beforeNames = new Set(before.map((r) => r.fileName));
+
+    const tally = await seedDocumentsForCompany(companyName, specs);
+    docStats.inserted += tally.inserted;
+    docStats.updated += tally.updated;
+    docStats.unchanged += tally.unchanged;
+
+    // Audit only the rows that didn't exist before.
+    if (tally.inserted > 0) {
+      const after = await db
+        .select({ id: documents.id, fileName: documents.fileName })
+        .from(documents)
+        .innerJoin(companies, eq(documents.companyId, companies.id))
+        .where(eq(companies.name, companyName));
+      for (const row of after) {
+        if (beforeNames.has(row.fileName)) continue;
+        await recordSeedAudit({
+          actorId: adminActorId,
+          actorRole: "admin",
+          action: "document_uploaded",
+          targetType: "document",
+          targetId: row.id,
+          after: { companyName, fileName: row.fileName },
+        });
+      }
+    }
+  }
+
+  // 6c. Scale-driven `reminders_sent` rows. The cron's natural history
+  //     is what the dashboard's audit feed widget surfaces; without
+  //     pre-populating a few rows the feed looks empty on a fresh seed.
+  const reminderSpecs = generators.generateReminders(scale, generatedDocs);
+  const reminderStats = newTally();
+  for (const spec of reminderSpecs) {
+    bumpTally(reminderStats, await seedReminderSent(spec));
   }
 
   // 7. Tenders — reference the Consultway publisher sentinel + an
@@ -2559,6 +2837,7 @@ export async function main(): Promise<void> {
     scale,
     core: coreStats,
     documents: docStats,
+    reminders: reminderStats,
     tenders: tenderStats,
     tenderApplications: applicationStats,
     projects: projectStats,
