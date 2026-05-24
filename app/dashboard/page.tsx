@@ -53,6 +53,7 @@ import {
 } from "./_components/status-breakdown-card";
 import { RecentActivityCard } from "./_components/recent-activity-card";
 import { MonthTransactionsSummaryCard } from "./_components/month-transactions-summary-card";
+import { TransactionsTrendCard } from "./_components/transactions-trend-card";
 import { ActivityFeedLoading } from "./_components/activity-feed-loading";
 
 export const metadata: Metadata = {
@@ -193,6 +194,20 @@ export default async function DashboardPage() {
             totalLabel={`${totalProjects} total`}
             items={buildProjectItems(projectsByStatus)}
           />
+        </section>
+      )}
+
+      {/* Admin-only 12-month transactions trend (Day 24). Sits above
+          the per-month breakdown so the rolling chart sets the
+          narrative ("here's what activity has looked like") before
+          the current-month detail ("and here's what's happening now").
+          Both are admin-only — transactions are admin-only forever. */}
+      {isAdmin && (
+        <section
+          aria-label="Transactions trend"
+          className="mb-6 sm:mb-8"
+        >
+          <TransactionsTrendCard months={12} />
         </section>
       )}
 

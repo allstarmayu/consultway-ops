@@ -20,10 +20,15 @@ import { Wallet } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { getTransactionsSummaryForPeriod } from "@/lib/dashboard/aggregates";
+import {
+  getMonthlyTransactionsBreakdownForPeriod,
+  getTransactionsSummaryForPeriod,
+} from "@/lib/dashboard/aggregates";
 import { formatRupeesFromPaise } from "@/lib/format/inr";
 import { TransactionTypeBadge } from "@/app/dashboard/transactions/_components/badges";
 import type { TransactionType } from "@/lib/db/schema";
+
+import { TransactionsBreakdownBarChart } from "./transactions-breakdown-bar-chart";
 
 export interface TransactionsSummaryCardProps {
   start: string;
@@ -36,11 +41,21 @@ export async function TransactionsSummaryCard({
   end,
   companyId,
 }: TransactionsSummaryCardProps) {
-  const result = await getTransactionsSummaryForPeriod({
-    start,
-    end,
-    ...(companyId ? { companyId } : {}),
-  });
+  // Fetch the per-type rollup and the per-month breakdown in parallel.
+  // Both are admin-only at the helper level; the reports page already
+  // role-gates this entire card.
+  const [result, monthlyResult] = await Promise.all([
+    getTransactionsSummaryForPeriod({
+      start,
+      end,
+      ...(companyId ? { companyId } : {}),
+    }),
+    getMonthlyTransactionsBreakdownForPeriod({
+      start,
+      end,
+      ...(companyId ? { companyId } : {}),
+    }),
+  ]);
 
   if (!result.ok) {
     return (
@@ -53,6 +68,13 @@ export async function TransactionsSummaryCard({
   }
 
   const types = Object.keys(result.countByType) as TransactionType[];
+  // The monthly chart is only useful when the window spans 2+ buckets;
+  // a single-month window's bar is redundant with the per-type grid
+  // below. Also skip if the monthly query itself errored — the per-type
+  // grid still carries the period's info.
+  const monthlyBuckets = monthlyResult.ok ? monthlyResult.months : [];
+  const showMonthlyChart =
+    monthlyBuckets.length >= 2 && result.totalCount > 0;
 
   return (
     <Card className="overflow-hidden p-0">
@@ -75,6 +97,14 @@ export async function TransactionsSummaryCard({
           </p>
         ) : (
           <>
+            {/* Day 24: per-month bar chart at the top — only when the
+                window has 2+ months. The chart reads the same
+                period bounds as the per-type grid below; the two are
+                two views of the same dataset. */}
+            {showMonthlyChart && (
+              <TransactionsBreakdownBarChart data={monthlyBuckets} />
+            )}
+
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
               {types.map((t) => (
                 <div

@@ -53,6 +53,8 @@ vi.mock("@/lib/auth/session", () => ({
 
 import { readSession } from "@/lib/auth/session";
 import {
+  getMonthlyTransactionsBreakdownForPeriod,
+  getMonthlyTransactionsTrend,
   getProjectsByStatusForPeriod,
   getTendersByStatusForPeriod,
   getTransactionsSummaryForPeriod,
@@ -630,5 +632,136 @@ describe("getTransactionsSummaryForPeriod", () => {
     if (!endOnly.ok) return;
     expect(endOnly.totalCount).toBe(1);
     expect(endOnly.countByType.expense).toBe(1);
+  });
+});
+
+// ── getMonthlyTransactionsBreakdownForPeriod (Day 24) ─────────────────────
+
+describe("getMonthlyTransactionsBreakdownForPeriod", () => {
+  it("zero-fills every month in the window oldest-first", async () => {
+    loginAs("admin", fixture);
+    // March → May 2026 window. The fixture has April (out-of-period
+    // for the existing tests but in-period here) + May rows, and
+    // nothing in March.
+    const result = await getMonthlyTransactionsBreakdownForPeriod({
+      start: "2026-03-01",
+      end: "2026-05-31",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.months.map((m) => m.month)).toEqual([
+      "2026-03",
+      "2026-04",
+      "2026-05",
+    ]);
+    expect(result.months[0]).toEqual({
+      month: "2026-03",
+      totalPaise: 0,
+      count: 0,
+    });
+    // April: one invoice for 999_000_00 paise.
+    expect(result.months[1].count).toBe(1);
+    expect(result.months[1].totalPaise).toBe(999_000_00);
+    // May: 5 rows summing to 100k+50k+30k+20k+5k = 205k rupees.
+    expect(result.months[2].count).toBe(5);
+    expect(result.months[2].totalPaise).toBe(
+      100_000_00 + 50_000_00 + 30_000_00 + 20_000_00 + 5_000_00,
+    );
+  });
+
+  it("narrows by companyId", async () => {
+    loginAs("admin", fixture);
+    const acme = await getMonthlyTransactionsBreakdownForPeriod({
+      start: PERIOD_START,
+      end: PERIOD_END,
+      companyId: fixture.companyAId,
+    });
+    expect(acme.ok).toBe(true);
+    if (!acme.ok) return;
+    expect(acme.months).toHaveLength(1);
+    // Acme May rows: 2 invoices + 1 payment.
+    expect(acme.months[0]).toEqual({
+      month: "2026-05",
+      totalPaise: 100_000_00 + 50_000_00 + 30_000_00,
+      count: 3,
+    });
+  });
+
+  it("refuses non-admin callers", async () => {
+    loginAs("staff", fixture);
+    const result = await getMonthlyTransactionsBreakdownForPeriod({
+      start: PERIOD_START,
+      end: PERIOD_END,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/administrator/i);
+  });
+});
+
+// ── getMonthlyTransactionsTrend (Day 24) ──────────────────────────────────
+
+describe("getMonthlyTransactionsTrend", () => {
+  // `now` isn't directly overridable on the new helper (it uses
+  // `new Date()` internally), so we lean on a known-empty future
+  // window for shape tests and on the seeded fixture for the
+  // ordering / RBAC pins. The default `months: 12` always lands a
+  // 12-bucket window from the test runtime's clock.
+
+  it("returns the requested number of buckets, oldest-first", async () => {
+    loginAs("admin", fixture);
+    const result = await getMonthlyTransactionsTrend({ months: 6 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.months).toHaveLength(6);
+    // Oldest-first: every bucket's month string must be <= the next.
+    for (let i = 1; i < result.months.length; i++) {
+      expect(result.months[i - 1].month <= result.months[i].month).toBe(true);
+    }
+    expect(result.start).toBe(result.months[0].month);
+    expect(result.end).toBe(result.months[result.months.length - 1].month);
+  });
+
+  it("defaults to a 12-month window when no input is supplied", async () => {
+    loginAs("admin", fixture);
+    const result = await getMonthlyTransactionsTrend();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.months).toHaveLength(12);
+  });
+
+  it("zero-fills buckets that have no transactions", async () => {
+    loginAs("admin", fixture);
+    // The fixture seeds May 2026 + April 2026 + June 2026 rows. Other
+    // months in any rolling window MUST be zero — so a 12-month
+    // window will contain plenty of zero buckets unless the runtime
+    // clock happens to align perfectly with the fixture months.
+    const result = await getMonthlyTransactionsTrend({ months: 12 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const zeroBuckets = result.months.filter(
+      (m) => m.totalPaise === 0 && m.count === 0,
+    );
+    // At least some buckets are zero — the seeded fixture only spans
+    // a couple of months and the window is 12.
+    expect(zeroBuckets.length).toBeGreaterThan(0);
+  });
+
+  it("refuses staff callers", async () => {
+    loginAs("staff", fixture);
+    const result = await getMonthlyTransactionsTrend({ months: 12 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/administrator/i);
+  });
+
+  it("refuses company-role callers", async () => {
+    loginAs("companyA", fixture);
+    const result = await getMonthlyTransactionsTrend({ months: 12 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/administrator/i);
   });
 });

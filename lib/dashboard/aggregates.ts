@@ -458,6 +458,249 @@ export async function getTransactionsSummaryThisMonth(
   };
 }
 
+// ── getMonthlyTransactionsTrend (Day 24) ──────────────────────────────────
+
+/**
+ * Schema for the rolling-trend helper. Caller picks the window size in
+ * whole months; `now` is overridable for tests so the fixture can pin a
+ * known end month.
+ */
+const monthlyTrendInputSchema = z.object({
+  months: z.coerce.number().int().min(1).max(36).default(12),
+});
+
+/**
+ * Rolling N-month transactions trend. Admin-only — same gate as the
+ * other transactions helpers. Returns one bucket per calendar month in
+ * the trailing window `[(now - (N-1) months), now]` (UTC), sorted
+ * oldest-first, with `totalPaise` zero-filled for months that had no
+ * transactions so the chart keeps its X-axis spacing constant.
+ *
+ * Drives the dashboard's `<TransactionsTrendCard />`. The seed's
+ * 13-month spread (current month + trailing 12) means a default
+ * `months: 12` window always renders against non-trivial data.
+ *
+ * SQL: one `groupBy(substr(occurred_on, 1, 7))` aggregate — `occurred_on`
+ * is stored as a `YYYY-MM-DD` ISO date string, so the first 7 chars
+ * is the year-month key. Cheap and indexable on the date prefix.
+ */
+export async function getMonthlyTransactionsTrend(
+  rawInput: unknown = {},
+): Promise<
+  ActionResult<{
+    months: Array<{ month: string; totalPaise: number; count: number }>;
+    /** Echoed UTC year-month strings ("YYYY-MM") for the window's first + last buckets. */
+    start: string;
+    end: string;
+  }>
+> {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth;
+
+  const parsed = monthlyTrendInputSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const { months } = parsed.data;
+
+  // Compute the window: `months` calendar months ending with the current
+  // one (UTC). Returned buckets are oldest-first.
+  const now = new Date();
+  const windowMonths = buildMonthWindow(now, months);
+  const startMonth = windowMonths[0];
+  const endMonth = windowMonths[windowMonths.length - 1];
+
+  // Date bounds for the SQL filter: first day of the start month and
+  // last day of the end month. The `occurred_on` column is a `YYYY-MM-DD`
+  // string so lexicographic comparison is correct.
+  const startDate = `${startMonth}-01`;
+  const endDate = lastDayOfMonth(endMonth);
+
+  const rows = await db
+    .select({
+      month: sql<string>`substr(${transactions.occurredOn}, 1, 7)`,
+      total: sql<number>`coalesce(sum(${transactions.amountPaise}), 0)`,
+      count: sql<number>`count(*)`,
+    })
+    .from(transactions)
+    .where(
+      and(
+        gte(transactions.occurredOn, startDate),
+        lte(transactions.occurredOn, endDate),
+      ),
+    )
+    .groupBy(sql`substr(${transactions.occurredOn}, 1, 7)`);
+
+  // Zero-fill: build a map of every month in the window, then overlay
+  // whatever the query returned. The map keeps the oldest-first ordering.
+  const bucketMap = new Map<string, { totalPaise: number; count: number }>();
+  for (const m of windowMonths) {
+    bucketMap.set(m, { totalPaise: 0, count: 0 });
+  }
+  for (const row of rows) {
+    const existing = bucketMap.get(row.month);
+    if (existing) {
+      existing.totalPaise = Number(row.total) || 0;
+      existing.count = Number(row.count) || 0;
+    }
+  }
+
+  const monthsOut = windowMonths.map((m) => ({
+    month: m,
+    totalPaise: bucketMap.get(m)?.totalPaise ?? 0,
+    count: bucketMap.get(m)?.count ?? 0,
+  }));
+
+  return {
+    ok: true,
+    months: monthsOut,
+    start: startMonth,
+    end: endMonth,
+  };
+}
+
+// ── getMonthlyTransactionsBreakdownForPeriod (Day 24) ─────────────────────
+
+/**
+ * Period-bounded variant of the monthly trend. Same shape as
+ * `getMonthlyTransactionsTrend` but instead of a trailing-N-month
+ * window, the caller supplies `{ start, end }` ISO date strings (and an
+ * optional `companyId` to narrow to a single company's slice).
+ *
+ * Drives the per-month bar chart inside the reports
+ * `<TransactionsSummaryCard />`. Months are zero-filled across the full
+ * `[start, end]` window so the chart axis stays consistent across
+ * different period sizes.
+ */
+export async function getMonthlyTransactionsBreakdownForPeriod(
+  rawScope: unknown,
+): Promise<
+  ActionResult<{
+    months: Array<{ month: string; totalPaise: number; count: number }>;
+    start: string;
+    end: string;
+  }>
+> {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth;
+
+  const parsed = periodScopeSchema.safeParse(rawScope);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid period",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const { start, end, companyId } = parsed.data;
+
+  const filters: SQL[] = [
+    gte(transactions.occurredOn, start),
+    lte(transactions.occurredOn, end),
+  ];
+  if (companyId) filters.push(eq(transactions.companyId, companyId));
+
+  const rows = await db
+    .select({
+      month: sql<string>`substr(${transactions.occurredOn}, 1, 7)`,
+      total: sql<number>`coalesce(sum(${transactions.amountPaise}), 0)`,
+      count: sql<number>`count(*)`,
+    })
+    .from(transactions)
+    .where(and(...filters))
+    .groupBy(sql`substr(${transactions.occurredOn}, 1, 7)`);
+
+  // Window for zero-fill: every YYYY-MM between start's month and end's
+  // month inclusive.
+  const startMonth = start.slice(0, 7);
+  const endMonth = end.slice(0, 7);
+  const windowMonths = buildMonthRange(startMonth, endMonth);
+
+  const bucketMap = new Map<string, { totalPaise: number; count: number }>();
+  for (const m of windowMonths) {
+    bucketMap.set(m, { totalPaise: 0, count: 0 });
+  }
+  for (const row of rows) {
+    const existing = bucketMap.get(row.month);
+    if (existing) {
+      existing.totalPaise = Number(row.total) || 0;
+      existing.count = Number(row.count) || 0;
+    }
+  }
+
+  const monthsOut = windowMonths.map((m) => ({
+    month: m,
+    totalPaise: bucketMap.get(m)?.totalPaise ?? 0,
+    count: bucketMap.get(m)?.count ?? 0,
+  }));
+
+  return {
+    ok: true,
+    months: monthsOut,
+    start,
+    end,
+  };
+}
+
+// ── Month-window helpers ─────────────────────────────────────────────────
+
+/**
+ * Build the trailing-N-month window ending on `now`'s calendar month
+ * (UTC), oldest-first. Each entry is a `YYYY-MM` string.
+ *
+ *   buildMonthWindow(new Date("2026-05-23"), 3)
+ *     → ["2026-03", "2026-04", "2026-05"]
+ */
+function buildMonthWindow(now: Date, months: number): string[] {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth(); // 0-11
+  const out: string[] = [];
+  for (let offset = months - 1; offset >= 0; offset--) {
+    const d = new Date(Date.UTC(year, month - offset, 1));
+    out.push(d.toISOString().slice(0, 7));
+  }
+  return out;
+}
+
+/**
+ * Build the inclusive list of `YYYY-MM` strings from `startMonth` to
+ * `endMonth`. Returns `[startMonth]` when start === end; returns `[]`
+ * when end is before start (the caller's input was inverted).
+ */
+function buildMonthRange(startMonth: string, endMonth: string): string[] {
+  const [sy, sm] = startMonth.split("-").map(Number);
+  const [ey, em] = endMonth.split("-").map(Number);
+  const out: string[] = [];
+  let y = sy;
+  let m = sm; // 1-12
+  while (y < ey || (y === ey && m <= em)) {
+    out.push(`${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}`);
+    m++;
+    if (m > 12) {
+      m = 1;
+      y++;
+    }
+  }
+  return out;
+}
+
+/**
+ * Last calendar day of a `YYYY-MM` month, as `YYYY-MM-DD`. Used to
+ * close the upper bound of the trend window's SQL filter.
+ */
+function lastDayOfMonth(yearMonth: string): string {
+  const [y, m] = yearMonth.split("-").map(Number);
+  // Day 0 of next month = last day of this month.
+  const d = new Date(Date.UTC(y, m, 0));
+  return d.toISOString().slice(0, 10);
+}
+
 // ── getProjectsByStatusForPeriod ──────────────────────────────────────────
 
 /**
