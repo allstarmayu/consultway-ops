@@ -51,6 +51,10 @@ import {
   type UpdateCompanyInput,
   type ListCompaniesQuery,
 } from "./schemas";
+import {
+  assertTransitionCompliance,
+  ComplianceTransitionError,
+} from "./state-machine";
 
 const log = logger.child({ module: "companies-actions" });
 
@@ -356,9 +360,43 @@ export async function updateCompany(
   // Staff-only fields — silently dropped for `company` role, even if the
   // client sent them. Defence in depth: the Zod schema accepted them,
   // and the UI shouldn't show them, but we enforce here too.
+  //
+  // Day 23: complianceStatus moves are gated by the state machine in
+  // lib/companies/state-machine.ts. We assert BEFORE staging the patch
+  // so an illegal transition surfaces as a typed ActionResult error
+  // rather than a thrown 500. Same-state "transitions" don't move the
+  // row — assertTransitionCompliance treats them as legal no-ops, and
+  // the equality check on `complianceStatus` below keeps us from
+  // emitting a noisy `compliance_status_changed` audit for a no-op.
+  let complianceMoved = false;
   if (isStaffOrAdmin) {
-    if (input.complianceStatus !== undefined)
+    if (input.complianceStatus !== undefined) {
+      if (input.complianceStatus !== existing.complianceStatus) {
+        try {
+          assertTransitionCompliance(
+            existing.complianceStatus,
+            input.complianceStatus,
+          );
+        } catch (err) {
+          if (err instanceof ComplianceTransitionError) {
+            log.info("updateCompany illegal compliance transition", {
+              id: input.id,
+              actorId: session.userId,
+              from: err.from,
+              to: err.to,
+            });
+            return {
+              ok: false,
+              field: "complianceStatus",
+              error: err.message,
+            };
+          }
+          throw err;
+        }
+        complianceMoved = true;
+      }
       patch.complianceStatus = input.complianceStatus;
+    }
     if (input.internalNotes !== undefined)
       patch.internalNotes = input.internalNotes;
     if (input.rejectionReason !== undefined)
@@ -414,6 +452,13 @@ export async function updateCompany(
   //    touched, derived by walking the patch keys. Storing the full row
   //    diff would inflate the audit log without much benefit — "what
   //    changed" beats "what the row looked like" for forensic queries.
+  //
+  // Day 23: when the patch moves compliance_status, the audit verb
+  // becomes `compliance_status_changed` instead of plain `updated` so
+  // the activity feed can highlight state moves separately from routine
+  // field edits. The before/after snapshots are the same — they include
+  // every touched field, which on a status move covers complianceStatus
+  // (and rejectionReason when the move is into `rejected`).
   const touchedKeys = Object.keys(patch);
   const beforeSnapshot = buildPatchSnapshot(existing, touchedKeys);
   const afterSnapshot = buildPatchSnapshot(
@@ -423,7 +468,7 @@ export async function updateCompany(
   await recordAuditEvent({
     actorId: session.userId,
     actorRole: session.role,
-    action: "updated",
+    action: complianceMoved ? "compliance_status_changed" : "updated",
     targetType: "company",
     targetId: input.id,
     before: beforeSnapshot,

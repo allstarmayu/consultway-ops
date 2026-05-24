@@ -310,6 +310,28 @@ export const updateCompanySchema = z
         });
       }
     }
+
+    // Day 23: rejected ⇒ rejectionReason required.
+    //
+    // The pair is bound at the schema layer so a patch that moves status
+    // to `rejected` without a reason is rejected before it ever reaches
+    // the action. The inverse direction (clearing a reason on transition
+    // away from rejected) is intentionally NOT enforced here — see the
+    // comment on the `rejectionReason` field above. The seed-invariant
+    // verifier and this superRefine together pin the "rejected ⇒
+    // non-null reason" half of the contract.
+    if (data.complianceStatus === "rejected") {
+      const reason = data.rejectionReason;
+      const trimmed = typeof reason === "string" ? reason.trim() : reason;
+      if (trimmed === undefined || trimmed === null || trimmed === "") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["rejectionReason"],
+          message:
+            "A rejection reason is required when moving a company to rejected",
+        });
+      }
+    }
   });
 
 export type UpdateCompanyInput = z.infer<typeof updateCompanySchema>;
