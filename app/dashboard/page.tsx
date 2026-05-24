@@ -59,6 +59,7 @@ import {
   StatusBreakdownCard,
   type StatusBreakdownItem,
 } from "./_components/status-breakdown-card";
+import { QuickActionsBar } from "./_components/quick-actions-bar";
 import { RecentActivityCard } from "./_components/recent-activity-card";
 import { MonthTransactionsSummaryCard } from "./_components/month-transactions-summary-card";
 import { TransactionsTrendCard } from "./_components/transactions-trend-card";
@@ -385,6 +386,18 @@ export default async function DashboardPage({
           className="mb-6 sm:mb-8"
         >
           <MonthTransactionsSummaryCard />
+        </section>
+      )}
+
+      {/* Quick actions — admin/staff convenience row of CTAs into the
+          common create surfaces. Mirrors the Figma reference. Skipped
+          for company-role (they can't create top-level entities). */}
+      {!isCompany && (
+        <section
+          aria-label="Quick actions"
+          className="mb-6 sm:mb-8"
+        >
+          <QuickActionsBar canCreateTransactions={isAdmin} />
         </section>
       )}
 
