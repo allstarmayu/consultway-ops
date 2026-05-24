@@ -837,7 +837,7 @@ const DOCUMENTS_PER_COMPANY: Record<string, DocumentSeed[]> = {
  * Idempotency: lookup by `referenceNumber` (every fixture sets one).
  * Re-running the seed against an already-seeded DB skips every row.
  */
-interface TenderSeed {
+export interface TenderSeed {
   title: string;
   referenceNumber: string;
   status: TenderStatus;
@@ -1000,7 +1000,7 @@ const SEED_TENDERS: TenderSeed[] = [
  * turnover is NULL) but the seed represents historical applications
  * staff later rejected — the rejected status carries that intent.
  */
-interface TenderApplicationSeed {
+export interface TenderApplicationSeed {
   tenderReferenceNumber: string;
   companyName: string;
   status: TenderApplicationStatus;
@@ -1135,7 +1135,7 @@ const SEED_TENDER_APPLICATIONS: TenderApplicationSeed[] = [
  *
  * Lookup: `(companyId, name)`.
  */
-interface ProjectSeed {
+export interface ProjectSeed {
   name: string;
   companyName: string;
   /** Optional reference to a tender by `referenceNumber`. Promoted-from-tender path. */
@@ -1254,7 +1254,7 @@ const SEED_PROJECTS: ProjectSeed[] = [
  * Lookup: `(companyName, referenceNumber)`. Every fixture sets a
  * unique reference so re-running the seed skips correctly.
  */
-interface TransactionSeed {
+export interface TransactionSeed {
   type: TransactionType;
   /** Amount in PAISE (1 INR = 100 paise). */
   amountPaise: number;
@@ -2814,10 +2814,94 @@ export async function main(): Promise<void> {
     bumpTally(tenderStats, await seedTender(spec));
   }
 
+  // 7b. Scale-driven additional tenders.
+  const generatedTenders = generators.generateTenders(
+    scale,
+    SEED_TENDERS.length,
+    generatedCompanies,
+  );
+  for (const spec of generatedTenders) {
+    const r = await seedTender(spec);
+    bumpTally(tenderStats, r);
+    if (r === "inserted") {
+      const tenderRow = await db
+        .select({ id: tenders.id })
+        .from(tenders)
+        .where(eq(tenders.referenceNumber, spec.referenceNumber))
+        .limit(1)
+        .then((rs) => rs[0]);
+      if (tenderRow) {
+        await recordSeedAudit({
+          actorId: adminActorId,
+          actorRole: "admin",
+          action: spec.status === "draft" ? "created" : "tender_published",
+          targetType: "tender",
+          targetId: tenderRow.id,
+          after: {
+            referenceNumber: spec.referenceNumber,
+            title: spec.title,
+            status: spec.status,
+          },
+        });
+      }
+    }
+  }
+
   // 8. Tender applications — depend on both tenders and companies.
   const applicationStats = newTally();
   for (const spec of SEED_TENDER_APPLICATIONS) {
     bumpTally(applicationStats, await seedTenderApplication(spec));
+  }
+
+  // 8b. Scale-driven additional applications across the generated tenders.
+  const generatedApps = generators.generateTenderApplications(
+    scale,
+    generatedTenders,
+    generatedCompanies,
+  );
+  for (const spec of generatedApps) {
+    const r = await seedTenderApplication(spec);
+    bumpTally(applicationStats, r);
+    if (r === "inserted") {
+      // Resolve the application id for the audit row. We have the
+      // tender + company; the unique (tenderId, companyId) tuple lets
+      // us look up the row deterministically.
+      const tenderRow = await db
+        .select({ id: tenders.id })
+        .from(tenders)
+        .where(eq(tenders.referenceNumber, spec.tenderReferenceNumber))
+        .limit(1)
+        .then((rs) => rs[0]);
+      const companyId = await lookupCompanyId(spec.companyName);
+      if (tenderRow) {
+        const appRow = await db
+          .select({ id: tenderApplications.id })
+          .from(tenderApplications)
+          .where(
+            and(
+              eq(tenderApplications.tenderId, tenderRow.id),
+              eq(tenderApplications.companyId, companyId),
+            ),
+          )
+          .limit(1)
+          .then((rs) => rs[0]);
+        if (appRow) {
+          await recordSeedAudit({
+            actorId: adminActorId,
+            actorRole: "company",
+            action: "tender_applied",
+            targetType: "tender",
+            targetId: tenderRow.id,
+            metadata: {
+              tenderReferenceNumber: spec.tenderReferenceNumber,
+              companyName: spec.companyName,
+              applicationId: appRow.id,
+              status: spec.status,
+            },
+          });
+        }
+      }
+    }
   }
 
   // 9. Projects — may reference an awarded tender. Companies must exist.
@@ -2826,11 +2910,91 @@ export async function main(): Promise<void> {
     bumpTally(projectStats, await seedProject(spec));
   }
 
+  // 9b. Scale-driven additional projects on top of the baseline.
+  const generatedProjects = generators.generateProjects(
+    scale,
+    SEED_PROJECTS.length,
+    generatedCompanies,
+    generatedTenders,
+  );
+  for (const spec of generatedProjects) {
+    const r = await seedProject(spec);
+    bumpTally(projectStats, r);
+    if (r === "inserted") {
+      const companyId = await lookupCompanyId(spec.companyName);
+      const projectRow = await db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(eq(projects.companyId, companyId), eq(projects.name, spec.name)))
+        .limit(1)
+        .then((rs) => rs[0]);
+      if (projectRow) {
+        await recordSeedAudit({
+          actorId: adminActorId,
+          actorRole: "admin",
+          action: "created",
+          targetType: "project",
+          targetId: projectRow.id,
+          after: {
+            name: spec.name,
+            companyName: spec.companyName,
+            status: spec.status,
+          },
+        });
+      }
+    }
+  }
+
   // 10. Transactions — may reference a project; cross-FK invariant
   //     re-asserted inside the seeder. Projects must exist.
   const transactionStats = newTally();
   for (const spec of SEED_TRANSACTIONS) {
     bumpTally(transactionStats, await seedTransaction(spec));
+  }
+
+  // 10b. Scale-driven transactions spread across the last 12 months.
+  // Combine baseline + generated projects so the project-link pool is
+  // realistic. The transaction generator's PRNG is independent so
+  // shuffling baseline in doesn't affect determinism.
+  const allProjectSpecs = [...SEED_PROJECTS, ...generatedProjects];
+  const generatedTxns = generators.generateTransactions(
+    scale,
+    SEED_TRANSACTIONS.length,
+    generatedCompanies,
+    allProjectSpecs,
+  );
+  for (const spec of generatedTxns) {
+    const r = await seedTransaction(spec);
+    bumpTally(transactionStats, r);
+    if (r === "inserted") {
+      const companyId = await lookupCompanyId(spec.companyName);
+      const txnRow = await db
+        .select({ id: transactions.id })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.companyId, companyId),
+            eq(transactions.referenceNumber, spec.referenceNumber),
+          ),
+        )
+        .limit(1)
+        .then((rs) => rs[0]);
+      if (txnRow) {
+        await recordSeedAudit({
+          actorId: adminActorId,
+          actorRole: "admin",
+          action: "created",
+          targetType: "transaction",
+          targetId: txnRow.id,
+          after: {
+            referenceNumber: spec.referenceNumber,
+            type: spec.type,
+            companyName: spec.companyName,
+            projectName: spec.projectName,
+          },
+        });
+      }
+    }
   }
 
   log.info("seed complete", {
