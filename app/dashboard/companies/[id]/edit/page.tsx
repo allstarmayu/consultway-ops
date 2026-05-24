@@ -98,6 +98,7 @@ export default async function EditCompanyPage({
         <CompanyForm
           existingCompanies={partnerOptions}
           initialValues={company}
+          viewerRole={session.role}
         />
       </Card>
     </>

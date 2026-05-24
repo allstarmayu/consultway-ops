@@ -46,7 +46,7 @@ import {
   type CreateCompanyInput,
 } from "@/lib/companies/schemas";
 import { formatInr } from "@/lib/format/inr";
-import type { Company } from "@/lib/db/schema";
+import type { Company, UserRole } from "@/lib/db/schema";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -80,7 +80,33 @@ export interface CompanyFormProps {
    * keeps the call site clean.
    */
   initialValues?: Company;
+
+  /**
+   * Viewer role. Required prop — drives the conditional render of the
+   * Rejection-reason section in edit mode. Company-role users never
+   * see that section even on a self-edit of their own (rejected) row.
+   * Mirrors the same role-gate the company-header callout uses.
+   */
+  viewerRole: UserRole;
 }
+
+/**
+ * Shape of the form's RHF state. Extends `CreateCompanyInput` with
+ * `rejectionReason` — surfaced only in edit mode for admin/staff on a
+ * rejected company. We keep it in the form state in every mode so the
+ * resolver / submit branches don't have to special-case its absence.
+ */
+type CompanyFormValues = CreateCompanyInput & {
+  rejectionReason: string | null;
+};
+
+/**
+ * Shape passed to `updateCompany` from edit mode. The server's
+ * `updateCompanySchema` accepts every field as optional + an id;
+ * locally we model the same superset so the submit branch can build
+ * the payload without an `as` cast.
+ */
+type UpdateCompanyPayload = Partial<CompanyFormValues> & { id: string };
 
 // ── Default values ──────────────────────────────────────────────────────────
 
@@ -93,7 +119,7 @@ export interface CompanyFormProps {
  * it's a numeric field — the Controller-driven input below renders the
  * empty UI when the value is null/undefined.
  */
-const CREATE_DEFAULTS: CreateCompanyInput = {
+const CREATE_DEFAULTS: CompanyFormValues = {
   name: "",
   sector: "",
   geography: "",
@@ -111,6 +137,9 @@ const CREATE_DEFAULTS: CreateCompanyInput = {
   state: null,
   pincode: null,
   internalNotes: null,
+  // Never set on create — complianceStatus is forced to "pending" by
+  // the action, so there's no rejected-state path through createCompany.
+  rejectionReason: null,
 };
 
 /**
@@ -123,7 +152,7 @@ const CREATE_DEFAULTS: CreateCompanyInput = {
  * separate workflow (not buried in a CRUD edit form). When that
  * workflow ships, it'll have its own dedicated UI.
  */
-function buildEditDefaults(company: Company): CreateCompanyInput {
+function buildEditDefaults(company: Company): CompanyFormValues {
   return {
     name: company.name,
     sector: company.sector,
@@ -142,6 +171,11 @@ function buildEditDefaults(company: Company): CreateCompanyInput {
     state: company.state,
     pincode: company.pincode,
     internalNotes: company.internalNotes,
+    // Pre-fill the rejection reason for edit mode. Already null for
+    // non-rejected rows (and for company-role viewers — getCompany
+    // strips the field). The form's conditional render keeps the
+    // section hidden in those cases.
+    rejectionReason: company.rejectionReason,
   };
 }
 
@@ -150,12 +184,22 @@ function buildEditDefaults(company: Company): CreateCompanyInput {
 export function CompanyForm({
   existingCompanies,
   initialValues,
+  viewerRole,
 }: CompanyFormProps) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const isEditMode = initialValues !== undefined;
+
+  // Conditional render gate for the rejection-reason section. Mirrors
+  // the company-header callout: admin/staff only, edit mode, and the
+  // row's current compliance status is rejected. Company-role viewers
+  // never see the section even on a self-edit.
+  const showRejectionReason =
+    isEditMode &&
+    (viewerRole === "admin" || viewerRole === "staff") &&
+    initialValues.complianceStatus === "rejected";
 
   const {
     register,
@@ -164,7 +208,7 @@ export function CompanyForm({
     watch,
     setError,
     formState: { errors, isDirty, isSubmitting },
-  } = useForm<CreateCompanyInput>({
+  } = useForm<CompanyFormValues>({
     /**
      * Inline Zod resolver — `safeParse` on every validate call. Same
      * structure as login: success → values + empty errors; failure →
@@ -174,6 +218,12 @@ export function CompanyForm({
      * The server uses updateCompanySchema for edit, which accepts
      * partial input — but client-side we want to enforce "the row
      * after edit must still be valid" which means full validation.
+     *
+     * `rejectionReason` is not part of `createCompanySchema` (it's an
+     * update-only field) so the schema strips it on parse. We re-merge
+     * the raw value back into the resolver's return so RHF keeps it in
+     * its state, and apply a client-side "required when shown" check
+     * separately below.
      */
     resolver: async (rawValues) => {
       // Normalise blanks: optional text fields where the input was
@@ -181,10 +231,43 @@ export function CompanyForm({
       const values = normaliseFormValues(rawValues);
 
       const result = createCompanySchema.safeParse(values);
-      if (result.success) {
-        return { values: result.data, errors: {} };
-      }
+      const rejectionReasonRaw = values.rejectionReason as
+        | string
+        | null
+        | undefined;
+      const rejectionReason =
+        typeof rejectionReasonRaw === "string"
+          ? rejectionReasonRaw
+          : (rejectionReasonRaw ?? null);
+
+      // Defence-in-depth client-side check that mirrors the server's
+      // `updateCompanySchema` superRefine: when the rejection-reason
+      // section is rendered, the field is effectively required. The
+      // server enforces the same contract on every patch path; this
+      // check just surfaces the error inline before the round-trip.
       const errs: Record<string, { type: string; message: string }> = {};
+      if (showRejectionReason) {
+        const trimmed = typeof rejectionReason === "string"
+          ? rejectionReason.trim()
+          : "";
+        if (trimmed.length === 0) {
+          errs.rejectionReason = {
+            type: "required",
+            message: "A rejection reason is required for rejected companies",
+          };
+        }
+      }
+
+      if (result.success) {
+        const merged: CompanyFormValues = {
+          ...result.data,
+          rejectionReason,
+        };
+        return {
+          values: Object.keys(errs).length === 0 ? merged : {},
+          errors: errs,
+        };
+      }
       for (const issue of result.error.issues) {
         const path = issue.path.join(".");
         if (path && !errs[path]) {
@@ -213,18 +296,35 @@ export function CompanyForm({
   // navigation so the transition can settle without waiting on the
   // destination's RSC payload.
 
-  function onSubmit(data: CreateCompanyInput) {
+  function onSubmit(data: CompanyFormValues) {
     setServerError(null);
 
     startTransition(async () => {
-      const result = isEditMode
-        ? await updateCompany({ id: initialValues.id, ...data })
-        : await createCompany(data);
+      // Split rejectionReason out so create-mode submits stay unchanged
+      // (createCompany doesn't accept the field) and edit-mode submits
+      // only carry it when the section was actually rendered. Sending
+      // it unconditionally on every edit would risk a no-op patch
+      // clearing the reason on a non-rejected row.
+      const { rejectionReason, ...rest } = data;
+
+      let result;
+      if (isEditMode) {
+        const payload: UpdateCompanyPayload = {
+          id: initialValues.id,
+          ...rest,
+        };
+        if (showRejectionReason) {
+          payload.rejectionReason = rejectionReason;
+        }
+        result = await updateCompany(payload);
+      } else {
+        result = await createCompany(rest);
+      }
 
       if (!result.ok) {
         // Field-targeted error → highlight the offending input.
         if (result.field) {
-          setError(result.field as keyof CreateCompanyInput, {
+          setError(result.field as keyof CompanyFormValues, {
             type: "server",
             message: result.error,
           });
@@ -659,6 +759,36 @@ export function CompanyForm({
           />
         </FormField>
       </FormSection>
+
+      {/* Section 8: Rejection reason — admin/staff, edit-mode, rejected
+          companies only. Sits at the bottom of the form because it's
+          context for an already-decided state, not part of the
+          create / update happy path. The same callout copy appears on
+          the detail page header; this is its editable mirror. */}
+      {showRejectionReason && (
+        <FormSection
+          title="Rejection reason"
+          description="Why this company was rejected. Visible to Consultway staff only and surfaced on the company detail page header."
+          layout="stack"
+        >
+          <FormField
+            name="rejectionReason"
+            label="Reason"
+            required
+            description="Required while the company is in rejected status."
+            error={errors.rejectionReason?.message}
+          >
+            <Textarea
+              rows={4}
+              placeholder="e.g. Failed background check on directors at intake; commercial dispute under arbitration; regulatory blocker."
+              disabled={submitDisabled}
+              {...register("rejectionReason", {
+                setValueAs: (v) => (v === "" ? null : v),
+              })}
+            />
+          </FormField>
+        </FormSection>
+      )}
 
       {/* Sticky bottom action bar */}
       <StickyActionBar

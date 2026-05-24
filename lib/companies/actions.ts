@@ -429,6 +429,35 @@ export async function updateCompany(
     };
   }
 
+  // Day 24: rejected ⇒ rejectionReason non-null on the merged row.
+  //
+  // The schema's superRefine catches the half where a patch flips status
+  // INTO rejected without a reason. This guard catches the inverse
+  // back-door: a patch that clears `rejectionReason` to null / empty
+  // while the row is (or stays) rejected. Without it, a client could
+  // POST `{ rejectionReason: null }` against a rejected row without
+  // including `complianceStatus` — the superRefine wouldn't fire, the
+  // seed-invariant verifier would later flag the divergence.
+  //
+  // Same approach as the JV check above: compute the merged row state
+  // and validate the invariant against it. Only meaningful when the
+  // patch actually touches rejectionReason (otherwise nothing changes).
+  if (patch.rejectionReason !== undefined) {
+    const mergedStatus = patch.complianceStatus ?? existing.complianceStatus;
+    const mergedReason = patch.rejectionReason;
+    const reasonIsEmpty =
+      mergedReason === null ||
+      (typeof mergedReason === "string" && mergedReason.trim().length === 0);
+    if (mergedStatus === "rejected" && reasonIsEmpty) {
+      return {
+        ok: false,
+        field: "rejectionReason",
+        error:
+          "A rejection reason is required while the company is in rejected status",
+      };
+    }
+  }
+
   // 7. Apply
   if (Object.keys(patch).length === 0) {
     return { ok: true }; // nothing to update — treat as success, idempotent

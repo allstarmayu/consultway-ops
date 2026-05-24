@@ -72,7 +72,10 @@ export default async function NewCompanyPage() {
       />
 
       <Card className="overflow-visible p-6 sm:p-8">
-        <CompanyForm existingCompanies={existingCompanies} />
+        <CompanyForm
+          existingCompanies={existingCompanies}
+          viewerRole={session.role}
+        />
       </Card>
     </>
   );

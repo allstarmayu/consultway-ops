@@ -416,6 +416,74 @@ describe("updateCompany — rejected requires rejectionReason", () => {
   });
 });
 
+// ── Day 24: rejection-reason invariant against the merged row ────────────
+
+describe("updateCompany — clearing rejectionReason on a rejected row", () => {
+  it("refuses null reason while row is rejected", async () => {
+    loginAs("admin", fixture);
+    await setCompanyStatus(
+      fixture.companyAId,
+      "rejected",
+      "Failed background check on directors at intake.",
+    );
+
+    const result = await updateCompany({
+      id: fixture.companyAId,
+      rejectionReason: null,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("rejectionReason");
+
+    // Row state unchanged — the cross-field check ran before the write.
+    const row = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, fixture.companyAId))
+      .then((r) => r[0]);
+    expect(row?.complianceStatus).toBe("rejected");
+    expect(row?.rejectionReason).toBe(
+      "Failed background check on directors at intake.",
+    );
+  });
+
+  it("refuses whitespace-only reason while row is rejected", async () => {
+    loginAs("admin", fixture);
+    await setCompanyStatus(fixture.companyAId, "rejected", "Original reason.");
+
+    const result = await updateCompany({
+      id: fixture.companyAId,
+      rejectionReason: "   ",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("rejectionReason");
+  });
+
+  it("admin can edit the reason on an already-rejected row (happy path)", async () => {
+    loginAs("admin", fixture);
+    await setCompanyStatus(fixture.companyAId, "rejected", "Old reason.");
+
+    const result = await updateCompany({
+      id: fixture.companyAId,
+      rejectionReason: "Revised reason with more detail after re-review.",
+    });
+    expect(result.ok).toBe(true);
+
+    const row = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, fixture.companyAId))
+      .then((r) => r[0]);
+    expect(row?.complianceStatus).toBe("rejected");
+    expect(row?.rejectionReason).toBe(
+      "Revised reason with more detail after re-review.",
+    );
+  });
+});
+
 // ── Company-role still has complianceStatus stripped ─────────────────────
 
 describe("updateCompany — company-role caller", () => {
