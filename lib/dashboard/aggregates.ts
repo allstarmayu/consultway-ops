@@ -73,6 +73,7 @@ import { and, eq, gte, lte, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import {
+  companies,
   projects,
   tenders,
   transactions,
@@ -820,4 +821,200 @@ export async function getTendersByStatusForPeriod(
   }
 
   return { ok: true, byStatus, start, end };
+}
+
+// ── getCompanyCount (Day 25) ──────────────────────────────────────────────
+
+/**
+ * Total number of companies on the platform, plus a delta showing how
+ * many were added in the trailing window (default 30 days). Drives the
+ * "Total Companies" KPI card on the admin dashboard — the delta lets
+ * the card show the same "+13%" / "+12 this month" copy the Figma
+ * mockup signals.
+ *
+ * No row-level scoping today — the helper is used only by the admin/
+ * staff dashboard KPI strip, where the answer is always cross-company.
+ * A future surface needing a company-role variant would add `scope` to
+ * the signature.
+ */
+const companyCountInputSchema = z.object({
+  /**
+   * Window size in days for the delta. Defaults to 30. The delta is
+   * "companies created in the last N days" — useful for "this month"
+   * narratives without needing calendar-month maths.
+   */
+  withDeltaDays: z.coerce.number().int().min(1).max(365).default(30),
+});
+
+export async function getCompanyCount(
+  rawInput: unknown = {},
+): Promise<
+  ActionResult<{
+    total: number;
+    recentlyAdded: number;
+    windowDays: number;
+  }>
+> {
+  const parsed = companyCountInputSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const { withDeltaDays } = parsed.data;
+
+  // Window cutoff: ISO timestamp `windowDays` ago. The createdAt column
+  // is an ISO-8601 string; lexicographic comparison is correct because
+  // ISO timestamps are sortable as strings.
+  const cutoffMs = Date.now() - withDeltaDays * 24 * 60 * 60 * 1000;
+  const cutoffIso = new Date(cutoffMs).toISOString();
+
+  const [totalRow, recentRow] = await Promise.all([
+    db
+      .select({ value: sql<number>`count(*)` })
+      .from(companies)
+      .then((r) => r[0]),
+    db
+      .select({ value: sql<number>`count(*)` })
+      .from(companies)
+      .where(gte(companies.createdAt, cutoffIso))
+      .then((r) => r[0]),
+  ]);
+
+  return {
+    ok: true,
+    total: Number(totalRow?.value) || 0,
+    recentlyAdded: Number(recentRow?.value) || 0,
+    windowDays: withDeltaDays,
+  };
+}
+
+// ── getTotalProjectValue (Day 25) ─────────────────────────────────────────
+
+/**
+ * Sum of `projects.budgetInr` across every project (or scoped to a
+ * single company). The budget column is stored as whole rupees per the
+ * Day-12 Phase-2 schema decision; this helper just sums.
+ *
+ * Admin-only — surface is a financial KPI and goes alongside the
+ * Amount Paid / Due card. Projects without a stated budget are
+ * silently excluded by the SQL `sum()` (NULL skipped).
+ */
+const projectValueScopeSchema = z.object({
+  companyId: z.string().uuid("Invalid companyId").optional(),
+});
+
+export async function getTotalProjectValue(
+  rawScope: unknown = {},
+): Promise<
+  ActionResult<{
+    totalRupees: number;
+    /** How many projects contributed a non-null budget figure. */
+    projectsWithBudget: number;
+  }>
+> {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth;
+
+  const parsed = projectValueScopeSchema.safeParse(rawScope);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid scope",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const { companyId } = parsed.data;
+
+  const whereClause = companyId ? eq(projects.companyId, companyId) : undefined;
+
+  const row = await db
+    .select({
+      total: sql<number>`coalesce(sum(${projects.budgetInr}), 0)`,
+      withBudget: sql<number>`sum(case when ${projects.budgetInr} is not null then 1 else 0 end)`,
+    })
+    .from(projects)
+    .where(whereClause)
+    .then((r) => r[0]);
+
+  return {
+    ok: true,
+    totalRupees: Number(row?.total) || 0,
+    projectsWithBudget: Number(row?.withBudget) || 0,
+  };
+}
+
+// ── getPaidAndDueTotals (Day 25) ──────────────────────────────────────────
+
+/**
+ * Paid vs Invoiced rollup across every transaction (or scoped to a
+ * single company). Admin-only — the transactions module is admin-only
+ * forever.
+ *
+ *   - `invoicedPaise` = `sum(amountPaise) WHERE type='invoice'`
+ *   - `paidPaise`     = `sum(amountPaise) WHERE type='payment'`
+ *   - `duePaise`      = `max(0, invoicedPaise - paidPaise)`
+ *
+ * Negative "due" is clamped to zero — overpayment isn't a meaningful
+ * KPI display state. Callers wanting the raw signed figure can compute
+ * it from invoiced/paid directly.
+ */
+export async function getPaidAndDueTotals(
+  rawScope: unknown = {},
+): Promise<
+  ActionResult<{
+    paidPaise: number;
+    invoicedPaise: number;
+    duePaise: number;
+  }>
+> {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth;
+
+  const parsed = projectValueScopeSchema.safeParse(rawScope);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid scope",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const { companyId } = parsed.data;
+
+  // One groupBy(type) aggregate — both totals come from the same scan.
+  const filters: SQL[] = [];
+  if (companyId) filters.push(eq(transactions.companyId, companyId));
+  const whereClause = filters.length > 0 ? and(...filters) : undefined;
+
+  const rows = await db
+    .select({
+      type: transactions.type,
+      total: sql<number>`coalesce(sum(${transactions.amountPaise}), 0)`,
+    })
+    .from(transactions)
+    .where(whereClause)
+    .groupBy(transactions.type);
+
+  let invoicedPaise = 0;
+  let paidPaise = 0;
+  for (const row of rows) {
+    const t = row.type as TransactionType;
+    const amount = Number(row.total) || 0;
+    if (t === "invoice") invoicedPaise = amount;
+    else if (t === "payment") paidPaise = amount;
+  }
+
+  const duePaise = Math.max(0, invoicedPaise - paidPaise);
+
+  return {
+    ok: true,
+    paidPaise,
+    invoicedPaise,
+    duePaise,
+  };
 }

@@ -52,8 +52,11 @@ vi.mock("@/lib/auth/session", () => ({
 
 import { readSession } from "@/lib/auth/session";
 import {
+  getCompanyCount,
+  getPaidAndDueTotals,
   getProjectsByStatus,
   getTendersByStatus,
+  getTotalProjectValue,
   getTransactionsSummaryThisMonth,
 } from "../aggregates";
 
@@ -451,6 +454,174 @@ describe("getTransactionsSummaryThisMonth", () => {
   it("refuses a company-role caller", async () => {
     loginAs("companyA", fixture);
     const result = await getTransactionsSummaryThisMonth(PINNED_NOW);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/administrator/i);
+  });
+});
+
+// ── getCompanyCount (Day 25) ─────────────────────────────────────────────
+
+describe("getCompanyCount", () => {
+  it("returns the total + recent-additions delta", async () => {
+    // No auth gate today — exposed to admin/staff at the page layer.
+    const result = await getCompanyCount({ withDeltaDays: 30 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Fixture seeds 3 companies, all freshly inserted (now-ish), so
+    // the recent-additions count equals the total within a 30-day
+    // window.
+    expect(result.total).toBe(3);
+    expect(result.recentlyAdded).toBe(3);
+    expect(result.windowDays).toBe(30);
+  });
+
+  it("excludes rows older than the window from the delta", async () => {
+    // Force-insert an "old" company past the 30-day window. The total
+    // bumps to 4; the recentlyAdded stays at 3 (the original fixture rows).
+    const oldId = newId();
+    const longAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    await db.insert(companies).values({
+      id: oldId,
+      name: "Old Co",
+      sector: "Test",
+      geography: "Test",
+      createdAt: longAgo,
+    });
+
+    try {
+      const result = await getCompanyCount({ withDeltaDays: 30 });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.total).toBe(4);
+      expect(result.recentlyAdded).toBe(3);
+    } finally {
+      await db.delete(companies).where(eq(companies.id, oldId));
+    }
+  });
+
+  it("defaults to a 30-day delta window", async () => {
+    const result = await getCompanyCount();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.windowDays).toBe(30);
+  });
+});
+
+// ── getTotalProjectValue (Day 25) ────────────────────────────────────────
+
+describe("getTotalProjectValue", () => {
+  it("sums budgetInr across every project for admin/no-scope", async () => {
+    loginAs("admin", fixture);
+    // Add budgets to two fixture rows; leave others NULL.
+    await db
+      .update(projects)
+      .set({ budgetInr: 10_000_000 })
+      .where(eq(projects.id, fixture.projectIds[0]));
+    await db
+      .update(projects)
+      .set({ budgetInr: 5_000_000 })
+      .where(eq(projects.id, fixture.projectIds[1]));
+
+    const result = await getTotalProjectValue({});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.totalRupees).toBe(15_000_000);
+    expect(result.projectsWithBudget).toBe(2);
+  });
+
+  it("narrows by companyId when set", async () => {
+    loginAs("admin", fixture);
+    await db
+      .update(projects)
+      .set({ budgetInr: 7_000_000 })
+      .where(eq(projects.id, fixture.projectIds[3])); // BuildRight project
+    await db
+      .update(projects)
+      .set({ budgetInr: 3_000_000 })
+      .where(eq(projects.id, fixture.projectIds[0])); // Acme project
+
+    const buildright = await getTotalProjectValue({
+      companyId: fixture.companyBId,
+    });
+    expect(buildright.ok).toBe(true);
+    if (!buildright.ok) return;
+    expect(buildright.totalRupees).toBe(7_000_000);
+
+    const acme = await getTotalProjectValue({
+      companyId: fixture.companyAId,
+    });
+    expect(acme.ok).toBe(true);
+    if (!acme.ok) return;
+    expect(acme.totalRupees).toBe(3_000_000);
+  });
+
+  it("returns zero with zero projectsWithBudget when nothing has a budget", async () => {
+    loginAs("admin", fixture);
+    // None of the fixture projects have budgetInr set by default.
+    const result = await getTotalProjectValue({});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.totalRupees).toBe(0);
+    expect(result.projectsWithBudget).toBe(0);
+  });
+
+  it("refuses staff and company callers", async () => {
+    loginAs("staff", fixture);
+    const staffResult = await getTotalProjectValue({});
+    expect(staffResult.ok).toBe(false);
+    if (staffResult.ok) return;
+    expect(staffResult.error).toMatch(/administrator/i);
+
+    loginAs("companyA", fixture);
+    const companyResult = await getTotalProjectValue({});
+    expect(companyResult.ok).toBe(false);
+  });
+});
+
+// ── getPaidAndDueTotals (Day 25) ─────────────────────────────────────────
+
+describe("getPaidAndDueTotals", () => {
+  it("computes paid / invoiced / due across every transaction", async () => {
+    loginAs("admin", fixture);
+    const result = await getPaidAndDueTotals({});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Fixture invoices: 100k + 50k (May) + 999k (April) = 1,149,000 rupees
+    // Fixture payments: 30k + 20k (May) = 50,000 rupees
+    // Due = max(0, invoiced - paid) = 1,099,000 rupees
+    expect(result.invoicedPaise).toBe(1_149_000_00);
+    expect(result.paidPaise).toBe(50_000_00);
+    expect(result.duePaise).toBe(1_099_000_00);
+  });
+
+  it("clamps due at zero when paid >= invoiced", async () => {
+    loginAs("admin", fixture);
+    // Add a big payment that overpays the fixture's invoices.
+    const overpayId = newId();
+    await db.insert(transactions).values({
+      id: overpayId,
+      type: "payment" satisfies TransactionType,
+      amountPaise: 5_000_000_00, // 50 lakh rupees in paise
+      currency: "INR",
+      companyId: fixture.companyAId,
+      projectId: null,
+      occurredOn: "2026-05-31",
+    });
+
+    try {
+      const result = await getPaidAndDueTotals({});
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.duePaise).toBe(0);
+    } finally {
+      await db.delete(transactions).where(eq(transactions.id, overpayId));
+    }
+  });
+
+  it("refuses staff callers (admin-only)", async () => {
+    loginAs("staff", fixture);
+    const result = await getPaidAndDueTotals({});
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/administrator/i);

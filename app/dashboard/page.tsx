@@ -25,8 +25,10 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import {
   Briefcase,
+  Building2,
   FileText,
   ListChecks,
+  PiggyBank,
   Receipt,
   Wallet,
 } from "lucide-react";
@@ -34,11 +36,17 @@ import {
 import { readSession } from "@/lib/auth/session";
 import { PageHeader } from "@/components/dashboard/page-header";
 import {
+  getCompanyCount,
+  getPaidAndDueTotals,
   getProjectsByStatus,
   getTendersByStatus,
+  getTotalProjectValue,
   getTransactionsSummaryThisMonth,
 } from "@/lib/dashboard/aggregates";
-import { formatRupeesFromPaise } from "@/lib/format/inr";
+import {
+  formatInrCompact,
+  formatRupeesFromPaise,
+} from "@/lib/format/inr";
 import {
   PROJECT_STATUS_OPTIONS,
   ProjectStatusBadge,
@@ -85,14 +93,27 @@ export default async function DashboardPage() {
     ? { companyId: session.companyId ?? undefined }
     : {};
 
-  // Admin pulls the per-month transactions summary too; staff and
-  // company-role skip it (transactions are admin-only forever).
-  const [projectsResult, tendersResult, txMonthResult] = await Promise.all([
+  // Admin/staff pull the new Day-25 cross-platform aggregates (company
+  // count + financial rollups) alongside the existing breakdowns. The
+  // financial helpers (`getTotalProjectValue`, `getPaidAndDueTotals`)
+  // are admin-only at the function level — staff and company-role skip
+  // them entirely.
+  const [
+    projectsResult,
+    tendersResult,
+    txMonthResult,
+    companyCountResult,
+    projectValueResult,
+    paidDueResult,
+  ] = await Promise.all([
     getProjectsByStatus(projectsScope),
     isCompany
       ? Promise.resolve({ ok: true as const, byStatus: emptyTendersByStatus() })
       : getTendersByStatus(tendersScope),
     isAdmin ? getTransactionsSummaryThisMonth() : Promise.resolve(null),
+    !isCompany ? getCompanyCount() : Promise.resolve(null),
+    isAdmin ? getTotalProjectValue() : Promise.resolve(null),
+    isAdmin ? getPaidAndDueTotals() : Promise.resolve(null),
   ]);
 
   const projectsByStatus = projectsResult.ok
@@ -108,6 +129,24 @@ export default async function DashboardPage() {
   const completedProjects = projectsByStatus.completed;
   const totalTenders = sumValues(tendersByStatus);
 
+  // KPI-strip-relevant figures, defaulted defensively so a failed
+  // aggregate becomes a "0" card rather than a render error. The
+  // structured logger inside the helpers captures the actual failure.
+  const totalCompanies =
+    companyCountResult && companyCountResult.ok ? companyCountResult.total : 0;
+  const recentlyAddedCompanies =
+    companyCountResult && companyCountResult.ok
+      ? companyCountResult.recentlyAdded
+      : 0;
+  const totalProjectValueRupees =
+    projectValueResult && projectValueResult.ok
+      ? projectValueResult.totalRupees
+      : 0;
+  const paidPaise =
+    paidDueResult && paidDueResult.ok ? paidDueResult.paidPaise : 0;
+  const duePaise =
+    paidDueResult && paidDueResult.ok ? paidDueResult.duePaise : 0;
+
   return (
     <>
       <PageHeader
@@ -116,41 +155,96 @@ export default async function DashboardPage() {
       />
 
       {/* KPI strip. Density per pixel decreases moving down the page; the
-          single-figure cards sit on top. */}
+          single-figure cards sit on top. The Day-25 refresh aligns the
+          admin layout with the Figma mockup (Total Companies / Total
+          Projects / Total Project Value / Amount Paid + Due). Staff
+          and company variants stay slimmer — staff loses the financial
+          cards (admin-only data); company-role keeps its own-slice
+          shape. */}
       <section
         aria-label="At-a-glance metrics"
         className="mb-6 grid grid-cols-2 gap-4 sm:mb-8 lg:grid-cols-4"
       >
+        {/* Total Companies — admin/staff only. Hint surfaces "+N this
+            month" when recent additions are non-zero so the card carries
+            momentum signal not just a static count. */}
+        {!isCompany && (
+          <KpiStatCard
+            label="Total companies"
+            value={String(totalCompanies)}
+            hint={
+              recentlyAddedCompanies > 0
+                ? `+${recentlyAddedCompanies} in last 30 days`
+                : undefined
+            }
+            icon={Building2}
+            accent="primary"
+          />
+        )}
+
+        {/* Projects — total for admin/staff, "your projects" for company. */}
         <KpiStatCard
           label={isCompany ? "Your projects" : "Total projects"}
           value={String(totalProjects)}
+          hint={`${activeProjects} active · ${completedProjects} completed`}
           icon={Briefcase}
-          accent="primary"
+          accent={isCompany ? "primary" : undefined}
         />
-        <KpiStatCard
-          label="Active projects"
-          value={String(activeProjects)}
-          hint={`${completedProjects} completed`}
-          icon={ListChecks}
-        />
-        {!isCompany && (
+
+        {/* Total Project Value — admin only. Sum of `projects.budgetInr`
+            formatted compactly (Cr / L / rupees per scale). */}
+        {isAdmin && (
+          <KpiStatCard
+            label="Total project value"
+            value={
+              totalProjectValueRupees > 0
+                ? formatInrCompact(totalProjectValueRupees)
+                : "—"
+            }
+            hint="Across all projects with stated budget"
+            icon={PiggyBank}
+            accent="accent"
+          />
+        )}
+
+        {/* Amount Paid — admin only. The financial pair from Figma:
+            paid total as the big figure, due total as the hint line. */}
+        {isAdmin && (
+          <KpiStatCard
+            label="Amount paid"
+            value={
+              paidPaise > 0
+                ? formatInrCompact(Math.floor(paidPaise / 100))
+                : "—"
+            }
+            hint={
+              duePaise > 0
+                ? `${formatInrCompact(Math.floor(duePaise / 100))} due`
+                : "Nothing outstanding"
+            }
+            icon={Wallet}
+          />
+        )}
+
+        {/* Staff (no financial KPIs) — fill the strip with the tenders
+            count so the row doesn't collapse below 3 columns. */}
+        {!isAdmin && !isCompany && (
           <KpiStatCard
             label="Total tenders"
             value={String(totalTenders)}
-            hint={`${tendersByStatus.published} live, ${tendersByStatus.draft} draft`}
+            hint={`${tendersByStatus.published} live · ${tendersByStatus.draft} draft`}
             icon={FileText}
             accent="accent"
           />
         )}
-        {isAdmin && txMonthResult && txMonthResult.ok && (
+
+        {/* Company-role keeps its slimmer view: active count + completed. */}
+        {isCompany && (
           <KpiStatCard
-            label="Transactions this month"
-            value={formatRupeesFromPaise(txMonthResult.totalPaise)}
-            hint={`${txMonthResult.totalCount} ${
-              txMonthResult.totalCount === 1 ? "entry" : "entries"
-            }`}
-            icon={Receipt}
-            accent="primary"
+            label="Active"
+            value={String(activeProjects)}
+            hint={`${completedProjects} completed`}
+            icon={ListChecks}
           />
         )}
         {isCompany && (
@@ -161,7 +255,49 @@ export default async function DashboardPage() {
             accent="accent"
           />
         )}
+
+        {/* Transactions-this-month card moves to a second strip-row on
+            wider screens for admin (since the first row is full at 4
+            cards). For staff it slots into the dropped admin position. */}
+        {!isAdmin && txMonthResult && txMonthResult.ok && (
+          <KpiStatCard
+            label="Transactions this month"
+            value={formatRupeesFromPaise(txMonthResult.totalPaise)}
+            hint={`${txMonthResult.totalCount} ${
+              txMonthResult.totalCount === 1 ? "entry" : "entries"
+            }`}
+            icon={Receipt}
+            accent="primary"
+          />
+        )}
       </section>
+
+      {/* Admin gets a 5th KPI on its own line — Transactions this month
+          sits below the main strip so the financial KPIs above stay
+          legible at a 4-column width. */}
+      {isAdmin && txMonthResult && txMonthResult.ok && (
+        <section
+          aria-label="This month's transactions"
+          className="mb-6 grid grid-cols-1 gap-4 sm:mb-8 sm:grid-cols-2 lg:grid-cols-4"
+        >
+          <KpiStatCard
+            label="Transactions this month"
+            value={formatRupeesFromPaise(txMonthResult.totalPaise)}
+            hint={`${txMonthResult.totalCount} ${
+              txMonthResult.totalCount === 1 ? "entry" : "entries"
+            }`}
+            icon={Receipt}
+            accent="primary"
+          />
+          <KpiStatCard
+            label="Total tenders"
+            value={String(totalTenders)}
+            hint={`${tendersByStatus.published} live · ${tendersByStatus.draft} draft`}
+            icon={FileText}
+            accent="accent"
+          />
+        </section>
+      )}
 
       {/* Status breakdown cards. Two side-by-side on lg+ for admin/staff;
           one solo card for company-role (no tenders publishing today). */}

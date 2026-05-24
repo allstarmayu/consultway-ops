@@ -79,6 +79,39 @@ export function formatInr(rupees: number | null | undefined): string {
   return `₹ ${inrFormatter.format(rupees)}`;
 }
 
+/**
+ * Compact rupee formatter — collapses large figures into lakh/crore
+ * units the way Indian financial UIs do. Designed for KPI cards and
+ * other low-density surfaces where "₹ 18.5 Cr" beats "₹ 18,50,00,000".
+ *
+ *   formatInrCompact(185000000)  // "₹ 18.50 Cr"
+ *   formatInrCompact(1250000)    // "₹ 12.50 L"
+ *   formatInrCompact(8500)       // "₹ 8,500"
+ *   formatInrCompact(0)          // "₹ 0"
+ *   formatInrCompact(null)       // ""
+ *
+ * Uses two decimal places on the Cr/L bucket and zero on the base
+ * bucket — the precision matches what a glance can absorb without
+ * over-promising accuracy.
+ *
+ * @param rupees Whole rupees to format. NULL/undefined returns "".
+ * @returns Compact rupee string like "₹ 18.50 Cr" / "₹ 8,500".
+ */
+export function formatInrCompact(
+  rupees: number | null | undefined,
+): string {
+  if (rupees === null || rupees === undefined) return "";
+  const abs = Math.abs(rupees);
+  const sign = rupees < 0 ? "-" : "";
+  if (abs >= 10_000_000) {
+    return `${sign}₹ ${(abs / 10_000_000).toFixed(2)} Cr`;
+  }
+  if (abs >= 100_000) {
+    return `${sign}₹ ${(abs / 100_000).toFixed(2)} L`;
+  }
+  return `${sign}₹ ${inrFormatter.format(abs)}`;
+}
+
 // ── Paise-grained formatters (Day 17) ───────────────────────────────────
 
 /**
