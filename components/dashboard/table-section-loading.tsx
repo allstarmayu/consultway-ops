@@ -48,7 +48,7 @@ export function TableSectionLoading({
           <TableRow>
             {Array.from({ length: columns }).map((_, i) => (
               <TableHead key={i}>
-                <div className="h-4 w-20 animate-pulse rounded bg-muted" />
+                <div className="skeleton h-4 w-20" />
               </TableHead>
             ))}
           </TableRow>
@@ -59,7 +59,7 @@ export function TableSectionLoading({
               {Array.from({ length: columns }).map((__, colIdx) => (
                 <TableCell key={colIdx}>
                   <div
-                    className="h-4 animate-pulse rounded bg-muted"
+                    className="skeleton h-4"
                     // Slight width variation so the skeleton doesn't
                     // look like a perfect grid - more believable.
                     style={{
@@ -76,10 +76,10 @@ export function TableSectionLoading({
       {/* Pagination strip placeholder so the card height settles in
           one shot rather than jumping again when rows arrive. */}
       <div className="flex items-center justify-between border-t border-border px-4 py-3">
-        <div className="h-3 w-40 animate-pulse rounded bg-muted" />
+        <div className="skeleton h-3 w-40" />
         <div className="flex items-center gap-2">
-          <div className="h-8 w-20 animate-pulse rounded bg-muted" />
-          <div className="h-8 w-20 animate-pulse rounded bg-muted" />
+          <div className="skeleton h-8 w-20" />
+          <div className="skeleton h-8 w-20" />
         </div>
       </div>
     </div>

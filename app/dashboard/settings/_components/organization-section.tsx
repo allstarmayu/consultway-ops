@@ -84,7 +84,7 @@ export function OrganizationSection() {
     await new Promise((r) => setTimeout(r, 700));
     setIsSaving(false);
     Object.assign(initial, form);
-    toast.success("Organization details saved");
+    toast.success("Organization details saved", { id: "organization-saved" });
   }
 
   return (

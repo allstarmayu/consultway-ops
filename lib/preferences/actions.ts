@@ -36,6 +36,7 @@ import {
   type UserPreferences,
 } from "@/lib/db/schema";
 import { readSession } from "@/lib/auth/session";
+import { STALE_SESSION_ERROR } from "@/lib/auth/stale-session";
 import { logger } from "@/lib/logger";
 import { DEFAULT_THEME } from "@/lib/themes";
 import type { ActionResult } from "@/lib/types/action-result";
@@ -45,14 +46,6 @@ import {
 } from "./schemas";
 
 const log = logger.child({ module: "preferences-actions" });
-
-/**
- * Stable error message for the "session JWT references a user that no
- * longer exists" case. Shared between getPreferences and updatePreferences
- * so the UI sees the same string and can match on it.
- */
-const STALE_SESSION_ERROR =
-  "Your session is no longer valid. Please sign out and sign in again.";
 
 /**
  * Guard against a stale session — JWT cookie still valid (signed, not

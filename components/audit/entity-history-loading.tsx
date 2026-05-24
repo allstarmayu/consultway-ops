@@ -28,10 +28,10 @@ export function EntityHistoryLoading() {
       <ul className="divide-y divide-border px-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <li key={i} className="flex items-start gap-3 py-3">
-            <div className="h-9 w-9 shrink-0 animate-pulse rounded-full bg-muted" />
+            <div className="h-9 w-9 shrink-0 skeleton rounded-full" />
             <div className="min-w-0 flex-1 space-y-2">
-              <div className="h-4 w-3/4 animate-pulse rounded bg-muted" />
-              <div className="h-3 w-24 animate-pulse rounded bg-muted" />
+              <div className="h-4 w-3/4 skeleton" />
+              <div className="h-3 w-24 skeleton" />
             </div>
           </li>
         ))}

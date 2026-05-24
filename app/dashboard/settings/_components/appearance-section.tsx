@@ -29,6 +29,10 @@ import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { THEMES, DEFAULT_THEME, getThemeById } from "@/lib/themes";
 import { updatePreferences } from "@/lib/preferences/actions";
+import {
+  buildStaleSessionRedirectUrl,
+  isStaleSessionError,
+} from "@/lib/auth/stale-session";
 import type { UserPreferences } from "@/lib/db/schema";
 import { cn } from "@/lib/utils";
 import { SectionCard } from "./section-card";
@@ -75,9 +79,19 @@ export function AppearanceSection({
       const result = await updatePreferences(patch);
       if (!result.ok) {
         toast.error("Couldn't save preference", {
+          id: "appearance-save-error",
           description: result.error,
         });
         onError();
+        // Stale-session: the JWT outlived the user row. Hard-nav to the
+        // clear-session route so the bad cookie is deleted before the
+        // browser lands on /login (otherwise proxy.ts bounces back to
+        // /dashboard with the still-valid-looking cookie).
+        if (isStaleSessionError(result.error)) {
+          window.location.assign(
+            buildStaleSessionRedirectUrl("/dashboard/settings"),
+          );
+        }
       }
     });
   }
@@ -87,7 +101,11 @@ export function AppearanceSection({
     setTheme(id);
     const next = getThemeById(id);
     if (next) {
+      // Shared id with the sidebar quick-switcher in user-pill.tsx so
+      // cycling palettes from either surface refreshes one toast in
+      // place rather than stacking a deck of "Theme set to …" cards.
       toast.success(`Theme set to ${next.name}`, {
+        id: "theme-change",
         description: next.description,
       });
     }

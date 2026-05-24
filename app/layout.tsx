@@ -78,8 +78,13 @@ export default async function RootLayout({
           {/* App-wide toast surface. Mounted at the root so any client
               component can call toast() / toast.error() / toast.success()
               without each route remounting its own Toaster. Defaults to
-              bottom-right with a 4s autoclose. */}
-          <Toaster richColors closeButton />
+              bottom-right with a 4s autoclose. Visual styling lives in
+              `app/globals.css` (Day 26 — toast aesthetic block) so type
+              colours track the active palette via CSS vars. Skipping
+              sonner's `richColors` prop because our own CSS owns the
+              type-specific colouring; `richColors` would emit competing
+              inline styles. */}
+          <Toaster closeButton />
         </ThemeProvider>
       </body>
     </html>

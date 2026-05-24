@@ -6,8 +6,8 @@
  * mimic the final layout's shape (header strip, filter strip, table
  * skeleton) so the page doesn't jump when content arrives.
  *
- * Pure visual placeholder — no client logic, no animations beyond
- * Tailwind's `animate-pulse` on muted rectangles.
+ * Uses the Day-26 `.skeleton` shimmer utility for a theme-aware
+ * loading aesthetic across all 6 palettes.
  *
  * @module app/dashboard/companies/loading
  */
@@ -19,22 +19,22 @@ export default function CompaniesLoading() {
       {/* Header skeleton */}
       <div className="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-2">
-          <div className="h-8 w-40 animate-pulse rounded-md bg-muted" />
-          <div className="h-4 w-72 animate-pulse rounded-md bg-muted" />
+          <div className="skeleton h-8 w-40" />
+          <div className="skeleton h-4 w-72" />
         </div>
         <div className="flex gap-2">
-          <div className="h-9 w-48 animate-pulse rounded-md bg-muted" />
-          <div className="h-9 w-32 animate-pulse rounded-md bg-muted" />
+          <div className="skeleton h-9 w-48" />
+          <div className="skeleton h-9 w-32" />
         </div>
       </div>
 
       <Card className="overflow-hidden p-0">
         {/* Filters skeleton — search + 3 selects */}
         <div className="flex flex-wrap items-center gap-3 border-b border-border bg-card p-4">
-          <div className="h-9 w-64 animate-pulse rounded-md bg-muted" />
-          <div className="h-9 w-44 animate-pulse rounded-md bg-muted" />
-          <div className="h-9 w-44 animate-pulse rounded-md bg-muted" />
-          <div className="h-9 w-44 animate-pulse rounded-md bg-muted" />
+          <div className="skeleton h-9 w-64" />
+          <div className="skeleton h-9 w-44" />
+          <div className="skeleton h-9 w-44" />
+          <div className="skeleton h-9 w-44" />
         </div>
 
         {/* Table skeleton — 6 placeholder rows */}
@@ -44,11 +44,11 @@ export default function CompaniesLoading() {
               key={i}
               className="flex items-center gap-4 px-4 py-4"
             >
-              <div className="h-4 w-1/4 animate-pulse rounded bg-muted" />
-              <div className="h-4 w-1/6 animate-pulse rounded bg-muted" />
-              <div className="h-4 w-1/6 animate-pulse rounded bg-muted" />
-              <div className="h-4 w-1/6 animate-pulse rounded bg-muted" />
-              <div className="ml-auto h-4 w-24 animate-pulse rounded bg-muted" />
+              <div className="skeleton h-4 w-1/4" />
+              <div className="skeleton h-4 w-1/6" />
+              <div className="skeleton h-4 w-1/6" />
+              <div className="skeleton h-4 w-1/6" />
+              <div className="skeleton ml-auto h-4 w-24" />
             </div>
           ))}
         </div>

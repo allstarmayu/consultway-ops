@@ -86,13 +86,17 @@ export function SecuritySection() {
     setIsSaving(false);
     setPwd(initialPwd);
     toast.success("Password updated", {
+      id: "password-updated",
       description: "Use your new password on the next sign-in.",
     });
   }
 
   function handleToggle2FA(value: boolean) {
     if (value) {
+      // Toggling the switch on/off repeatedly should refresh the same
+      // toast, not queue a new one each flip.
       toast.info("Two-factor setup not available yet", {
+        id: "2fa-coming-soon",
         description: "TOTP enrollment lands in a later phase.",
       });
       return;
@@ -102,6 +106,7 @@ export function SecuritySection() {
 
   function handleSignOutEverywhere() {
     toast.info("Sign-out everywhere is queued", {
+      id: "sign-out-everywhere",
       description: "Other sessions will be invalidated within a few minutes.",
     });
   }
@@ -239,8 +244,14 @@ export function SecuritySection() {
                     variant="ghost"
                     size="sm"
                     onClick={() =>
+                      // Single shared id across rows: revoking session A
+                      // then session B updates the same toast to reflect
+                      // the latest action, rather than stacking two
+                      // identical "Revoked …" cards.
                       toast.info(`Revoked ${s.label}`, {
-                        description: "Session-revoke wiring lands in a later phase.",
+                        id: "revoke-session",
+                        description:
+                          "Session-revoke wiring lands in a later phase.",
                       })
                     }
                   >

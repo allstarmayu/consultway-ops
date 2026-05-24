@@ -78,7 +78,10 @@ export function ProfileSection({
     // Stub: persistence pending — see <notes> in the PR description.
     await new Promise((r) => setTimeout(r, 600));
     setIsSaving(false);
+    // `id` deduplicates — saving twice in a row updates the existing
+    // toast in place rather than stacking a second card behind it.
     toast.success("Profile updated", {
+      id: "profile-saved",
       description: "Your changes have been saved.",
     });
   }
@@ -121,7 +124,12 @@ export function ProfileSection({
               variant="outline"
               size="sm"
               onClick={() =>
+                // `id` deduplicates so repeated clicks refresh the same
+                // toast in place instead of stacking a deck of identical
+                // cards (which our taller redesigned toast reveals as
+                // ghost rectangles peeking out from the back).
                 toast.info("Avatar uploads coming soon", {
+                  id: "avatar-uploads-soon",
                   description: "R2 photo uploads land in a later phase.",
                 })
               }

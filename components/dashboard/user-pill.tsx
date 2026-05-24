@@ -40,6 +40,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { updatePreferences } from "@/lib/preferences/actions";
+import {
+  buildStaleSessionRedirectUrl,
+  isStaleSessionError,
+} from "@/lib/auth/stale-session";
 import { THEMES, getThemeById } from "@/lib/themes";
 import { cn } from "@/lib/utils";
 import type { UserRole } from "@/lib/db/schema";
@@ -61,13 +65,24 @@ export function UserPill({ email, role }: UserPillProps) {
     setTheme(id);
     const next = getThemeById(id);
     if (next) {
-      toast.success(`Theme set to ${next.name}`);
+      // Shared id with the Appearance section's theme picker — cycling
+      // palettes from either surface refreshes one toast in place
+      // rather than stacking a deck of "Theme set to …" cards.
+      toast.success(`Theme set to ${next.name}`, { id: "theme-change" });
     }
     startTransition(async () => {
       const result = await updatePreferences({ themeId: id });
       if (!result.ok) {
-        toast.error("Couldn't save theme", { description: result.error });
+        toast.error("Couldn't save theme", {
+          id: "theme-save-error",
+          description: result.error,
+        });
         if (previous) setTheme(previous);
+        if (isStaleSessionError(result.error)) {
+          // Hard-nav so proxy.ts sees the deleted cookie on the next
+          // request instead of bouncing the user back to /dashboard.
+          window.location.assign(buildStaleSessionRedirectUrl());
+        }
       }
     });
   }

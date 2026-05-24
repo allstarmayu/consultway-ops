@@ -26,6 +26,7 @@
  */
 import { redirect } from "next/navigation";
 import { readSession } from "@/lib/auth/session";
+import { buildStaleSessionRedirectUrl } from "@/lib/auth/stale-session";
 import { getPreferences } from "@/lib/preferences/actions";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { SettingsShell } from "./_components/settings-shell";
@@ -44,10 +45,15 @@ export default async function SettingsPage() {
   // defaults shape when no row exists yet — never a missing case.
   const prefs = await getPreferences();
   if (!prefs.ok) {
-    // Only path that fails: unauthenticated. We already redirect above,
-    // so this should be unreachable — but the type system doesn't know
-    // that. Defensive bounce just in case.
-    redirect("/login");
+    // Two paths reach here: (1) unauthenticated (already redirected
+    // above, defensive bounce), and (2) stale-session — the JWT cookie
+    // is valid but the user row it points at no longer exists (e.g.
+    // local DB was reseeded). Going to `/login` directly is wrong for
+    // case 2: `proxy.ts` would see a still-valid cookie and bounce the
+    // user back to `/dashboard`. Route through `/auth/clear-session`,
+    // which deletes the cookie first — `proxy.ts` then sees a truly
+    // unauthenticated user and lets them reach `/login` for real.
+    redirect(buildStaleSessionRedirectUrl("/dashboard/settings"));
   }
 
   return (

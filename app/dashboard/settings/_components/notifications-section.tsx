@@ -24,6 +24,10 @@ import {
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { updatePreferences } from "@/lib/preferences/actions";
+import {
+  buildStaleSessionRedirectUrl,
+  isStaleSessionError,
+} from "@/lib/auth/stale-session";
 import type { UserPreferences } from "@/lib/db/schema";
 import { SectionCard } from "./section-card";
 import { StickySaveBar } from "./sticky-save-bar";
@@ -142,12 +146,20 @@ export function NotificationsSection({
       const result = await updatePreferences(patch);
       if (!result.ok) {
         toast.error("Couldn't save preferences", {
+          id: "notifications-save-error",
           description: result.error,
         });
+        if (isStaleSessionError(result.error)) {
+          window.location.assign(
+            buildStaleSessionRedirectUrl("/dashboard/settings"),
+          );
+        }
         return;
       }
       setInitial(fromPreferences(result.preferences));
-      toast.success("Notification preferences saved");
+      toast.success("Notification preferences saved", {
+        id: "notifications-saved",
+      });
     });
   }
 

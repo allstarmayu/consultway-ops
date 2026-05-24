@@ -30,8 +30,8 @@ export function DocumentsSectionLoading() {
           a filter-change-triggered Suspense fallback doesn't shift
           the rows below. */}
       <div className="flex items-center gap-3 border-b border-border bg-card px-4 py-3">
-        <div className="h-9 w-48 animate-pulse rounded-md bg-muted" />
-        <div className="h-9 w-56 animate-pulse rounded-md bg-muted" />
+        <div className="h-9 w-48 skeleton" />
+        <div className="h-9 w-56 skeleton" />
       </div>
 
       <ul className="divide-y divide-border px-4">
@@ -39,13 +39,13 @@ export function DocumentsSectionLoading() {
           <li key={i} className="flex items-start gap-3 py-4">
             <div className="min-w-0 flex-1 space-y-2">
               <div className="flex items-center gap-2">
-                <div className="h-4 w-40 animate-pulse rounded bg-muted" />
-                <div className="h-4 w-20 animate-pulse rounded-full bg-muted" />
-                <div className="h-4 w-24 animate-pulse rounded-full bg-muted" />
+                <div className="h-4 w-40 skeleton" />
+                <div className="h-4 w-20 skeleton rounded-full" />
+                <div className="h-4 w-24 skeleton rounded-full" />
               </div>
-              <div className="h-3 w-56 animate-pulse rounded bg-muted" />
+              <div className="h-3 w-56 skeleton" />
             </div>
-            <div className="h-8 w-24 shrink-0 animate-pulse rounded-md bg-muted" />
+            <div className="h-8 w-24 shrink-0 skeleton" />
           </li>
         ))}
       </ul>

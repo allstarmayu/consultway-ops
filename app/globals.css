@@ -472,3 +472,315 @@ html *::after {
     transform: none;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+   Skeleton shimmer (Day 26)
+
+   Replaces the plain `animate-pulse bg-muted` skeleton pattern used by
+   `TableSectionLoading` and the route-level `loading.tsx` files. The
+   shimmer is a subtle gradient band that sweeps across each placeholder
+   left-to-right, theme-aware via `--muted` and `--foreground` so it
+   reads correctly on Warm Ambient AND Midnight Espresso AND every
+   other palette.
+
+   Usage: `<div className="h-4 w-20 skeleton" />`. The class brings its
+   own background, border-radius, and animation — drop any
+   `animate-pulse bg-muted rounded` it replaces.
+
+   Reduced motion: the sweep stops and the placeholder falls back to a
+   static dim block. The element is still visible as a loading
+   affordance, it just doesn't move.
+   ────────────────────────────────────────────────────────────────────── */
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--muted);
+  border-radius: var(--radius-sm);
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--foreground) 7%, transparent) 50%,
+    transparent 100%
+  );
+  animation: skeleton-shimmer 1.6s linear infinite;
+}
+
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   User-preference: density (Day 26 — closes Day-25 followup #6)
+
+   The Appearance section in Settings exposes a "comfortable / compact"
+   toggle that writes `data-density` onto <html> (see appearance-section
+   .tsx). Until now the toggle persisted but nothing in the rest of the
+   app responded to it — a fake feature. These rules tighten the most
+   row-dense surfaces (tables, cards) when compact is selected. The
+   default (comfortable) keeps the existing primitive defaults
+   unchanged.
+
+   Targets `data-slot` attributes set by the shadcn primitives — that
+   way every consumer of Card / Table picks up the new spacing without
+   per-callsite changes.
+
+   Why not change the primitives themselves: keeping the shadcn slots
+   pristine means we can pull in upstream updates without merging into
+   a fork. The density rules layer on top.
+   ────────────────────────────────────────────────────────────────────── */
+
+[data-density="compact"] [data-slot="table-cell"] {
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+}
+
+[data-density="compact"] [data-slot="table-head"] {
+  height: 2.25rem;
+}
+
+[data-density="compact"] [data-slot="card"] {
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+  gap: 0.75rem;
+}
+
+[data-density="compact"] [data-slot="card-header"],
+[data-density="compact"] [data-slot="card-content"] {
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+}
+
+[data-density="compact"] [data-slot="card-footer"] {
+  padding: 0.75rem;
+}
+
+/* The sidebar's nav items are not shadcn primitives, so we target the
+   explicit class pattern from components/dashboard/sidebar.tsx. */
+[data-density="compact"] aside[aria-label="Primary navigation"] nav li a {
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   User-preference: reduced motion (Day 26 — closes Day-25 followup #6)
+
+   The Appearance section writes `data-reduced-motion="true"` onto <html>
+   when the user toggles the preference. This rule mirrors the global
+   `@media (prefers-reduced-motion: reduce)` block above so the user-
+   toggle case gets the same "everything stops moving" treatment as the
+   OS-level preference. Important so a user who explicitly opts in
+   doesn't have to also set their OS preference.
+
+   `!important` is needed because most transitions in the app come from
+   utility classes (Tailwind's `transition-all`, `animate-pulse`) whose
+   specificity ties with our attribute selector — the !important pushes
+   our user-respecting intent above source-order ambiguity.
+   ────────────────────────────────────────────────────────────────────── */
+
+[data-reduced-motion="true"],
+[data-reduced-motion="true"] *,
+[data-reduced-motion="true"] *::before,
+[data-reduced-motion="true"] *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
+[data-reduced-motion="true"] .interactive-card:hover {
+  transform: none !important;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   Toast aesthetic (Day 26)
+
+   Sonner ships with a stock dark/light skin that doesn't know about our
+   6 palettes — it would render a generic blue info or green success on
+   every theme, ignoring Terracotta / Cyan / Emerald / Coral. We replace
+   it with a restrained, Consultway-branded look:
+
+     - Surface uses `--popover` / `--popover-foreground`, so each palette
+       gets the right warmth + contrast (espresso lift on Midnight, navy
+       lift on Ocean, etc.).
+     - A 3px accent spine on the left side conveys the toast type
+       (default/info/success/warning/error/loading) using the theme's own
+       accent + destructive variables — not hard-coded blue/red.
+     - The lucide icon sits inside a circular badge tinted at ~14% of the
+       spine colour, so the type is readable in a glance without the
+       loud full-background colours that `richColors` produces.
+     - Description text drops to `--muted-foreground` for a clear
+       hierarchy.
+     - Close button is ghosted by default and only fades in on
+       hover/focus — keeps the toast clean during the read.
+     - Shadow is layered + softer than sonner's default (the harsh
+       hairline border in the stock theme reads cheap on dark palettes).
+
+   No motion overrides — sonner's built-in enter/exit + swipe-to-dismiss
+   already honour `prefers-reduced-motion`. The transition rules below
+   collapse under reduced-motion via the global rule at line 339.
+
+   Updating the look: every value here is a CSS variable, so adding a
+   new palette automatically inherits the right toast colours. To change
+   the *structure* (e.g. move the spine to a top-edge), edit this block
+   and the matching `classNames` in `components/ui/sonner.tsx`.
+   ────────────────────────────────────────────────────────────────────── */
+
+[data-sonner-toaster] [data-sonner-toast] {
+  position: relative;
+  overflow: hidden;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem 0.875rem 1.125rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow:
+    0 1px 2px 0 rgb(0 0 0 / 0.04),
+    0 12px 28px -16px rgb(0 0 0 / 0.18);
+  transition:
+    transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Coloured spine on the left edge. The default is `--accent`; per-type
+   overrides below switch the colour without changing the structure. */
+[data-sonner-toaster] [data-sonner-toast]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+  opacity: 0.95;
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-type="success"]::before,
+[data-sonner-toaster] [data-sonner-toast][data-type="info"]::before {
+  background: var(--accent);
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-type="error"]::before {
+  background: var(--destructive);
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-type="warning"]::before {
+  /* Amber stays consistent across palettes — it's a semantic warning
+     signal, not a brand accent. */
+  background: oklch(0.78 0.16 75);
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-type="loading"]::before {
+  background: var(--muted-foreground);
+}
+
+/* Icon: wrap the lucide glyph in a circular tinted badge so the toast
+   type reads even before the user processes the text. The badge colour
+   mirrors the spine — same accent / destructive / amber, tinted to
+   ~14% so it sits comfortably against the popover surface. */
+[data-sonner-toaster] [data-sonner-toast] [data-icon] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  margin: 0;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-type="error"] [data-icon] {
+  background: color-mix(in oklab, var(--destructive) 14%, transparent);
+  color: var(--destructive);
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-type="warning"] [data-icon] {
+  background: color-mix(in oklab, oklch(0.78 0.16 75) 18%, transparent);
+  color: oklch(0.62 0.16 65);
+}
+
+[data-sonner-toaster] [data-sonner-toast][data-type="loading"] [data-icon] {
+  background: color-mix(in oklab, var(--muted-foreground) 16%, transparent);
+  color: var(--muted-foreground);
+}
+
+/* Typography hierarchy. Title is firm, description is muted. */
+[data-sonner-toaster] [data-sonner-toast] [data-content] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+[data-sonner-toaster] [data-sonner-toast] [data-title] {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.005em;
+  color: var(--popover-foreground);
+}
+
+[data-sonner-toaster] [data-sonner-toast] [data-description] {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/* Close button: ghosted by default, surfaces on hover/focus. Sonner
+   anchors this to the left edge by default — we override to top-right
+   so it doesn't sit on top of our spine. */
+[data-sonner-toaster] [data-sonner-toast] [data-close-button] {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  left: auto;
+  transform: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition:
+    opacity 150ms ease,
+    background-color 150ms ease,
+    color 150ms ease;
+  border-radius: 9999px;
+}
+
+[data-sonner-toaster] [data-sonner-toast]:hover [data-close-button],
+[data-sonner-toaster] [data-sonner-toast]:focus-within [data-close-button] {
+  opacity: 1;
+}
+
+[data-sonner-toaster] [data-sonner-toast] [data-close-button]:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+/* Sonner stretches some primary action buttons full width. We keep the
+   button-styling overrides from sonner.tsx but make sure the
+   spine + padding can never overlap the button. */
+[data-sonner-toaster] [data-sonner-toast] [data-button] {
+  border-radius: calc(var(--radius) - 2px);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
