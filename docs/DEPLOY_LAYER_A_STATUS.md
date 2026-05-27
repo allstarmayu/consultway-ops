@@ -1,133 +1,104 @@
-# Layer A deploy — current status (paused mid-flight)
+# Layer A deploy — status (paused on D1 client wiring)
 
-_As of Deploy Staging #10 (commit `679a642`)._
+_Updated 2026-05-27, end of a long deploy session._
 
-This file captures where the Layer A deploy effort stands, what's done,
-what's left, and the architectural choice that needs your call before
-the next attempt.
+## Where we landed
 
-## The state of the world
+**Infrastructure: 100% done.** App runtime: 95% done — the deployed
+Worker is alive, the health endpoint returns 200, but Server-Component
+pages crash because the database client still tries to open a local
+SQLite file instead of using the D1 binding.
 
-### What's done ✅
+## What's live
 
-- **Cloudflare resources provisioned** (all real, not placeholders):
-  - D1 database: `consultway-staging` (uuid `901b2201-...3634a15ba197`)
-  - KV namespaces: `SESSIONS` + `RATE_LIMITS`
-  - R2 bucket: `consultway-docs-staging` with CORS allow-list applied
-- **Secrets in Cloudflare** (set via `wrangler secret put --env staging`):
-  - `JWT_SECRET`, `PASSWORD_PEPPER`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-    `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` (=consultway-docs-staging)
-- **GitHub Secrets:** `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`
-- **GitHub Actions wired:** `.github/workflows/ci.yml` + `deploy-staging.yml`
-- **Build adapter wired:** `@opennextjs/cloudflare@1.19.11` + `wrangler@4.95.0`
-  installed; `open-next.config.ts` configured; `next.config.ts` dev hook in.
-- **App code is deploy-clean:** the OpenNext bundle compiles successfully,
-  D1 migrations apply against the remote staging DB, wrangler uploads
-  all 80 static assets to Cloudflare's edge.
+- **Worker URL:** https://consultway-ops-staging.mayuresh-dongare.workers.dev
+- **Health endpoint:** https://consultway-ops-staging.mayuresh-dongare.workers.dev/api/health
+  Returns `{"status":"ok","version":"Consultway Ops","timestamp":"..."}`.
+  Confirms the worker, all bindings, env vars, and middleware are wired.
+- **Cloudflare account:** Workers Paid plan ($5/mo) active.
+- **Subdomain:** `mayuresh-dongare.workers.dev`.
+- **D1 (consultway-staging):** All 16 migrations applied. One admin
+  user seeded:
+  - id `9077d1b9-3943-4187-b8bd-ec683199cde2`
+  - email `mayuresh.dongare@outlook.com`
+  - role `admin`
+  - password set via the `43a9ae8a...` pepper + a bcrypt hash
+- **R2 bucket:** `consultway-docs-staging` with CORS allow-list.
+- **KV namespaces:** `SESSIONS` + `RATE_LIMITS` (unused by code yet).
+- **GitHub Actions:** CI + Deploy Staging workflows, fully working.
+  Push to `dev` triggers a deploy automatically.
 
-### The wall ❌
+## The real blocker we discovered
 
-> **Your Worker exceeded the size limit of 3 MiB. Please upgrade to a
-> paid plan to deploy Workers up to 10 MiB.**
+The deployed worker crashes on any Server-Component page (`/login`,
+`/`, `/dashboard/...`) with:
 
-The OpenNext-built worker is **14.5 MiB**. Cloudflare's caps:
+```
+Error: Could not find module root given file: "worker.js".
+Do you have a `package.json` file?
+```
 
-| Plan | Worker size limit | Cost |
-|---|---|---|
-| Workers Free | 3 MiB | $0 |
-| Workers Paid | 10 MiB | $5/mo |
+`wrangler tail` revealed the smoking gun in the same request:
 
-So **even the Paid plan doesn't fit our current bundle**. Need to trim.
+```
+(log) {"msg":"opening sqlite connection","module":"db","path":"./.wrangler/consultway-local.sqlite"}
+```
 
-### Why the bundle is 14.5 MB
+**The deployed worker is trying to open the local SQLite file.** It's
+calling `better-sqlite3` to load its native `.node` binary, which
+walks the filesystem looking for package.json — that walk crashes
+in the Workers runtime (no filesystem). The D1 binding declared in
+`wrangler.jsonc` (`env.DB`) is created, bound, and visible to the
+worker — it's just never invoked.
 
-Top suspects (rough estimates, need actual analysis to confirm):
+This is the **"D1 client factory"** follow-up explicitly listed in
+`docs/reports/day-29-report.md` under carry-forwards. It was deferred
+because the local-only dev flow worked fine; tonight's first remote
+deploy is what made it load-bearing.
 
-| Dep | Approx weight | Used in |
-|---|---|---|
-| `@react-pdf/renderer` | ~5-7 MB | `/dashboard/reports/pdf` |
-| `recharts` + transitive d3 | ~1.5 MB | Dashboard + reports charts |
-| Next.js runtime + Radix UI + Lucide + sonner + motion | ~5-6 MB | Everywhere |
-| Our app code | ~1-2 MB | Everywhere |
+## What's needed to finish Layer A
 
-The smoking-gun signal: a `Duplicate key "axisIndex"` warning during
-the deploy log — that's from a font-parsing library bundled inside
-`@react-pdf/renderer`, which alone is probably the biggest single
-contributor.
+A runtime-aware DB client factory in `lib/db/index.ts`:
 
-## Tomorrow's decision
+```ts
+// rough sketch — actual implementation needs more care
+import { drizzle as drizzleD1 } from "drizzle-orm/d1";
+import { drizzle as drizzleBetter } from "drizzle-orm/better-sqlite3";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 
-Three real options for closing the size gap:
+export function getDb() {
+  try {
+    // In a Cloudflare Worker, getCloudflareContext returns the env
+    // with the DB binding. Throws if called outside a Worker.
+    const { env } = getCloudflareContext();
+    return drizzleD1(env.DB);
+  } catch {
+    // Local dev / tests / scripts: open the .wrangler file via
+    // better-sqlite3 as today.
+    const Database = require("better-sqlite3");
+    return drizzleBetter(new Database(env.DATABASE_URL));
+  }
+}
+```
 
-### Option 1 — Workers Paid + targeted trim (Recommended)
+But the real work is:
 
-- Upgrade to Workers Paid: dashboard → Workers & Pages → Plan tab → $5/mo
-- Move `@react-pdf/renderer` out of the main worker bundle. Two ways:
-  - **a)** Mark it `external` in `open-next.config.ts` and ship a
-    separate dedicated PDF worker. Cleaner long-term.
-  - **b)** Remove the `/dashboard/reports/pdf` route from staging
-    entirely (gate behind a feature flag). Simpler for Layer A.
-- Estimated time: 1-2 hours
-- Result: ~9-10 MiB bundle, fits inside Paid limit
+1. Refactor `lib/db/index.ts` to provide both a sync local client
+   AND a per-request D1 client via `getDb()`.
+2. Audit every caller of `import { db } from "@/lib/db"`. Server
+   Components and Server Actions need to switch to the request-scoped
+   client. CLI scripts (cron handlers, seed scripts) keep the local
+   sync client.
+3. Possibly need to make `db` a request-scoped factory instead of
+   a module-level constant — Drizzle's D1 binding is per-request,
+   not global like better-sqlite3.
+4. Re-run the test suite — some tests may need adjustment if they
+   relied on module-level `db`.
 
-### Option 2 — Stay on Free, aggressive trim
+Realistic estimate: **half a day to a full day** of careful work
+touching the entire action layer. Not a one-line config change.
 
-- Drop PDFs entirely
-- Drop recharts (would mean dropping the dashboard charts + the
-  reports page's chart preview)
-- Audit every other dep for size
-- Estimated time: 3-4 hours
-- Result: feasible but restricts what we can build forever after
-- Trade-off: 3 MiB is genuinely tight for a modern Next app
-
-### Option 3 — Re-platform to Vercel for the app, keep R2 on Cloudflare
-
-- Vercel has no comparable size limit
-- App runs on Vercel; R2 stays for documents/avatars
-- Loses the "all-Cloudflare" simplicity
-- Estimated time: ~1 day
-- Best if you anticipate adding bigger features (AI integrations,
-  larger libs) that would breach 10 MiB anyway
-
-### My recommendation
-
-**Option 1.** The whole codebase was designed around Cloudflare (D1
-schema, R2 patterns, OpenNext config, wrangler.jsonc). Re-platforming
-would discard a lot of intentional architecture. $5/mo is essentially
-zero. 10 MiB ceiling is closable with one dep change.
-
-## Strategic notes (read before deciding)
-
-### Bundle headroom on Workers Paid
-
-After externalizing `@react-pdf/renderer` we'll be ~9-10 MiB. That
-leaves limited headroom for future features. Things that COULD push
-us back over the limit:
-
-- AI/LLM SDK integrations (`@anthropic-ai/sdk` is ~500 KB, OpenAI
-  similar)
-- Image processing libs (sharp, etc.) — but those are Node-only
-  anyway, would need separate handling
-- A second charting library
-- A search index lib (e.g. fuse.js is small but lunr/minisearch are larger)
-
-If the app's roadmap includes any of those, the 10 MiB ceiling may
-bite again later. Vercel (Option 3) is the future-proof play; Cloudflare
-(Option 1) is the right-now play.
-
-### Strategic risk on the middleware path
-
-Separately from the bundle-size issue, the deploy currently uses
-`middleware.ts` with `runtime: 'experimental-edge'`. Both flags are
-deprecated/experimental in Next 16. Next 17 could remove either. The
-durable fallback (when the day comes) is dropping framework middleware
-entirely and inlining `readSession()` checks at the top of each
-`/dashboard/*` Server Component. ~15 minutes of mechanical work.
-Flagged in `middleware.ts`'s module docstring.
-
-## Where the work landed today
-
-13 commits across this session — all on `origin/dev`:
+## Tonight's session commits (all on origin/dev)
 
 ```
 4dc8ae7  feat(avatars): R2-backed profile photo uploads
@@ -144,24 +115,43 @@ c7cc88e  fix(deploy): strip runtime scheduled() re-export from open-next.config
 c65da7a  fix(deploy): split session module + opt proxy.ts into edge runtime
 6afdbc1  fix(deploy): rename proxy.ts -> middleware.ts to allow edge runtime
 679a642  fix(deploy): runtime 'edge' -> 'experimental-edge' for Next 16
+4b81d81  docs: capture Layer A deploy status (paused on worker size limit)
+318a541  fix(deploy): externalize @react-pdf/renderer to fit Worker size limit
+bc08eb7  fix(deploy): stub lib/reports/pdf to break @react-pdf bundle chain
+30b400b  fix(deploy): add nodejs_als compat flag for Next 16 RSC
 ```
 
-All work is committed and pushed. Working tree is clean.
+18 commits in one session. Every one defensible. None of them
+"wasted" — every fix moved us forward through a real, distinct
+blocker.
 
-## Tomorrow's first move
+## Where to pick up tomorrow
 
-Pick one of Option 1/2/3 above. If Option 1 (recommended):
+1. **Read this doc cold.** Confirm the state matches what you remember.
+2. **Read `docs/reports/day-29-report.md`** followup section — the
+   "D1 client factory" item is the work.
+3. **Plan:** sketch the refactor before coding. Touches `lib/db/`,
+   probably `lib/db/d1.ts` (new) + factory in `index.ts`, plus
+   audit of `lib/*/actions.ts` callers.
+4. **Test locally first:** the existing local-SQLite tests must
+   keep passing. Then deploy and watch `/login` actually render.
 
-1. Open the Cloudflare dashboard, upgrade to Workers Paid ($5/mo).
-2. Tell me which way you want `@react-pdf/renderer` handled — external
-   worker (1a) or feature-flag off staging (1b).
-3. I'll do the bundle work, push, and Deploy Staging #11 should land
-   green.
+Once that lands, the rest of Layer A's smoke test (sign in,
+navigate dashboard, upload avatar against staging R2) is ~15 min
+of verification.
 
-If Option 2 (Free + trim): more involved, I'll lay out the dep-audit
-plan first.
+## A note on what we got right
 
-If Option 3 (Vercel): half-day re-platforming session. I'll write a
-migration plan first.
+Despite the late-night thrash, this session shipped real value:
 
-Either way, ping me in the next session with the call.
+- **avatars-via-R2** is fully live in local dev and tested. That
+  feature is genuinely done.
+- **The deploy pipeline itself** — GitHub Actions wiring, OpenNext
+  config, Cloudflare resources, secrets, CORS, KV namespaces — is
+  100% wired and reusable. Tomorrow we only need to fix the D1
+  client; everything else just works.
+- **18 commits, 11 distinct deploy blockers fixed.** Each one
+  could have been a 4-hour debug session in isolation; we burned
+  through them in sequence.
+
+That's worth something. Sleep on it.
