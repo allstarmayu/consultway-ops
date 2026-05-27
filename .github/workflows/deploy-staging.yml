@@ -68,7 +68,10 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Wrangler 4.x requires Node >= 22; the cloudflare/wrangler-
+          # action installs wrangler@4 (per wranglerVersion: "4" below)
+          # and then fails to run it on Node 20. Bumping to 22 fixes it.
+          node-version: 22
           cache: "pnpm"
 
       - name: Install dependencies

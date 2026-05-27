@@ -47,7 +47,10 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Matches deploy-staging.yml — keep CI on the same Node major
+          # so "CI passed" remains a meaningful signal for the deploy.
+          # Wrangler 4 (used by deploy) needs Node >= 22.
+          node-version: 22
           cache: "pnpm"
 
       - name: Install dependencies
