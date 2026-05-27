@@ -8,12 +8,24 @@
  * Cloudflare Worker that MUST run on the edge runtime. Those two
  * constraints are mutually exclusive.
  *
- * The escape: Next 16 still supports the legacy `middleware.ts` /
- * `middleware()` shape, and that shape DOES accept `runtime: 'edge'`
- * inside the `config` export below. So we're on the deprecated-but-
- * functional path. If Next ever removes `middleware.ts` support
- * entirely, the fallback is to drop the framework-level middleware
- * and move auth gates into each protected route's Server Component.
+ * The escape (today): Next 16 still supports the legacy `middleware.ts`
+ * / `middleware()` shape, and that shape accepts `runtime:
+ * 'experimental-edge'` inside the `config` export below. So we're on
+ * the deprecated-and-experimental path — Next emits TWO warnings on
+ * every build ("middleware file convention is deprecated" + "edge
+ * runtime for rendering is currently experimental"), but the build
+ * succeeds and OpenNext accepts the resulting bundle.
+ *
+ * Strategic risk: this path is dead-end long-term. Next is actively
+ * moving middleware to Node-only via `proxy.ts`, and OpenNext-on-
+ * Cloudflare hasn't yet caught up to support Node middleware bundles.
+ * If either side moves further before the other, this file breaks.
+ *
+ * The durable fix when that day comes: drop the framework-level
+ * middleware entirely. Move auth gates into each protected route's
+ * Server Component at the top of the file (~15 lines of code added
+ * across the ~6 routes under /dashboard). Less elegant than a single
+ * matcher but zero runtime-compat surface area.
  *
  * Why edge is safe for this file: the only runtime work we do is a
  * cookie read + a `jose` JWT verify + a `NextResponse.redirect()`.
@@ -103,9 +115,12 @@ export async function middleware(
  * Exclude Next internals, static assets, and common public files — there's
  * no reason to verify a JWT for /favicon.ico or /_next/static/*.css.
  *
- * `runtime: 'edge'` is the explicit opt-in OpenNext-on-Cloudflare needs.
- * Without it Next 16 defaults middleware.ts to Node and OpenNext refuses
- * to build the worker.
+ * `runtime: 'experimental-edge'` is the Next 16 way to opt into the
+ * edge runtime. (Plain `'edge'` was renamed to `'experimental-edge'`
+ * to signal that Next no longer treats edge middleware as the
+ * preferred path — see module docstring for the strategic
+ * implications.) Without it, Next 16 defaults middleware.ts to Node
+ * and OpenNext refuses to build the worker.
  */
 export const config = {
   matcher: [
@@ -119,5 +134,5 @@ export const config = {
      */
     "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|.*\\..*).*)",
   ],
-  runtime: "edge",
+  runtime: "experimental-edge",
 };
