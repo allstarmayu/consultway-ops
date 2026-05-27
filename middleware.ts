@@ -1,17 +1,19 @@
 /**
- * Next.js proxy — runs on every request that matches the `matcher`.
+ * Next.js middleware — runs on every request that matches the `matcher`.
  *
- * Previously named `middleware.ts` in Next.js 15 and earlier. As of
- * Next.js 16 the file convention is `proxy.ts` with an exported
- * `proxy()` function. The rename clarifies that this file sits at the
- * network boundary (not as request-pipeline middleware in the Express
- * sense).
+ * Next 16 introduced `proxy.ts` as the new file convention with a
+ * function called `proxy()`, BUT `proxy.ts` runs exclusively on the
+ * Node.js runtime — no opt-in, no override. OpenNext-on-Cloudflare
+ * (the deploy adapter we use) compiles middleware into a separate
+ * Cloudflare Worker that MUST run on the edge runtime. Those two
+ * constraints are mutually exclusive.
  *
- * Runtime: **edge**. Next 16 defaults proxy.ts to Node.js, but
- * OpenNext-on-Cloudflare requires middleware to run on the edge
- * runtime — Cloudflare Workers' edge environment doesn't include
- * Node-only modules. The `export const runtime = "edge"` below is
- * the explicit opt-in.
+ * The escape: Next 16 still supports the legacy `middleware.ts` /
+ * `middleware()` shape, and that shape DOES accept `runtime: 'edge'`
+ * inside the `config` export below. So we're on the deprecated-but-
+ * functional path. If Next ever removes `middleware.ts` support
+ * entirely, the fallback is to drop the framework-level middleware
+ * and move auth gates into each protected route's Server Component.
  *
  * Why edge is safe for this file: the only runtime work we do is a
  * cookie read + a `jose` JWT verify + a `NextResponse.redirect()`.
@@ -24,25 +26,16 @@
  *   - Redirect already-logged-in users away from `/login` (→ /dashboard)
  *   - Pass through everything else untouched
  *
- * The Next.js team advises keeping proxy.ts lightweight — the "thin
- * proxy" pattern. Avoid heavy DB lookups here; route them through
- * Server Components and Server Actions instead. Our current usage
- * (cookie read + JWT verify + redirect) already fits the lightweight
- * profile, so no refactor needed.
+ * Keep this file LIGHTWEIGHT — no DB calls, no fat imports. Route
+ * heavy work through Server Components and Server Actions instead.
  *
- * @module proxy
+ * @module middleware
  */
 import { NextResponse, type NextRequest } from "next/server";
 // IMPORTANT: import from session-edge, NOT session — the latter pulls
 // in `next/headers` + the DB module, both of which are not available
-// in the Cloudflare edge runtime where OpenNext runs middleware.
+// in the Cloudflare edge runtime where this middleware runs.
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/session-edge";
-
-// OpenNext-on-Cloudflare runs Next middleware on the edge runtime.
-// Without this opt-in, `opennextjs-cloudflare build` fails with:
-//   ERROR Node.js middleware is not currently supported.
-//   Consider switching to Edge Middleware.
-export const runtime = "edge";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -58,9 +51,11 @@ const LOGIN_PATH = "/login";
 /** Where to send authenticated users hitting an auth page. */
 const DEFAULT_AUTHED_PATH = "/dashboard";
 
-// ── Proxy ───────────────────────────────────────────────────────────────────
+// ── Middleware ──────────────────────────────────────────────────────────────
 
-export async function proxy(request: NextRequest): Promise<NextResponse> {
+export async function middleware(
+  request: NextRequest,
+): Promise<NextResponse> {
   const { pathname, search } = request.nextUrl;
 
   const isProtected = PROTECTED_PREFIXES.some(
@@ -74,7 +69,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   }
 
   // Verify session from the cookie. jose.verify works in both Node and
-  // Edge runtimes; we're on Node now (proxy.ts default) but the call
+  // Edge runtimes; we're on edge here (per config below), but the call
   // itself is runtime-agnostic.
   const token = request.cookies.get(SESSION_COOKIE)?.value;
   const session = await verifySession(token);
@@ -101,15 +96,16 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   return NextResponse.next();
 }
 
-// ── Matcher ─────────────────────────────────────────────────────────────────
+// ── Matcher + runtime ──────────────────────────────────────────────────────
 
 /**
- * Only run this proxy on paths that could possibly need auth logic.
+ * Only run this middleware on paths that could possibly need auth logic.
  * Exclude Next internals, static assets, and common public files — there's
  * no reason to verify a JWT for /favicon.ico or /_next/static/*.css.
  *
- * The matcher syntax is identical between middleware.ts and proxy.ts —
- * no migration needed here.
+ * `runtime: 'edge'` is the explicit opt-in OpenNext-on-Cloudflare needs.
+ * Without it Next 16 defaults middleware.ts to Node and OpenNext refuses
+ * to build the worker.
  */
 export const config = {
   matcher: [
@@ -123,4 +119,5 @@ export const config = {
      */
     "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|.*\\..*).*)",
   ],
+  runtime: "edge",
 };
