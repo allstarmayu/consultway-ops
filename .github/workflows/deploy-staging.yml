@@ -93,6 +93,12 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Pin wrangler 4.x. The action defaults to wrangler 3.90,
+          # which doesn't parse wrangler.jsonc cleanly — only the legacy
+          # wrangler.toml. Without this, the action fails with
+          # "No environment found in configuration with name 'staging'"
+          # because env.staging in jsonc is invisible to 3.90.
+          wranglerVersion: "4"
           command: d1 migrations apply consultway-staging --remote --env staging
 
       # Build the OpenNext-compiled Worker. This produces
@@ -111,6 +117,8 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Same wrangler-4 pin as the migration step — see comment there.
+          wranglerVersion: "4"
           command: deploy --env staging
 
       # Surface the deploy URL to the workflow summary so the user
