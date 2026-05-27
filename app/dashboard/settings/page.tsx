@@ -59,16 +59,22 @@ export default async function SettingsPage() {
     redirect(buildStaleSessionRedirectUrl("/dashboard/settings"));
   }
 
-  // Read the user's current display name so the Profile section can
-  // hydrate its form with the persisted value instead of blank. We
-  // don't need to defend against missing here — `getPreferences`
+  // Read the user's current display name, phone, and job title so the
+  // Profile section hydrates with persisted values instead of blank.
+  // We don't need to defend against missing here — `getPreferences`
   // already ran the stale-session guard above, so the row exists.
   const [userRow] = await db
-    .select({ name: users.name })
+    .select({
+      name: users.name,
+      phone: users.phone,
+      jobTitle: users.jobTitle,
+    })
     .from(users)
     .where(eq(users.id, session.userId))
     .limit(1);
   const initialName = userRow?.name ?? "";
+  const initialPhone = userRow?.phone ?? null;
+  const initialJobTitle = userRow?.jobTitle ?? null;
 
   return (
     <div className="flex flex-col">
@@ -82,6 +88,8 @@ export default async function SettingsPage() {
         userRole={session.role}
         userId={session.userId}
         initialName={initialName}
+        initialPhone={initialPhone}
+        initialJobTitle={initialJobTitle}
         initialPreferences={prefs.preferences}
       />
     </div>

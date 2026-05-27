@@ -1,19 +1,20 @@
 /**
  * ProfileSection — name / email / phone / role / avatar.
  *
- * Day 27: `fullName` is now real — wires to `lib/profile/actions.ts::
- * updateProfile`, which writes through to `users.name` and emits an
- * audit event. The other three fields (email, phone, jobTitle) stay
- * cosmetic this round:
- *   - email change needs a verification flow (verify-old + verify-new)
- *   - phone has no column on `users` yet (micro-migration deferred)
- *   - jobTitle is purely decorative, no persistence target yet
- * The form still accepts typing into all four so the layout doesn't
- * feel broken; only `fullName` is persisted on save.
+ * Day 28: `fullName`, `phone`, and `jobTitle` all persist now — the
+ * action writes through to `users.name` / `users.phone` /
+ * `users.jobTitle` and emits a SCOPED audit event (only the columns
+ * that actually changed appear in before/after). Email stays cosmetic
+ * this round; changing the primary identifier needs a verify-old +
+ * verify-new flow and a separate session.
  *
  * The avatar's initials are derived from the current `fullName` value
  * (falling back to the email localpart when blank), so renaming
  * yourself updates the avatar in real time before save.
+ *
+ * The save bar lights up when ANY of the three persisted fields differ
+ * from the baseline — so a user can change just their job title, hit
+ * save, and the action will skip the unchanged columns server-side.
  *
  * @module app/dashboard/settings/_components/profile-section
  */
@@ -39,6 +40,10 @@ export interface ProfileSectionProps {
   userId: string;
   /** Persisted display name from `users.name`. */
   initialName: string;
+  /** Persisted phone from `users.phone`. Null when never set. */
+  initialPhone: string | null;
+  /** Persisted job title from `users.jobTitle`. Null when never set. */
+  initialJobTitle: string | null;
   initialEmail: string;
   userRole: UserRole;
 }
@@ -58,29 +63,36 @@ const roleLabels: Record<UserRole, string> = {
 
 export function ProfileSection({
   initialName,
+  initialPhone,
+  initialJobTitle,
   initialEmail,
   userRole,
 }: ProfileSectionProps) {
-  // `useState` for `initial` so we can advance the baseline after a
-  // successful save (otherwise `isDirty` stays true forever even
-  // after the name persists).
+  // Coerce null → empty string at the input boundary — `<Input value>`
+  // treats both the same visually, but using "" keeps React from
+  // flipping the input between controlled and uncontrolled.
   const initialMemo = useMemo<FormState>(
     () => ({
       fullName: initialName,
       email: initialEmail,
-      phone: "",
-      jobTitle: "",
+      phone: initialPhone ?? "",
+      jobTitle: initialJobTitle ?? "",
     }),
-    [initialName, initialEmail],
+    [initialName, initialPhone, initialJobTitle, initialEmail],
   );
+  // `useState` for `initial` so we can advance the baseline after a
+  // successful save (otherwise `isDirty` stays true forever even
+  // after the values persist).
   const [initial, setInitial] = useState<FormState>(initialMemo);
   const [form, setForm] = useState<FormState>(initialMemo);
   const [isPending, startTransition] = useTransition();
 
-  // Only the name actually persists — see the module docstring. The
-  // other three fields are still tracked in local state so the form
-  // feels live, but they don't gate the save indicator either.
-  const isDirty = form.fullName !== initial.fullName;
+  // Save bar lights up when ANY of the three persisted fields differ
+  // from baseline. Email isn't included — it stays cosmetic this round.
+  const isDirty =
+    form.fullName !== initial.fullName ||
+    form.phone !== initial.phone ||
+    form.jobTitle !== initial.jobTitle;
 
   const initials = deriveInitials(form.fullName || initial.email);
 
@@ -90,7 +102,17 @@ export function ProfileSection({
 
   function handleSave() {
     startTransition(async () => {
-      const result = await updateProfile({ name: form.fullName });
+      // Trim + null-coerce at the call site so the action receives the
+      // canonical shape the schema expects. Empty string → null both
+      // here and on the server (defence in depth — server still
+      // coerces, but sending null reads more clearly in network logs).
+      const trimmedPhone = form.phone.trim();
+      const trimmedJobTitle = form.jobTitle.trim();
+      const result = await updateProfile({
+        name: form.fullName,
+        phone: trimmedPhone.length === 0 ? null : trimmedPhone,
+        jobTitle: trimmedJobTitle.length === 0 ? null : trimmedJobTitle,
+      });
       if (!result.ok) {
         toast.error("Couldn't save profile", {
           id: "profile-save-error",
@@ -108,15 +130,22 @@ export function ProfileSection({
         return;
       }
       // Advance the baseline so the save bar collapses and a follow-up
-      // edit can be detected as a fresh dirty state.
-      const nextInitial: FormState = { ...form, fullName: result.name };
+      // edit can be detected as a fresh dirty state. The action returns
+      // the persisted shape, including the null-coerced phone /
+      // jobTitle — flatten to "" for the form's controlled inputs.
+      const nextInitial: FormState = {
+        fullName: result.name,
+        email: form.email,
+        phone: result.phone ?? "",
+        jobTitle: result.jobTitle ?? "",
+      };
       setInitial(nextInitial);
       setForm(nextInitial);
       // `id` deduplicates — saving twice in a row updates the existing
       // toast in place rather than stacking a second card behind it.
       toast.success("Profile updated", {
         id: "profile-saved",
-        description: "Your name has been saved.",
+        description: "Your changes have been saved.",
       });
     });
   }
@@ -202,6 +231,7 @@ export function ProfileSection({
                 onChange={(e) => update("phone", e.target.value)}
                 placeholder="+91 98765 43210"
                 autoComplete="tel"
+                maxLength={32}
               />
             </FormField>
 
@@ -211,6 +241,7 @@ export function ProfileSection({
                 onChange={(e) => update("jobTitle", e.target.value)}
                 placeholder="e.g. Project Manager"
                 autoComplete="organization-title"
+                maxLength={120}
               />
             </FormField>
           </div>

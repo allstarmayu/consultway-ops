@@ -99,6 +99,17 @@ export interface SettingsShellProps {
    */
   initialName: string;
   /**
+   * Persisted phone from `users.phone`. Nullable — the column is
+   * optional and many users will have never set it. The form coerces
+   * null ↔ empty string at the input boundary.
+   */
+  initialPhone: string | null;
+  /**
+   * Persisted job title from `users.jobTitle`. Same shape as phone —
+   * nullable, free text, no downstream effect today.
+   */
+  initialJobTitle: string | null;
+  /**
    * Persisted preferences row from `getPreferences()`. Sections hydrate
    * their initial form state from this, so a refresh shows what the user
    * actually has saved.
@@ -113,6 +124,8 @@ export function SettingsShell({
   userEmail,
   userRole,
   initialName,
+  initialPhone,
+  initialJobTitle,
   initialPreferences,
 }: SettingsShellProps) {
   const visibleSections = useMemo(
@@ -163,6 +176,8 @@ export function SettingsShell({
               <ProfileSection
                 userId={userId}
                 initialName={initialName}
+                initialPhone={initialPhone}
+                initialJobTitle={initialJobTitle}
                 initialEmail={userEmail}
                 userRole={userRole}
               />

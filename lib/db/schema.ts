@@ -75,6 +75,27 @@ export const users = sqliteTable(
     /** Display name. */
     name: text("name").notNull(),
 
+    /**
+     * Optional contact phone for the user. Stored as free text — no
+     * format normalisation at the DB level, since users in India write
+     * phone numbers in many shapes (+91 prefix, 10-digit raw, with
+     * spaces / hyphens). The action layer trims and length-bounds via
+     * `updateProfileSchema` but doesn't impose E.164 — phone is not an
+     * authentication factor today, so the column carries no
+     * verification state. NULL = "not provided" (the default for every
+     * user pre-Day-28 — the field was deferred from Day-27 #1).
+     */
+    phone: text("phone"),
+
+    /**
+     * Optional job title for display purposes (e.g. "Project Manager",
+     * "Civil Engineer"). Free text, length-bounded at the action layer.
+     * No downstream feature reads this today — purely cosmetic on the
+     * Profile section — but persisting it closes the "type into the
+     * field, refresh, value gone" papercut from Day-26.
+     */
+    jobTitle: text("job_title"),
+
     /** Soft-disable without deletion. Default true. */
     isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
 

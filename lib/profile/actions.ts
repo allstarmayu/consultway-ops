@@ -1,26 +1,37 @@
 /**
  * User-profile module — Server Actions.
  *
- * Single action this round: `updateProfile({ name })`. Writes through
- * to `users.name` for the signed-in caller, emits an audit event, and
- * returns the new value so the caller can hydrate its local form
- * state without a re-fetch.
+ * Single action this round: `updateProfile({ name, phone?, jobTitle? })`.
+ * Writes through to `users.name` / `users.phone` / `users.jobTitle` for
+ * the signed-in caller, emits a SCOPED audit event (only the columns
+ * that actually changed appear in `before` / `after`), and returns the
+ * new values so the caller can hydrate its local form state without a
+ * re-fetch.
  *
- * Authorisation: every signed-in user can update their OWN name.
- * Phone / email / jobTitle are deliberately not in scope this round:
- *   - phone needs a schema migration (no `phone` column on `users`)
- *   - email change needs a verification flow (verify-old + verify-new)
- *   - jobTitle is purely display, no use case for persistence yet
+ * Authorisation: every signed-in user can update their OWN profile.
+ *
+ * Persisted fields:
+ *   - `name`      — required on every call, length-bounded.
+ *   - `phone`     — optional, free text, no auth-factor semantics.
+ *                   Pass null to clear; empty string is coerced to null.
+ *   - `jobTitle`  — optional, free text for display only.
+ *
+ * Still NOT in scope:
+ *   - `email`     — changing the primary identifier needs a verify-old
+ *                   + verify-new flow with email tokens. Out of scope
+ *                   without explicit approval (security-critical).
  *
  * Stale-session handling mirrors `lib/preferences/actions.ts` — the
  * shared `assertUserExists` helper guards against a JWT outliving the
  * row it points at. Without it, the UPDATE silently affects 0 rows
  * and the UI thinks the save succeeded when it didn't.
  *
- * Audit logging: ON. Name is identity-adjacent data — admins should
- * be able to answer "who changed this user's display name and when?"
- * during an incident. The before/after snapshots capture only the
- * single field touched, not the whole user row.
+ * Audit logging: ON. Profile fields are identity-adjacent data —
+ * admins should be able to answer "who changed this user's display
+ * name / phone / job title and when?" during an incident. The
+ * before/after snapshots capture ONLY the columns that actually
+ * changed — saving the same shape doesn't audit, and changing just
+ * `phone` doesn't pollute the snapshot with `name` / `jobTitle`.
  *
  * @module lib/profile/actions
  */
@@ -39,23 +50,51 @@ import { updateProfileSchema, type UpdateProfileInput } from "./schemas";
 const log = logger.child({ module: "profile-actions" });
 
 /**
- * Update the signed-in user's display name.
+ * Shape of the returned profile after a successful save. Mirrors the
+ * three persisted columns so the caller can drive its local form state
+ * without a follow-up `getProfile` round-trip.
+ */
+export interface UpdatedProfile {
+  name: string;
+  phone: string | null;
+  jobTitle: string | null;
+}
+
+/**
+ * Coerce a phone / jobTitle field to its stored shape. The schema
+ * already trimmed; here we collapse empty strings to null so the DB
+ * column and the form's "user cleared the input" gesture agree.
+ */
+function normaliseOptional(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  return value.length === 0 ? null : value;
+}
+
+/**
+ * Update the signed-in user's profile (name + optional phone + optional
+ * jobTitle).
  *
- * Returns the new name on success so the caller's form state can
- * advance without a follow-up `getProfile` round-trip.
+ * Returns the new persisted shape on success so the caller's form state
+ * can advance without a follow-up read.
  *
- * Side effects on success:
- *   - One UPDATE on `users` (name + updatedAt via $onUpdate hook).
+ * Side effects on success (when at least one field actually changed):
+ *   - One UPDATE on `users` setting the changed columns + updatedAt
+ *     (via the $onUpdate hook).
  *   - One audit-log row: action=updated, targetType=user, targetId=userId,
- *     before/after snapshots scoped to the name column only.
+ *     before/after snapshots scoped to ONLY the columns that changed.
  *
- * @param rawInput The partial profile patch. Validated against
+ * If every submitted field matches what's already in the row, the
+ * action short-circuits with `ok: true` and the existing values —
+ * no write, no audit. (Avoids "Mayuresh -> Mayuresh" noise in the
+ * audit feed when the user clicks Save on an unchanged form.)
+ *
+ * @param rawInput The profile patch. Validated against
  *                 `updateProfileSchema`; unknown keys are rejected.
- * @returns ActionResult with the new name on success.
+ * @returns ActionResult with the new persisted profile on success.
  */
 export async function updateProfile(
   rawInput: UpdateProfileInput,
-): Promise<ActionResult<{ name: string }>> {
+): Promise<ActionResult<UpdatedProfile>> {
   const session = await readSession();
   if (!session) {
     return { ok: false, error: "You must be signed in" };
@@ -83,32 +122,86 @@ export async function updateProfile(
   }
 
   const patch = parsed.data;
+  const nextPhone = normaliseOptional(patch.phone);
+  const nextJobTitle = normaliseOptional(patch.jobTitle);
 
-  // Read the existing name so the audit log can capture a real
-  // before/after diff. Drizzle's $onUpdate handles updatedAt — no
-  // explicit timestamp in the SET payload.
+  // Read the current state so the audit log can capture a scoped diff
+  // and so the no-op short-circuit can compare each field.
   const [existing] = await db
-    .select({ name: users.name })
+    .select({
+      name: users.name,
+      phone: users.phone,
+      jobTitle: users.jobTitle,
+    })
     .from(users)
     .where(eq(users.id, session.userId))
     .limit(1);
 
-  // No-op short-circuit — the user submitted the same name. Skip the
-  // write + audit so the trail doesn't fill with "changed name from
-  // Foo to Foo" rows when the user clicks Save on an unchanged form.
-  if (existing && existing.name === patch.name) {
-    return { ok: true, name: patch.name };
+  // Belt-and-suspenders. `assertUserExists` already returned true above
+  // so this branch shouldn't fire in practice, but if a race deletes
+  // the user between the existence check and this read, we don't want
+  // to write to a non-existent row.
+  if (!existing) {
+    return { ok: false, error: STALE_SESSION_ERROR };
   }
+
+  // Compute the per-field diff up-front. The diff drives BOTH the
+  // SET payload (only write columns that actually changed) AND the
+  // audit before/after (only snapshot columns that actually changed).
+  const changes: {
+    name?: { before: string; after: string };
+    phone?: { before: string | null; after: string | null };
+    jobTitle?: { before: string | null; after: string | null };
+  } = {};
+
+  if (existing.name !== patch.name) {
+    changes.name = { before: existing.name, after: patch.name };
+  }
+  if (existing.phone !== nextPhone) {
+    changes.phone = { before: existing.phone, after: nextPhone };
+  }
+  if (existing.jobTitle !== nextJobTitle) {
+    changes.jobTitle = { before: existing.jobTitle, after: nextJobTitle };
+  }
+
+  // No-op short-circuit — nothing actually changed. Return the
+  // existing values so the caller's local form state still advances
+  // (the save bar collapses) but skip the write + audit.
+  if (Object.keys(changes).length === 0) {
+    return {
+      ok: true,
+      name: existing.name,
+      phone: existing.phone,
+      jobTitle: existing.jobTitle,
+    };
+  }
+
+  // Build the SET payload from the diff. Drizzle's $onUpdate handles
+  // updatedAt — no explicit timestamp here.
+  const setPayload: { name?: string; phone?: string | null; jobTitle?: string | null } = {};
+  if (changes.name) setPayload.name = changes.name.after;
+  if (changes.phone) setPayload.phone = changes.phone.after;
+  if (changes.jobTitle) setPayload.jobTitle = changes.jobTitle.after;
 
   await db
     .update(users)
-    .set({ name: patch.name })
+    .set(setPayload)
     .where(eq(users.id, session.userId));
 
-  log.info("profile name updated", {
+  log.info("profile updated", {
     userId: session.userId,
-    nameLength: patch.name.length,
+    changedFields: Object.keys(changes),
   });
+
+  // Build the scoped before/after snapshots — only columns that
+  // actually changed appear in either. The shape `Record<string,
+  // unknown>` is what `recordAuditEvent` expects.
+  const before: Record<string, unknown> = {};
+  const after: Record<string, unknown> = {};
+  for (const [field, diff] of Object.entries(changes)) {
+    before[field] = diff.before;
+    after[field] = diff.after;
+  }
 
   // Audit AFTER the write — if the write fails the audit doesn't fire,
   // matching the convention used by every other Server Action in the
@@ -120,9 +213,14 @@ export async function updateProfile(
     action: "updated",
     targetType: "user",
     targetId: session.userId,
-    before: existing ? { name: existing.name } : undefined,
-    after: { name: patch.name },
+    before,
+    after,
   });
 
-  return { ok: true, name: patch.name };
+  return {
+    ok: true,
+    name: patch.name,
+    phone: nextPhone,
+    jobTitle: nextJobTitle,
+  };
 }

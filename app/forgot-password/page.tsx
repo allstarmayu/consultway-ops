@@ -11,6 +11,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Building2 } from "lucide-react";
 import { ForgotPasswordForm } from "./_components/forgot-password-form";
+import { ThemePickerDropdown } from "@/components/theme-picker-dropdown";
 
 export const metadata: Metadata = {
   title: "Forgot password",
@@ -19,7 +20,24 @@ export const metadata: Metadata = {
 
 export default function ForgotPasswordPage() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-muted px-6 py-12">
+    <main
+      className="relative flex min-h-screen items-center justify-center px-6 py-12"
+      style={{
+        // Sibling-parity with /login + /register: subtle radial backdrop
+        // using the active theme's accent. Tracks every palette via
+        // `--accent` and `--background` — terracotta glow on Warm
+        // Ambient, cyan glow on Ocean Depth, etc.
+        background:
+          "radial-gradient(ellipse at 50% 0%, color-mix(in oklab, var(--accent) 10%, var(--background)) 0%, var(--background) 60%)",
+      }}
+    >
+      {/* Theme preview picker — lets first-time visitors browse the 6
+          palettes before signing in. Cookie-only persistence (no DB
+          write) since the visitor isn't authenticated yet; the gradient
+          re-tints immediately and the choice carries through to first
+          paint after sign-in via the `cw-theme` cookie. */}
+      <ThemePickerDropdown />
+
       <div className="w-full max-w-md">
         <Link
           href="/"

@@ -8,12 +8,15 @@
  *   - Happy path: persists the new name and bumps `updatedAt`.
  *   - Validation rejects names that are too short / too long with a
  *     `field: "name"` hint so the UI can highlight the input.
- *   - Unknown extra keys (e.g. a client trying to sneak in `phone`)
+ *   - Unknown extra keys (e.g. a client trying to sneak in `email`)
  *     are rejected — the schema is strict by design.
- *   - No-op short-circuit: re-saving the same name doesn't write or
- *     audit.
+ *   - No-op short-circuit: re-saving identical values doesn't write or
+ *     audit (covers single-field AND all-three-fields no-ops).
  *   - Audit event is emitted on a real change, with before/after
- *     snapshots scoped to the name column.
+ *     snapshots scoped to ONLY the columns that changed.
+ *   - Phone + jobTitle (Day 28) persist, clear via null, and round-trip
+ *     empty strings as null so the form's "user cleared the input"
+ *     gesture matches the column shape.
  *
  * Pattern mirrors `lib/preferences/__tests__/actions.test.ts` —
  * `vi.mock` with `importOriginal` so `assertUserExists` exercises the
@@ -192,10 +195,13 @@ describe("updateProfile", () => {
     loginAs(fixture.userId);
     // Cast to bypass the (correct) compile-time rejection — we want to
     // verify the Zod `.strict()` rule also rejects at runtime, since a
-    // real client could send arbitrary JSON.
+    // real client could send arbitrary JSON. Email is the canonical
+    // example: deliberately NOT in the schema this round (needs a
+    // verify-old + verify-new flow before users can change their auth
+    // identifier), so a client trying to sneak it should fail.
     const result = await updateProfile({
       name: "Legit Name",
-      phone: "+91 99999 99999",
+      email: "newaddress@test.local",
     } as unknown as { name: string });
     expect(result.ok).toBe(false);
   });
@@ -232,5 +238,162 @@ describe("updateProfile", () => {
     expect(row.actorRole).toBe("admin");
     expect(row.before).toEqual({ name: fixture.initialName });
     expect(row.after).toEqual({ name: "New Audited Name" });
+  });
+
+  // ── Phone + jobTitle (Day 28) ────────────────────────────────────────────
+
+  it("persists phone and jobTitle when provided", async () => {
+    loginAs(fixture.userId);
+    const result = await updateProfile({
+      name: fixture.initialName,
+      phone: "+91 98765 43210",
+      jobTitle: "Project Manager",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.phone).toBe("+91 98765 43210");
+    expect(result.jobTitle).toBe("Project Manager");
+
+    const [row] = await db
+      .select({ phone: users.phone, jobTitle: users.jobTitle })
+      .from(users)
+      .where(eq(users.id, fixture.userId));
+    expect(row!.phone).toBe("+91 98765 43210");
+    expect(row!.jobTitle).toBe("Project Manager");
+  });
+
+  it("clears phone + jobTitle to null when passed null", async () => {
+    loginAs(fixture.userId);
+    // Set them first so the clear has something to undo.
+    await updateProfile({
+      name: fixture.initialName,
+      phone: "+91 98765 43210",
+      jobTitle: "Civil Engineer",
+    });
+
+    const result = await updateProfile({
+      name: fixture.initialName,
+      phone: null,
+      jobTitle: null,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.phone).toBeNull();
+    expect(result.jobTitle).toBeNull();
+
+    const [row] = await db
+      .select({ phone: users.phone, jobTitle: users.jobTitle })
+      .from(users)
+      .where(eq(users.id, fixture.userId));
+    expect(row!.phone).toBeNull();
+    expect(row!.jobTitle).toBeNull();
+  });
+
+  it("coerces an empty-string phone to null", async () => {
+    loginAs(fixture.userId);
+    await updateProfile({
+      name: fixture.initialName,
+      phone: "+91 98765 43210",
+    });
+
+    const result = await updateProfile({
+      name: fixture.initialName,
+      phone: "",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.phone).toBeNull();
+
+    const [row] = await db
+      .select({ phone: users.phone })
+      .from(users)
+      .where(eq(users.id, fixture.userId));
+    expect(row!.phone).toBeNull();
+  });
+
+  it("short-circuits when all three fields match the persisted shape", async () => {
+    loginAs(fixture.userId);
+    // Seed with non-default phone + jobTitle so we have a non-trivial
+    // shape to compare against.
+    await updateProfile({
+      name: fixture.initialName,
+      phone: "+91 99999 99999",
+      jobTitle: "Lead Architect",
+    });
+
+    // Now re-submit the same shape. Should be a no-op — no audit, no
+    // second updatedAt bump.
+    const [beforeRow] = await db
+      .select({ updatedAt: users.updatedAt })
+      .from(users)
+      .where(eq(users.id, fixture.userId));
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const result = await updateProfile({
+      name: fixture.initialName,
+      phone: "+91 99999 99999",
+      jobTitle: "Lead Architect",
+    });
+    expect(result.ok).toBe(true);
+
+    const [afterRow] = await db
+      .select({ updatedAt: users.updatedAt })
+      .from(users)
+      .where(eq(users.id, fixture.userId));
+    // updatedAt didn't move — the UPDATE was skipped.
+    expect(afterRow!.updatedAt).toBe(beforeRow!.updatedAt);
+
+    // Exactly one audit row (from the seed), not two.
+    const auditRows = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.actorId, fixture.userId));
+    expect(auditRows).toHaveLength(1);
+  });
+
+  it("scopes the audit snapshot to only the columns that changed", async () => {
+    loginAs(fixture.userId);
+    // Seed phone + jobTitle so a single-field change has something to
+    // contrast against.
+    await updateProfile({
+      name: fixture.initialName,
+      phone: "+91 11111 11111",
+      jobTitle: "Engineer",
+    });
+
+    // Now change ONLY phone. The audit snapshot should mention phone
+    // and nothing else — not name, not jobTitle.
+    const result = await updateProfile({
+      name: fixture.initialName,
+      phone: "+91 22222 22222",
+      jobTitle: "Engineer",
+    });
+    expect(result.ok).toBe(true);
+
+    const auditRows = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.actorId, fixture.userId));
+    // Two rows now: the seed audit (which set phone + jobTitle from
+    // null) and the phone-only change. The latest is the one we care
+    // about — sort by createdAt to pick it deterministically.
+    const sorted = [...auditRows].sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+    const latest = sorted[sorted.length - 1]!;
+    expect(latest.before).toEqual({ phone: "+91 11111 11111" });
+    expect(latest.after).toEqual({ phone: "+91 22222 22222" });
+  });
+
+  it("rejects a phone longer than 32 chars with field: 'phone'", async () => {
+    loginAs(fixture.userId);
+    const result = await updateProfile({
+      name: fixture.initialName,
+      phone: "1".repeat(33),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.field).toBe("phone");
   });
 });
