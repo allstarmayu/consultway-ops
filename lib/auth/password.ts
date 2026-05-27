@@ -16,9 +16,6 @@
  */
 import bcrypt from "bcryptjs";
 import { env } from "@/lib/env";
-import { logger } from "@/lib/logger";
-
-const log = logger.child({ module: "password" });
 
 /**
  * bcrypt cost factor. 10 is the industry default — ~100ms per hash on
@@ -75,19 +72,6 @@ export async function verifyPassword(
 ): Promise<boolean> {
   try {
     const peppered = plaintext + env.PASSWORD_PEPPER;
-
-    // TEMP DIAGNOSTIC — remove after Layer A login works.
-    // Logs an identity-preserving fingerprint of env.PASSWORD_PEPPER
-    // so we can tell from wrangler tail which pepper the Worker is
-    // actually using, without leaking the real value to logs.
-    const p = env.PASSWORD_PEPPER;
-    log.info("pepper diag", {
-      pepperLen: p.length,
-      first2: p.slice(0, 2),
-      last2: p.slice(-2),
-      hashPrefix: hash.slice(0, 7),
-    });
-
     return await bcrypt.compare(peppered, hash);
   } catch {
     // Malformed hash, invalid format, etc. Treat as "wrong password"
