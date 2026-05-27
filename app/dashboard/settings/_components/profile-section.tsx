@@ -91,6 +91,24 @@ const roleLabels: Record<UserRole, string> = {
 /** Native picker `accept` attribute derived from the schema's allow-list. */
 const AVATAR_ACCEPT_ATTR = ALLOWED_AVATAR_MIME_TYPES.join(",");
 
+/**
+ * Single shared toast id for every toast emitted from this section.
+ *
+ * Sonner stacks toasts by id — toasts that share an id replace each
+ * other in place, toasts with different ids stack behind. The Profile
+ * section emits roughly six distinct toast cases (profile save success
+ * / error, avatar upload success / error, avatar remove success /
+ * error). Without a shared id, a save → upload → remove sequence
+ * leaves up to three ghost cards stacked in the corner. Sharing one
+ * id collapses the section's toast surface to "the most recent thing
+ * that happened in Profile" — which is exactly what the user wants.
+ *
+ * The trade-off: a toast fired here is wiped if any later toast in
+ * this section fires. In practice these are sequential user actions
+ * (~seconds apart) and the most recent state IS the relevant one.
+ */
+const PROFILE_TOAST_ID = "profile-section";
+
 export function ProfileSection({
   initialName,
   initialPhone,
@@ -149,7 +167,7 @@ export function ProfileSection({
       });
       if (!result.ok) {
         toast.error("Couldn't save profile", {
-          id: "profile-save-error",
+          id: PROFILE_TOAST_ID,
           description: result.error,
         });
         if (isStaleSessionError(result.error)) {
@@ -168,7 +186,7 @@ export function ProfileSection({
       setInitial(nextInitial);
       setForm(nextInitial);
       toast.success("Profile updated", {
-        id: "profile-saved",
+        id: PROFILE_TOAST_ID,
         description: "Your changes have been saved.",
       });
     });
@@ -213,14 +231,14 @@ export function ProfileSection({
       !(ALLOWED_AVATAR_MIME_TYPES as readonly string[]).includes(file.type)
     ) {
       toast.error("Unsupported image format", {
-        id: "avatar-upload-error",
+        id: PROFILE_TOAST_ID,
         description: "Please pick a PNG, JPEG, or WebP image.",
       });
       return;
     }
     if (file.size > MAX_AVATAR_SIZE_BYTES) {
       toast.error("Image too large", {
-        id: "avatar-upload-error",
+        id: PROFILE_TOAST_ID,
         description: `Maximum size is ${MAX_AVATAR_SIZE_BYTES / (1024 * 1024)} MB.`,
       });
       return;
@@ -236,7 +254,7 @@ export function ProfileSection({
       });
       if (!initResult.ok) {
         toast.error("Couldn't start upload", {
-          id: "avatar-upload-error",
+          id: PROFILE_TOAST_ID,
           description: initResult.error,
         });
         if (isStaleSessionError(initResult.error)) {
@@ -256,7 +274,7 @@ export function ProfileSection({
       });
       if (!putResponse.ok) {
         toast.error("Upload failed", {
-          id: "avatar-upload-error",
+          id: PROFILE_TOAST_ID,
           description: `R2 returned ${putResponse.status}. Try again, or pick a smaller image.`,
         });
         return;
@@ -269,14 +287,14 @@ export function ProfileSection({
       });
       if (!confirmResult.ok) {
         toast.error("Couldn't save avatar", {
-          id: "avatar-upload-error",
+          id: PROFILE_TOAST_ID,
           description: confirmResult.error,
         });
         return;
       }
 
       toast.success("Avatar updated", {
-        id: "avatar-saved",
+        id: PROFILE_TOAST_ID,
         description: "Your profile photo is live.",
       });
 
@@ -293,7 +311,7 @@ export function ProfileSection({
       const result = await deleteAvatar();
       if (!result.ok) {
         toast.error("Couldn't remove avatar", {
-          id: "avatar-delete-error",
+          id: PROFILE_TOAST_ID,
           description: result.error,
         });
         if (isStaleSessionError(result.error)) {
@@ -304,7 +322,7 @@ export function ProfileSection({
         return;
       }
       toast.success("Avatar removed", {
-        id: "avatar-removed",
+        id: PROFILE_TOAST_ID,
         description: "We've cleared your profile photo.",
       });
       router.refresh();
