@@ -340,7 +340,25 @@ export function ProfileSection({
           {/* Avatar row */}
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-4">
-              <Avatar size="lg" className="size-16">
+              {/*
+                The `key` on Avatar Root is load-bearing — it works
+                around a Radix Avatar quirk: the Root primitive tracks
+                `imageLoadingStatus` in its internal context, and the
+                AvatarFallback only renders when status !== "loaded".
+                When the user removes their avatar, `<AvatarImage>`
+                unmounts but nothing flips the context's status back
+                to "idle" / "error", so the Fallback's gate stays
+                false and the circle renders blank. Keying on the URL
+                presence (null vs non-null) forces a clean remount on
+                every transition, which resets the context and lets
+                the Fallback render its initials. Cheap — the avatar
+                bubble is a small subtree, remount is invisible.
+              */}
+              <Avatar
+                key={initialAvatarUrl ?? "no-avatar"}
+                size="lg"
+                className="size-16"
+              >
                 {initialAvatarUrl && (
                   <AvatarImage
                     src={initialAvatarUrl}
