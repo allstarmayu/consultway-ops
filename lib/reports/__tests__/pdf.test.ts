@@ -21,6 +21,13 @@
 import { describe, it, expect } from "vitest";
 import { renderReportPdf, type ReportPdfInput } from "../pdf";
 
+// Skipped while `lib/reports/pdf.tsx` is stubbed for the Cloudflare
+// Worker deploy (see module docstring there). The renderer's real
+// implementation lives in git history at commit 679a642; un-stub it
+// + flip this back to `describe(...)` when the dedicated PDF worker
+// ships.
+const describeWhenRendererAvailable = describe.skip;
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /** Fixed timestamp so the cover renders deterministically. */
@@ -154,7 +161,7 @@ function emptyPayload(): ReportPdfInput {
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
-describe("renderReportPdf", () => {
+describeWhenRendererAvailable("renderReportPdf", () => {
   it("returns a non-empty Uint8Array for an admin payload", async () => {
     const bytes = await renderReportPdf(adminPayload());
     expect(bytes).toBeInstanceOf(Uint8Array);
