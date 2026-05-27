@@ -6,10 +6,13 @@
  *
  *   - `0 2 * * *` → document expiry sweep (`runExpirySweep`)
  *   - `0 3 * * *` → pending-row cleanup (`runPendingCleanup`)
+ *   - `0 4 * * *` → expired-token cleanup (`cleanupExpiredTokens`,
+ *     covers both `email_verification_tokens` and
+ *     `password_reset_tokens`)
  *
  * The cron string is dispatched on so a single worker entry handles
- * both schedules. Adding a third trigger is a matter of one more case
- * in the `switch` plus the corresponding `wrangler.jsonc` entry.
+ * all three schedules. Adding a fourth trigger is a matter of one more
+ * case in the `switch` plus the corresponding `wrangler.jsonc` entry.
  *
  * Failure model:
  *   Cloudflare's scheduled handler treats a thrown error as a failed
@@ -35,6 +38,7 @@ import { env } from "@/lib/env";
 import { sendEmail } from "@/lib/email/client";
 import { runExpirySweep } from "@/lib/documents/crons/expiry-sweep";
 import { runPendingCleanup } from "@/lib/documents/crons/pending-cleanup";
+import { cleanupExpiredTokens } from "@/lib/auth/tokens";
 
 const log = logger.child({ module: "scheduled-handler" });
 
@@ -60,6 +64,7 @@ export interface ScheduledArgs {
  */
 const CRON_EXPIRY_SWEEP = "0 2 * * *" as const;
 const CRON_PENDING_CLEANUP = "0 3 * * *" as const;
+const CRON_TOKEN_CLEANUP = "0 4 * * *" as const;
 
 /**
  * Cloudflare scheduled() entry. Invoked by the platform on each cron
@@ -106,6 +111,21 @@ export async function scheduled(args: ScheduledArgs): Promise<void> {
           now,
         });
         log.info("scheduled pending-cleanup done", {
+          cron: args.cron,
+          durationMs: Date.now() - startedAt,
+          ...result,
+        });
+        return;
+      }
+
+      case CRON_TOKEN_CLEANUP: {
+        // Sweep expired email-verification + password-reset tokens out
+        // of their two tables. The helper is shared with
+        // `scripts/cron-token-cleanup.ts` (local invocation) so the
+        // same code path runs in both environments.
+        const now = new Date().toISOString();
+        const result = await cleanupExpiredTokens(now);
+        log.info("scheduled token-cleanup done", {
           cron: args.cron,
           durationMs: Date.now() - startedAt,
           ...result,

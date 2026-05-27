@@ -2,7 +2,12 @@
   "rules": [
     {
       "allowed": {
-        "origins": ["http://localhost:3000"],
+        "origins": [
+          "http://localhost:3000",
+          "https://*.workers.dev",
+          "https://staging.ops.consultway.info",
+          "https://ops.consultway.info"
+        ],
         "methods": ["GET", "PUT"],
         "headers": ["Content-Type"]
       },

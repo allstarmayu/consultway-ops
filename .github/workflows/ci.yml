@@ -1,0 +1,74 @@
+# Continuous Integration — runs on every PR and push to main/dev.
+#
+# Surfaces typecheck / lint / test / build failures BEFORE they hit
+# the deploy workflow. The deploy workflow re-runs typecheck + tests
+# as a safety net, but catching failures here means a broken PR never
+# enters the merge queue in the first place.
+#
+# Why Ubuntu and not Windows: OpenNext (the deploy build step we run
+# in deploy-staging.yml) explicitly doesn't support Windows. We match
+# CI to the deploy environment so "CI passed" is a meaningful signal.
+#
+# Why pnpm v10: the project's lockfile (`pnpm-lock.yaml`) was generated
+# by pnpm 10. Mixing pnpm versions can produce non-deterministic
+# resolution; pinning here matches what `package.json#packageManager`
+# would do if we set it.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+# Cancel in-flight runs when a new commit lands on the same branch —
+# saves CI minutes on rapid pushes during active dev. The previous
+# run's output is preserved in the Actions log even though it's
+# marked cancelled.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Typecheck · Test · Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        run: pnpm exec tsc --noEmit
+
+      - name: Run tests
+        run: pnpm test --run
+
+      # Plain `next build` here — fast smoke that the app compiles.
+      # The full OpenNext-augmented build (`pnpm build:worker`) runs
+      # only on the deploy workflow to keep CI fast. If `next build`
+      # is green and `tsc` is green, the OpenNext step is overwhelmingly
+      # likely to succeed too.
+      - name: Build (Next.js)
+        run: pnpm build
+        env:
+          # Dev-only placeholders are fine here — `pnpm build` doesn't
+          # actually hit the DB or R2, it just produces the static
+          # bundle. Real secrets are injected at deploy time.
+          JWT_SECRET: ci-only-jwt-secret-must-be-at-least-32-chars-long
+          PASSWORD_PEPPER: ci-only-pepper-16chars

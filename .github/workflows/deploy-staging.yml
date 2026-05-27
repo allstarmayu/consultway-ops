@@ -1,0 +1,124 @@
+# Deploy to Cloudflare Workers staging environment.
+#
+# Triggered by every push to the `dev` branch. The build runs on
+# Ubuntu (OpenNext doesn't fully support Windows, and pinning the
+# build environment removes "works on my machine" deploys). Migrations
+# are applied BEFORE the worker is deployed so the new worker code
+# doesn't hit a stale schema.
+#
+# Required GitHub repo secret (set under Settings → Secrets and
+# variables → Actions):
+#
+#   CLOUDFLARE_API_TOKEN
+#     - Mint at https://dash.cloudflare.com/profile/api-tokens
+#     - Required permissions: Workers Scripts: Edit, Workers Routes:
+#       Edit, D1: Edit, R2: Edit, Zone: DNS Edit (when we point a
+#       custom domain at the Worker — not needed for Layer A).
+#
+# Optional GitHub repo secret:
+#
+#   CLOUDFLARE_ACCOUNT_ID
+#     - Some wrangler invocations don't auto-resolve the account from
+#       the API token. Setting this explicitly removes ambiguity for
+#       accounts with multiple Cloudflare accounts attached.
+#
+# The Cloudflare-side secrets (JWT_SECRET, PASSWORD_PEPPER, R2_*) are
+# NOT here — they're set via `wrangler secret put --env staging` once
+# per environment. The deploy step inherits those from the Worker
+# binding, not from GitHub.
+
+name: Deploy Staging
+
+on:
+  push:
+    branches: [dev]
+  # Allow manual re-deploys from the Actions tab without needing a
+  # commit (useful if the deploy crashed mid-way and you just want
+  # to re-run from the same code).
+  workflow_dispatch:
+
+# One staging deploy at a time. If a new push lands while a deploy is
+# running, the new one queues — does NOT cancel the in-flight deploy.
+# (Cancelling a deploy mid-D1-migration would be bad.)
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build · Migrate · Deploy
+    runs-on: ubuntu-latest
+    # Future hardening: gate behind a GitHub Environment named
+    # "staging" with required reviewers. For Layer A we leave it
+    # open so deploys are automatic on `dev` push.
+    # environment: staging
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Safety net — even though ci.yml already runs these on PR, a
+      # direct push to `dev` (or a merge that doesn't trigger PR CI)
+      # would skip them. Re-running here keeps the deploy gate honest.
+      - name: TypeScript check
+        run: pnpm exec tsc --noEmit
+
+      - name: Run tests
+        run: pnpm test --run
+
+      # Apply any pending D1 migrations BEFORE deploying the new
+      # worker. Order matters: a new worker that depends on a column
+      # the migration adds would crash if the migration runs after.
+      # The action wraps `wrangler d1 migrations apply` and surfaces
+      # the per-migration log to the Actions UI.
+      - name: Apply D1 migrations (staging)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply consultway-staging --remote --env staging
+
+      # Build the OpenNext-compiled Worker. This produces
+      # `.open-next/worker.js` + `.open-next/assets/`. If this step
+      # fails on the Next 16.2.4 / OpenNext peer mismatch (peer wants
+      # >=16.2.6), the fix is a single-version bump that needs to
+      # happen on a branch first.
+      - name: Build worker (OpenNext)
+        run: pnpm build:worker
+        env:
+          JWT_SECRET: ci-only-jwt-secret-must-be-at-least-32-chars-long
+          PASSWORD_PEPPER: ci-only-pepper-16chars
+
+      - name: Deploy to Cloudflare (staging)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --env staging
+
+      # Surface the deploy URL to the workflow summary so the user
+      # doesn't have to dig through the deploy log to find it.
+      - name: Print deploy URL
+        run: |
+          echo "## Staging deploy succeeded" >> $GITHUB_STEP_SUMMARY
+          echo "Worker URL (Cloudflare dashboard prints the exact subdomain):" >> $GITHUB_STEP_SUMMARY
+          echo "  https://consultway-ops-staging.<your-subdomain>.workers.dev" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Health check: \`/api/health\` should return 200 with \`{\"status\":\"ok\"}\`." >> $GITHUB_STEP_SUMMARY

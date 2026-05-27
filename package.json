@@ -6,10 +6,16 @@
     "dev": "next dev",
     "snapshot": "tsx scripts/snapshot.ts",
     "build": "next build",
+    "build:worker": "next build && opennextjs-cloudflare build",
+    "preview": "opennextjs-cloudflare preview",
+    "deploy:staging": "opennextjs-cloudflare deploy --env staging",
+    "deploy:prod": "opennextjs-cloudflare deploy --env production",
     "start": "next start",
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:migrate:staging": "wrangler d1 migrations apply consultway-staging --remote --env staging",
+    "db:migrate:prod": "wrangler d1 migrations apply consultway-prod --remote --env production",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx scripts/seed.ts",
@@ -26,6 +32,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
+    "@opennextjs/cloudflare": "^1.19.11",
     "@react-pdf/renderer": "^4.5.1",
     "aws4fetch": "^1.0.20",
     "bcryptjs": "^3.0.3",
@@ -66,6 +73,7 @@
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.7",
+    "wrangler": "^4.95.0"
   }
 }
