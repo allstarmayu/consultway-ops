@@ -110,6 +110,21 @@ export interface SettingsShellProps {
    */
   initialJobTitle: string | null;
   /**
+   * Presigned GET URL for the user's avatar, or null when no avatar
+   * is set (or when R2 sign failed). Minted server-side via
+   * `getAvatarDisplayUrl` — Profile section just renders it; it
+   * doesn't know about the underlying R2 key.
+   */
+  initialAvatarUrl: string | null;
+  /**
+   * Whether `users.avatar_key` is set. The Profile section uses this
+   * to decide whether to show the "Remove" link — distinct from
+   * `initialAvatarUrl != null` because a sign failure produces null
+   * URL but the column is still populated (and a Remove call would
+   * still want to clear it).
+   */
+  initialHasAvatar: boolean;
+  /**
    * Persisted preferences row from `getPreferences()`. Sections hydrate
    * their initial form state from this, so a refresh shows what the user
    * actually has saved.
@@ -126,6 +141,8 @@ export function SettingsShell({
   initialName,
   initialPhone,
   initialJobTitle,
+  initialAvatarUrl,
+  initialHasAvatar,
   initialPreferences,
 }: SettingsShellProps) {
   const visibleSections = useMemo(
@@ -178,6 +195,8 @@ export function SettingsShell({
                 initialName={initialName}
                 initialPhone={initialPhone}
                 initialJobTitle={initialJobTitle}
+                initialAvatarUrl={initialAvatarUrl}
+                initialHasAvatar={initialHasAvatar}
                 initialEmail={userEmail}
                 userRole={userRole}
               />

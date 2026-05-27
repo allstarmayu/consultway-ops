@@ -134,3 +134,60 @@ export function buildDocumentKey(
   }
   return `companies/${companyId}/${documentId}/${sanitizeFilename(filename)}`;
 }
+
+/**
+ * Compose the R2 object key for a user's profile avatar.
+ *
+ * Format: `avatars/{userId}/{sanitizedFilename}`
+ *
+ * Why no separate "documentId" slot like {@link buildDocumentKey}: a
+ * user has at most one current avatar, addressed via
+ * `users.avatar_key`. There's no per-row identity to thread into the
+ * key. If the user uploads a NEW file with a different filename, the
+ * key changes and the action layer best-effort deletes the old object
+ * after pointing the column at the new one. If the user re-uploads
+ * with the SAME filename, the key is identical and R2 simply
+ * overwrites the bytes.
+ *
+ * Authorization: the action layer (`confirmAvatarUpload`) validates
+ * that the key starts with `avatars/{session.userId}/` before accepting
+ * it — this is the gate that prevents a client from claiming someone
+ * else's avatar blob as their own. See {@link avatarKeyPrefixFor}.
+ *
+ * @param userId - The owning user's UUID. Required.
+ * @param filename - The original filename (will be sanitised).
+ * @returns The full R2 object key.
+ *
+ * @example
+ *   buildAvatarKey(
+ *     "019e5752-b562-743d-a122-a650ac8cb85a",
+ *     "selfie photo.jpg",
+ *   )
+ *   // => "avatars/019e5752.../selfie_photo.jpg"
+ */
+export function buildAvatarKey(userId: string, filename: string): string {
+  if (!userId) {
+    throw new Error("buildAvatarKey: userId is required");
+  }
+  return `avatars/${userId}/${sanitizeFilename(filename)}`;
+}
+
+/**
+ * The R2 key prefix that scopes a user's avatars. Useful for the
+ * authorization check in `confirmAvatarUpload` — any avatar key the
+ * client submits MUST start with this prefix or it gets rejected.
+ *
+ * Kept as a function (rather than inline string concatenation at the
+ * call site) so the prefix shape is owned by this module — if we
+ * ever rename `avatars/` to something else, only one file needs to
+ * change.
+ *
+ * @param userId - The signed-in user's UUID.
+ * @returns The prefix string `avatars/{userId}/` (with trailing slash).
+ */
+export function avatarKeyPrefixFor(userId: string): string {
+  if (!userId) {
+    throw new Error("avatarKeyPrefixFor: userId is required");
+  }
+  return `avatars/${userId}/`;
+}

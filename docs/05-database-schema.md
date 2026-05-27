@@ -51,7 +51,9 @@ a company can have multiple user accounts (POC + finance contact, etc).
 | `full_name` | TEXT | NOT NULL |  |
 | `role` | TEXT | NOT NULL CHECK (role IN ('admin','staff','company-user')) |  |
 | `company_id` | TEXT | NULLABLE, FK → companies.id ON DELETE SET NULL | Only for company-users |
-| `phone` | TEXT | NULLABLE |  |
+| `phone` | TEXT | NULLABLE | User contact phone. Free text — no E.164 normalisation, not an auth factor. Added Day 28 |
+| `job_title` | TEXT | NULLABLE | Free-text display title (e.g. "Project Manager"). Added Day 28 |
+| `avatar_key` | TEXT | NULLABLE | R2 object key for the user's profile photo. Format `avatars/{userId}/{sanitizedFilename}`. Presigned GET URLs are minted on demand by `lib/avatars/server.ts::getAvatarDisplayUrl`. Added Day 29 |
 | `avatar_url` | TEXT | NULLABLE | R2 public URL |
 | `last_login_at` | TEXT | NULLABLE | ISO timestamp |
 | `status` | TEXT | NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')) |  |
@@ -62,6 +64,16 @@ Indexes:
 - `idx_users_email` on `email`
 - `idx_users_company_id` on `company_id`
 - `idx_users_role` on `role`
+
+> **Drift notice (Day 29):** This `users` table doc has known divergence
+> vs `lib/db/schema.ts` in several columns that pre-date this PR
+> (`full_name` → `name`, role enum value `'company-user'` → `'company'`,
+> `status` enum → `is_active` boolean, primary key UUID v4 → UUID v7,
+> `avatar_url` listed but never implemented — the column shipped Day 29
+> as `avatar_key` instead, see row above). Code wins per CLAUDE.md, and
+> the Day 29 additions (`phone`, `job_title`, `avatar_key`) are accurate.
+> A full doc-rewrite session is queued in `docs/reports/day-29-report.md`
+> followups.
 
 ### `email_verification_tokens`
 

@@ -96,6 +96,24 @@ export const users = sqliteTable(
      */
     jobTitle: text("job_title"),
 
+    /**
+     * Optional R2 object key for the user's profile photo. NULL when
+     * the user has never uploaded an avatar (the Avatar component
+     * falls back to initials). Format follows the same shape as
+     * `documents.fileKey`: `avatars/{userId}/{sanitizedFilename}`, see
+     * `lib/r2/keys.ts::buildAvatarKey`.
+     *
+     * Why a key and not a URL: matches the `documents` pattern — we
+     * mint presigned GETs on demand via
+     * `lib/avatars/server.ts::getAvatarDisplayUrl` rather than storing
+     * a URL that would either expire or require a public R2 bucket.
+     * Lets us keep the bucket fully private and lets us migrate to a
+     * different bucket / region without rewriting any rows.
+     *
+     * Added Day 29.
+     */
+    avatarKey: text("avatar_key"),
+
     /** Soft-disable without deletion. Default true. */
     isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
 

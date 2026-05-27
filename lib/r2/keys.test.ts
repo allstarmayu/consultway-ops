@@ -8,7 +8,12 @@
  * @module lib/r2/__tests__/keys
  */
 import { describe, it, expect } from "vitest";
-import { sanitizeFilename, buildDocumentKey } from "./keys";
+import {
+  sanitizeFilename,
+  buildDocumentKey,
+  buildAvatarKey,
+  avatarKeyPrefixFor,
+} from "./keys";
 
 describe("sanitizeFilename", () => {
   // â”€â”€ Happy path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -146,6 +151,59 @@ describe("buildDocumentKey", () => {
   it("returns 'file' fallback for empty filename", () => {
     const key = buildDocumentKey(COMPANY_ID, DOCUMENT_ID, "");
     expect(key).toBe(`companies/${COMPANY_ID}/${DOCUMENT_ID}/file`);
+  });
+});
+
+describe("buildAvatarKey", () => {
+  const USER_ID = "019e5752-b562-743d-a122-a650ac8cb85a";
+
+  it("composes the canonical avatar key format", () => {
+    expect(buildAvatarKey(USER_ID, "photo.jpg")).toBe(
+      `avatars/${USER_ID}/photo.jpg`,
+    );
+  });
+
+  it("sanitises the filename component", () => {
+    expect(buildAvatarKey(USER_ID, "selfie photo.jpg")).toBe(
+      `avatars/${USER_ID}/selfie_photo.jpg`,
+    );
+  });
+
+  it("does not let path-separator filenames escape the per-user prefix", () => {
+    const key = buildAvatarKey(USER_ID, "../../../etc/passwd.jpg");
+    // Critical guarantee: the key cannot escape the per-user prefix —
+    // the action's authorization gate (`startsWith(avatars/{userId}/)`)
+    // depends on this.
+    expect(key.startsWith(`avatars/${USER_ID}/`)).toBe(true);
+    expect(key).not.toContain("/..");
+  });
+
+  it("throws on missing userId", () => {
+    expect(() => buildAvatarKey("", "photo.jpg")).toThrow();
+  });
+
+  it("returns 'file' fallback for empty filename", () => {
+    expect(buildAvatarKey(USER_ID, "")).toBe(`avatars/${USER_ID}/file`);
+  });
+});
+
+describe("avatarKeyPrefixFor", () => {
+  const USER_ID = "019e5752-b562-743d-a122-a650ac8cb85a";
+
+  it("returns the canonical prefix with trailing slash", () => {
+    expect(avatarKeyPrefixFor(USER_ID)).toBe(`avatars/${USER_ID}/`);
+  });
+
+  it("composes consistently with buildAvatarKey", () => {
+    // The auth check in `confirmAvatarUpload` does
+    // `avatarKey.startsWith(avatarKeyPrefixFor(userId))` — this test
+    // pins the invariant the two helpers must satisfy together.
+    const key = buildAvatarKey(USER_ID, "any-photo.png");
+    expect(key.startsWith(avatarKeyPrefixFor(USER_ID))).toBe(true);
+  });
+
+  it("throws on missing userId", () => {
+    expect(() => avatarKeyPrefixFor("")).toThrow();
   });
 });
 

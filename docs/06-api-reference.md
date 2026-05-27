@@ -134,6 +134,112 @@ Admin/Staff only. Streams CSV of all companies matching current filters.
 
 ---
 
+## Profile (Day 28 + Day 29)
+
+User-facing actions for the Settings → Profile section. All actions
+require an authenticated session; each callable is restricted to the
+signed-in user's own row (the actions don't accept a `userId` parameter
+— they read `readSession()`).
+
+> Drift note: pre-Day-28 the only persistent profile field was `name`.
+> Days 28 + 29 brought `phone`, `job_title`, and `avatar_key` online.
+> Email change is still deferred (needs a verify-old + verify-new flow,
+> queued for a security-themed session).
+
+### Server Action: `updateProfile(input)` (Day 28)
+
+Source: `lib/profile/actions.ts`. Updates the signed-in user's display
+name, phone, and/or job title in a single call.
+
+Input (Zod, `.strict()`):
+```ts
+{
+  name: string;                  // 2-120 chars, trimmed
+  phone?: string | null;         // ≤ 32 chars trimmed, or null to clear
+  jobTitle?: string | null;      // ≤ 120 chars trimmed, or null to clear
+}
+```
+
+Empty string on `phone` / `jobTitle` is coerced to `null` server-side,
+so the form's "user cleared the input" gesture round-trips cleanly to
+a NULL column.
+
+Behaviour:
+- Stale-session guard via `assertUserExists` from `lib/auth/session.ts`.
+- Per-field diff: only columns that ACTUALLY change get written, and
+  the audit `before` / `after` snapshots carry only those columns. A
+  save with no changes is a no-op (no write, no audit row).
+- Audit event `updated` on `target_type = 'user'`, scoped to the diff.
+
+Response: `{ ok: true, name, phone, jobTitle }` on success or
+`{ ok: false, error, field? }` on validation / auth failure.
+
+### Server Action: `initiateAvatarUpload(input)` (Day 29)
+
+Source: `lib/avatars/actions.ts`. Step 1 of the two-step avatar upload
+flow. Mints a presigned R2 PUT URL the client uses to upload bytes
+directly. The DB is NOT written at this step — orphaned `initiate`
+calls (client gives up before the upload completes) leave no row to
+clean up.
+
+Input:
+```ts
+{
+  fileName: string;              // raw filename for sanitisation
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  sizeBytes: number;             // ≤ 5_242_880 (5 MB)
+}
+```
+
+Response 200:
+```json
+{
+  "ok": true,
+  "uploadUrl": "https://...r2.cloudflarestorage.com/...?X-Amz-Signature=...",
+  "avatarKey": "avatars/<userId>/<sanitisedFilename>",
+  "expiresInSeconds": 300
+}
+```
+
+The client MUST send `Content-Type: <mimeType>` on the PUT — sigv4
+binds the content-type and R2 rejects mismatches.
+
+### Server Action: `confirmAvatarUpload(input)` (Day 29)
+
+Step 2 of the avatar upload flow. Called after a successful R2 PUT.
+Writes `users.avatar_key` for the signed-in user, deletes the previous
+R2 object if one existed (replace semantics), and emits an audit event.
+
+Input:
+```ts
+{
+  avatarKey: string;             // exact value returned by initiate
+}
+```
+
+Behaviour:
+- Validates the avatar key starts with `avatars/{signedInUserId}/` so
+  a client can't trick the action into pointing a different user's row
+  at someone else's blob.
+- On replace, the old R2 object is best-effort deleted (failure logs
+  + leaks the old blob, doesn't block the update — same pattern as
+  documents).
+
+### Server Action: `deleteAvatar()` (Day 29)
+
+Clears `users.avatar_key` and best-effort deletes the R2 object. The
+Avatar component falls back to initials when the column is NULL.
+
+### Display URL (server-side helper, not a Server Action)
+
+`lib/avatars/server.ts::getAvatarDisplayUrl(avatarKey)` — used by
+Server Components (e.g. `app/dashboard/settings/page.tsx`) to mint a
+short-lived presigned GET URL. Returns null for null input or sign
+failure — never throws. Same shape and rationale as
+`lib/preferences/server.ts::getPreferencesForSSR`.
+
+---
+
 ## Documents
 
 ### `POST /api/uploads/presign`

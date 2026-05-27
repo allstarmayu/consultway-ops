@@ -31,6 +31,7 @@ import { users } from "@/lib/db/schema";
 import { readSession } from "@/lib/auth/session";
 import { buildStaleSessionRedirectUrl } from "@/lib/auth/stale-session";
 import { getPreferences } from "@/lib/preferences/actions";
+import { getAvatarDisplayUrl } from "@/lib/avatars/server";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { SettingsShell } from "./_components/settings-shell";
 
@@ -59,15 +60,16 @@ export default async function SettingsPage() {
     redirect(buildStaleSessionRedirectUrl("/dashboard/settings"));
   }
 
-  // Read the user's current display name, phone, and job title so the
-  // Profile section hydrates with persisted values instead of blank.
-  // We don't need to defend against missing here — `getPreferences`
-  // already ran the stale-session guard above, so the row exists.
+  // Read the user's persisted profile fields so the Profile section
+  // hydrates with current values instead of blank. We don't need to
+  // defend against missing here — `getPreferences` already ran the
+  // stale-session guard above, so the row exists.
   const [userRow] = await db
     .select({
       name: users.name,
       phone: users.phone,
       jobTitle: users.jobTitle,
+      avatarKey: users.avatarKey,
     })
     .from(users)
     .where(eq(users.id, session.userId))
@@ -75,6 +77,13 @@ export default async function SettingsPage() {
   const initialName = userRow?.name ?? "";
   const initialPhone = userRow?.phone ?? null;
   const initialJobTitle = userRow?.jobTitle ?? null;
+
+  // Mint a presigned GET URL for the avatar, if one is set. Returns
+  // null on R2 sign failure (logged + falls back to initials in the
+  // Avatar component) — never throws.
+  const initialAvatarUrl = await getAvatarDisplayUrl(
+    userRow?.avatarKey ?? null,
+  );
 
   return (
     <div className="flex flex-col">
@@ -90,6 +99,8 @@ export default async function SettingsPage() {
         initialName={initialName}
         initialPhone={initialPhone}
         initialJobTitle={initialJobTitle}
+        initialAvatarUrl={initialAvatarUrl}
+        initialHasAvatar={Boolean(userRow?.avatarKey)}
         initialPreferences={prefs.preferences}
       />
     </div>
