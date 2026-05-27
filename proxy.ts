@@ -2,15 +2,22 @@
  * Next.js proxy — runs on every request that matches the `matcher`.
  *
  * Previously named `middleware.ts` in Next.js 15 and earlier. As of
- * Next.js 16 the file convention is `proxy.ts` with an exported `proxy()`
- * function. The rename clarifies that this file sits at the network
- * boundary (not as request-pipeline middleware in the Express sense),
- * and the framework now runs it on the Node.js runtime instead of Edge.
+ * Next.js 16 the file convention is `proxy.ts` with an exported
+ * `proxy()` function. The rename clarifies that this file sits at the
+ * network boundary (not as request-pipeline middleware in the Express
+ * sense).
  *
- * Migration notes (in case we ever roll back or want Edge again):
- *   - Function: was `export async function middleware(req)`, now `proxy(req)`
- *   - Runtime: was Edge, now Node.js (not configurable on proxy.ts)
- *   - Behaviour: identical — same redirects, same matcher, same JWT check
+ * Runtime: **edge**. Next 16 defaults proxy.ts to Node.js, but
+ * OpenNext-on-Cloudflare requires middleware to run on the edge
+ * runtime — Cloudflare Workers' edge environment doesn't include
+ * Node-only modules. The `export const runtime = "edge"` below is
+ * the explicit opt-in.
+ *
+ * Why edge is safe for this file: the only runtime work we do is a
+ * cookie read + a `jose` JWT verify + a `NextResponse.redirect()`.
+ * All three are edge-compatible. `jose` is explicitly designed for
+ * cross-runtime use; the Web Crypto APIs it depends on exist in both
+ * Node and Workers.
  *
  * Responsibilities:
  *   - Protect `/dashboard/*` from unauthenticated users (→ /login)
@@ -26,7 +33,16 @@
  * @module proxy
  */
 import { NextResponse, type NextRequest } from "next/server";
-import { verifySession, SESSION_COOKIE } from "@/lib/auth/session";
+// IMPORTANT: import from session-edge, NOT session — the latter pulls
+// in `next/headers` + the DB module, both of which are not available
+// in the Cloudflare edge runtime where OpenNext runs middleware.
+import { verifySession, SESSION_COOKIE } from "@/lib/auth/session-edge";
+
+// OpenNext-on-Cloudflare runs Next middleware on the edge runtime.
+// Without this opt-in, `opennextjs-cloudflare build` fails with:
+//   ERROR Node.js middleware is not currently supported.
+//   Consider switching to Edge Middleware.
+export const runtime = "edge";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
