@@ -7,27 +7,34 @@
  * assets are served via the ASSETS binding declared in
  * `wrangler.jsonc`.
  *
- * Why this file exists at all (vs. zero-config):
- *   1. Re-exporting `scheduled` lets Cloudflare's cron triggers reach
- *      our `lib/crons/scheduled-handler.ts` dispatcher. Without this
- *      hook, the cron trigger fires the worker but no handler picks
- *      it up — the invocation silently 404s.
- *   2. The default OpenNext config uses the in-memory queue + cache.
- *      That's fine for Phase 1 — D1 + R2 cover persistence; we don't
- *      use Next's ISR cache. Future phases may want the Cloudflare KV
- *      queue/cache adapters for cross-invocation persistence; the
- *      changeover is a single import here.
+ * Cron handling status — **deferred**:
+ *
+ *   The original draft of this file re-exported `scheduled` from
+ *   `@/lib/crons/scheduled-handler` so Cloudflare's cron triggers
+ *   could reach the dispatcher. THAT BROKE THE BUILD.
+ *
+ *   Why: OpenNext bundles whatever this file imports/re-exports into
+ *   a temporary `.mjs` config it then dynamically imports. Pulling
+ *   `scheduled-handler` in dragged the whole `lib/db` + `better-sqlite3`
+ *   transitive graph into that bundle. `better-sqlite3` is a Node-
+ *   native CommonJS module; esbuild's CJS→ESM conversion emits
+ *   `__filename` references that explode under ESM (`ReferenceError:
+ *   __filename is not defined in ES module scope`).
+ *
+ *   The OpenNext config file is metadata + worker overrides; it's NOT
+ *   the place for runtime exports. The right place for `scheduled()`
+ *   is the OpenNext-generated worker entry — wired via an `entry`
+ *   override (TODO follow-up before Layer B / first prod deploy).
+ *
+ *   Impact today: cron triggers in `wrangler.jsonc` (the three daily
+ *   sweeps) fire against the deployed worker, find no `scheduled()`
+ *   export, and silently no-op. For Layer A staging that's fine —
+ *   nothing on the demo critical path relies on the once-daily
+ *   cleanup jobs.
  *
  * @module open-next.config
  */
 import type { OpenNextConfig } from "@opennextjs/cloudflare";
-
-// Re-export the cron dispatcher so the OpenNext-generated worker
-// entrypoint includes a `scheduled()` export. The Cloudflare runtime
-// invokes that named export once per matching `triggers.crons` entry
-// in `wrangler.jsonc`. Our handler in `lib/crons/scheduled-handler.ts`
-// dispatches on the cron pattern to the right cleanup routine.
-export { scheduled } from "@/lib/crons/scheduled-handler";
 
 const config: OpenNextConfig = {
   default: {
