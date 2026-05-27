@@ -3,7 +3,14 @@
   "name": "consultway-ops",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-04-01",
-  "compatibility_flags": ["nodejs_compat"],
+  // `nodejs_compat` — enables Node-compat layer (Buffer, process, etc.)
+  // `nodejs_als`    — Async Local Storage support, required by Next 16's
+  //                   request-scoped context (cookies(), headers(),
+  //                   draftMode(), and React Server Components rely on
+  //                   ALS for per-request state). Without this, RSC page
+  //                   renders fail with "Could not find module root"
+  //                   from module-resolution code in the worker.
+  "compatibility_flags": ["nodejs_compat", "nodejs_als"],
 
   "assets": {
     "directory": ".open-next/assets",
