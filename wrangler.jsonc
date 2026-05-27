@@ -45,11 +45,11 @@
   "kv_namespaces": [
     {
       "binding": "SESSIONS",
-      "id": "REPLACE_WITH_KV_UUID"
+      "id": "39fe6941eb4d4c95ba573ce0ca7e78fe"
     },
     {
       "binding": "RATE_LIMITS",
-      "id": "REPLACE_WITH_KV_UUID"
+      "id": "ac1632c58c164616a78a36b8f786c083"
     }
   ],
 
@@ -93,7 +93,21 @@
   "env": {
     "staging": {
       "name": "consultway-ops-staging",
+      // Wrangler does NOT inherit top-level `vars` / `kv_namespaces`
+      // into environment blocks (every other binding type IS env-
+      // scoped automatically). The full set is duplicated here so
+      // the staging worker actually sees them at runtime. Keep this
+      // block synchronised with the top-level `vars` whenever a new
+      // var lands; staging-specific overrides go last.
       "vars": {
+        "NODE_ENV": "production",
+        "NEXT_PUBLIC_APP_NAME": "Consultway Ops",
+        "LOG_LEVEL": "info",
+        "R2_MAX_UPLOAD_BYTES": "20971520",
+        "R2_PRESIGN_EXPIRY": "900",
+        "RATE_LIMIT_PUBLIC_RPM": "20",
+        "RATE_LIMIT_AUTH_RPM": "120",
+        // ── staging-specific overrides ─────────────────────
         "NEXT_PUBLIC_APP_URL": "https://staging.ops.consultway.info",
         // Real sender for staging — once consultway.info (or a sub-
         // domain) is verified in Resend, swap to the verified address.
@@ -107,12 +121,27 @@
         {
           "binding": "DB",
           "database_name": "consultway-staging",
-          "database_id": "REPLACE_WITH_STAGING_D1_UUID",
+          "database_id": "901b2201-f65b-4e75-a2dd-3634a15ba197",
           "migrations_dir": "drizzle"
         }
       ],
       "r2_buckets": [
         { "binding": "DOCS", "bucket_name": "consultway-docs-staging" }
+      ],
+      // Same non-inheritance gotcha as `vars` — KV namespaces from the
+      // top level don't reach environment blocks. The IDs here are the
+      // SAME ones declared at the top level (we use a single set of
+      // namespaces across environments today; if a future split is
+      // needed we'd create staging-specific namespaces and swap the ids).
+      "kv_namespaces": [
+        {
+          "binding": "SESSIONS",
+          "id": "39fe6941eb4d4c95ba573ce0ca7e78fe"
+        },
+        {
+          "binding": "RATE_LIMITS",
+          "id": "ac1632c58c164616a78a36b8f786c083"
+        }
       ]
     },
     "production": {
@@ -121,14 +150,33 @@
         "pattern": "ops.consultway.info/*",
         "zone_name": "consultway.info"
       },
+      // Same duplication pattern as staging — see comment there.
       "vars": {
+        "NODE_ENV": "production",
+        "NEXT_PUBLIC_APP_NAME": "Consultway Ops",
+        "LOG_LEVEL": "info",
+        "R2_MAX_UPLOAD_BYTES": "20971520",
+        "R2_PRESIGN_EXPIRY": "900",
+        "RATE_LIMIT_PUBLIC_RPM": "20",
+        "RATE_LIMIT_AUTH_RPM": "120",
+        // ── production-specific overrides ──────────────────
         "NEXT_PUBLIC_APP_URL": "https://ops.consultway.info",
         // Production sender. Domain must be verified in Resend (SPF +
         // DKIM records on consultway.info) before sends will land —
         // see docs/09-deployment.md § "Resend setup".
         "EMAIL_FROM": "Consultway <noreply@ops.consultway.info>",
         "EMAIL_REPLY_TO": "support@consultway.info"
-      }
+      },
+      "kv_namespaces": [
+        {
+          "binding": "SESSIONS",
+          "id": "39fe6941eb4d4c95ba573ce0ca7e78fe"
+        },
+        {
+          "binding": "RATE_LIMITS",
+          "id": "ac1632c58c164616a78a36b8f786c083"
+        }
+      ]
     }
   }
 }
