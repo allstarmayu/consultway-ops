@@ -1,5 +1,11 @@
 /**
- * Unit tests for `renderReportPdf` (`lib/reports/pdf.tsx`).
+ * Unit tests for `renderReportPdf` (`lib/reports/pdf-renderer.tsx`).
+ *
+ * These exercise the RENDERER directly, not the `lib/reports/pdf.tsx`
+ * dispatcher — the dispatcher is a thin service-binding seam with no
+ * local rendering path, so there's nothing to unit-test there in Node.
+ * The renderer is where all the layout logic lives, and it's a pure
+ * function of its input, so it's the right unit under test.
  *
  * The renderer is intentionally pure — no DB calls, no session reads —
  * so the tests build synthetic payloads against the public input shape
@@ -19,14 +25,13 @@
  * @module lib/reports/__tests__/pdf
  */
 import { describe, it, expect } from "vitest";
-import { renderReportPdf, type ReportPdfInput } from "../pdf";
+import { renderReportPdf, type ReportPdfInput } from "../pdf-renderer";
 
-// Skipped while `lib/reports/pdf.tsx` is stubbed for the Cloudflare
-// Worker deploy (see module docstring there). The renderer's real
-// implementation lives in git history at commit 679a642; un-stub it
-// + flip this back to `describe(...)` when the dedicated PDF worker
-// ships.
-const describeWhenRendererAvailable = describe.skip;
+// Re-enabled on Day 31: the renderer was restored from git (679a642)
+// into lib/reports/pdf-renderer.tsx and now ships in the dedicated
+// consultway-ops-pdf worker. These tests run the renderer in-process
+// under Node (vitest), which has @react-pdf/renderer available.
+const describeWhenRendererAvailable = describe;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 

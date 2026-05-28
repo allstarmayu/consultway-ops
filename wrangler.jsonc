@@ -149,6 +149,20 @@
           "binding": "RATE_LIMITS",
           "id": "ac1632c58c164616a78a36b8f786c083"
         }
+      ],
+      // ── Service bindings ────────────────────────────────
+      // PDF rendering is offloaded to the sibling consultway-ops-pdf
+      // worker (workers/pdf/) — @react-pdf/renderer is too big to fit
+      // in this worker's bundle alongside Next. lib/reports/pdf.tsx
+      // POSTs the report payload to env.PDF_WORKER over this binding.
+      // The target worker must be deployed FIRST (it has no public URL;
+      // see docs/DEPLOY_PDF_WORKER.md). Service bindings, like vars/kv,
+      // do NOT inherit from the top level into env blocks.
+      "services": [
+        {
+          "binding": "PDF_WORKER",
+          "service": "consultway-ops-pdf-staging"
+        }
       ]
     },
     "production": {
@@ -182,6 +196,17 @@
         {
           "binding": "RATE_LIMITS",
           "id": "ac1632c58c164616a78a36b8f786c083"
+        }
+      ],
+      // ── Service bindings ────────────────────────────────
+      // Production PDF worker. Points at consultway-ops-pdf (the prod
+      // name in workers/pdf/wrangler.jsonc). Like staging, deploy the
+      // PDF worker before promoting this worker to prod. See
+      // docs/DEPLOY_PDF_WORKER.md.
+      "services": [
+        {
+          "binding": "PDF_WORKER",
+          "service": "consultway-ops-pdf"
         }
       ]
     }

@@ -1,0 +1,92 @@
+# Deploy the consultway-ops-pdf-staging Worker.
+#
+# This is the dedicated PDF-rendering sibling worker (workers/pdf/). It
+# owns @react-pdf/renderer in its own bundle so the main worker stays
+# under Cloudflare's 10 MiB ceiling. The main worker reaches it over a
+# service binding (env.PDF_WORKER) — see docs/DEPLOY_PDF_WORKER.md.
+#
+# Unlike deploy-staging.yml (the main OpenNext worker), this one:
+#   - has NO D1 migration step (the PDF worker touches no database),
+#   - has NO OpenNext build step (it's a plain worker; wrangler bundles
+#     src/index.ts directly with esbuild on deploy),
+#   - is path-filtered so it only fires when the worker or the renderer
+#     it bundles actually change — the renderer rarely moves, so there's
+#     no point rebuilding it on every unrelated dev push.
+#
+# FIRST DEPLOY IS MANUAL: the main worker's service binding requires this
+# worker to already exist by name. Run the one-liner in
+# docs/DEPLOY_PDF_WORKER.md once before the first main-worker deploy that
+# declares the binding. After that, this workflow keeps it current.
+#
+# Required GitHub repo secret (same as the main deploy workflow):
+#   CLOUDFLARE_API_TOKEN   — Workers Scripts: Edit
+# Optional:
+#   CLOUDFLARE_ACCOUNT_ID  — disambiguates multi-account tokens
+
+name: Deploy PDF Worker (staging)
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "workers/pdf/**"
+      - "lib/reports/pdf-renderer.tsx"
+      - "lib/format/inr.ts"
+      - ".github/workflows/deploy-pdf-staging.yml"
+  workflow_dispatch:
+
+# One PDF-worker deploy at a time. Independent of the main worker's
+# concurrency group so the two can deploy in parallel on a push that
+# touches both.
+concurrency:
+  group: deploy-pdf-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build · Deploy PDF worker
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Wrangler 4.x requires Node >= 22 (same constraint as the main
+          # deploy workflow).
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Safety net — catch renderer type regressions before deploying.
+      # The full test suite runs in ci.yml on the same push; the renderer's
+      # output is covered there (lib/reports/__tests__/pdf.test.ts).
+      - name: TypeScript check
+        run: pnpm exec tsc --noEmit
+
+      - name: Deploy PDF worker (staging)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Pin wrangler 4.x — the action defaults to 3.90 which can't
+          # parse wrangler.jsonc. Same pin as deploy-staging.yml.
+          wranglerVersion: "4"
+          command: deploy --config workers/pdf/wrangler.jsonc --env staging
+
+      - name: Print result
+        run: |
+          echo "## PDF worker deploy succeeded" >> $GITHUB_STEP_SUMMARY
+          echo "Worker: \`consultway-ops-pdf-staging\` (no public URL — reachable only via the main worker's PDF_WORKER service binding)." >> $GITHUB_STEP_SUMMARY

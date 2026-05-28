@@ -1,0 +1,82 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "consultway-ops-pdf",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-01",
+  // `nodejs_compat` — @react-pdf/renderer's `renderToBuffer` is the
+  // `@platform node` API and returns a Node `Buffer`; the compat layer
+  // polyfills Buffer + the stream internals the renderer relies on.
+  // No `nodejs_als` here — that flag exists for Next 16's RSC request
+  // context, which this plain (non-Next) worker doesn't use.
+  "compatibility_flags": ["nodejs_compat"],
+
+  // ── @react-pdf/renderer: force the NODE build ───────────
+  // The package has no `exports` field — it uses the legacy `browser`
+  // field, which maps ONLY `./lib/react-pdf.js` → `./lib/react-pdf.browser.js`.
+  // workerd advertises browser-ish conditions, so wrangler's esbuild
+  // honours that map and bundles the BROWSER build, whose renderToBuffer
+  // is a throw-stub ("renderToBuffer is a Node specific API"). renderPDF
+  // needs the Node build (it uses Buffer/streams, provided by
+  // nodejs_compat). The minified node entry `react-pdf.min.js` is NOT a
+  // key in the browser map, so aliasing to it sidesteps the swap and we
+  // get the real renderer. Source keeps importing the clean
+  // `@react-pdf/renderer` specifier; Node/vitest resolve it normally
+  // (they ignore the browser field), so only the worker build is affected.
+  // Discovered by the Day-31 local `wrangler dev` smoke test.
+  "alias": {
+    "@react-pdf/renderer": "@react-pdf/renderer/lib/react-pdf.min.js"
+  },
+
+  // No public URL. This worker is reachable ONLY through the main
+  // worker's service binding (env.PDF_WORKER) — keeping the renderer
+  // off the public internet means /render needs no auth (nothing
+  // outside Cloudflare's network can reach it).
+  "workers_dev": false,
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  "placement": {
+    "mode": "smart"
+  },
+
+  // No d1 / r2 / kv bindings — the renderer is a pure function of its
+  // JSON input. No `vars` — it reads no environment.
+
+  // ── Environments ────────────────────────────────────────
+  // Deploy with:
+  //   wrangler deploy --config workers/pdf/wrangler.jsonc --env staging
+  //   wrangler deploy --config workers/pdf/wrangler.jsonc --env production
+  // The main worker's service binding (wrangler.jsonc → env.*.services)
+  // points at these exact names: consultway-ops-pdf-staging / consultway-ops-pdf.
+  "env": {
+    "staging": {
+      "name": "consultway-ops-pdf-staging",
+      "workers_dev": false,
+      // Duplicated from the top level — env blocks may not inherit
+      // `alias` (same non-inheritance caution as vars/kv on the main
+      // worker). Without this, an `--env staging` deploy would bundle
+      // the broken browser build. See the top-level comment.
+      "alias": {
+        "@react-pdf/renderer": "@react-pdf/renderer/lib/react-pdf.min.js"
+      },
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1
+      }
+    },
+    "production": {
+      "name": "consultway-ops-pdf",
+      "workers_dev": false,
+      "alias": {
+        "@react-pdf/renderer": "@react-pdf/renderer/lib/react-pdf.min.js"
+      },
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1
+      }
+    }
+  }
+}

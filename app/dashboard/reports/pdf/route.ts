@@ -36,13 +36,12 @@ import {
   getTendersByStatusForPeriod,
   getTransactionsSummaryForPeriod,
 } from "@/lib/dashboard/aggregates";
-// NOTE: `lib/reports/pdf` is loaded via dynamic import inside the
-// handler below, NOT statically here. Reason: `@react-pdf/renderer`
-// (the renderer's dependency) is ~5-7 MiB minified and bundling it
-// into the worker pushed us over the 10 MiB Cloudflare Worker ceiling.
-// next.config.ts marks it `serverExternalPackages`, and this route
-// catches the load failure on Workers (where the lib isn't available
-// at runtime) and degrades gracefully to a 503.
+// `lib/reports/pdf` is now a thin dispatcher (no heavy deps) that forwards
+// the payload to the dedicated consultway-ops-pdf worker over the
+// PDF_WORKER service binding. @react-pdf/renderer lives in THAT worker's
+// bundle, not here — so a plain static import is safe (it no longer drags
+// the renderer into this worker). See lib/reports/pdf.tsx.
+import { renderReportPdf } from "@/lib/reports/pdf";
 import { logger } from "@/lib/logger";
 
 const log = logger.child({ module: "reports-pdf-route" });
@@ -89,14 +88,11 @@ export async function GET(request: NextRequest) {
     return new NextResponse(transactionsResult.error, { status: 400 });
   }
 
-  // 4. Render — lazy-load the PDF renderer module. On Cloudflare
-  //    Workers the dynamic import fails because `@react-pdf/renderer`
-  //    is marked external (see next.config.ts `serverExternalPackages`)
-  //    and Workers don't resolve npm packages at runtime. On local dev
-  //    (node_modules present) it loads normally and PDFs work.
+  // 4. Render — delegate to the dedicated consultway-ops-pdf worker over
+  //    the PDF_WORKER service binding (lib/reports/pdf.tsx). The renderer
+  //    (@react-pdf/renderer) lives in that worker's bundle, not here.
   let pdfBytes: Uint8Array<ArrayBuffer>;
   try {
-    const { renderReportPdf } = await import("@/lib/reports/pdf");
     pdfBytes = await renderReportPdf({
       start,
       end,
@@ -116,25 +112,24 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     // Distinguish the two failure modes:
-    //   - Module load failure (the lib is externalized + missing at
-    //     runtime) → 503 with a helpful message. Expected on Workers.
-    //   - Anything else → 500 (genuine render error). Indicates a bug
-    //     to investigate in the next dedicated PDF-worker session.
+    //   - Binding unavailable (PDF worker not deployed/bound, or local
+    //     `next dev` without it running) → 503 with a helpful message.
+    //   - Anything else (PDF worker returned non-2xx, network error) →
+    //     500 (genuine render failure). Investigate via `wrangler tail
+    //     consultway-ops-pdf-staging`.
     const message = err instanceof Error ? err.message : String(err);
-    const isModuleNotFound =
-      /(cannot find module|module not found|failed to resolve)/i.test(
-        message,
-      );
-    if (isModuleNotFound) {
-      log.warn("PDF renderer unavailable in this runtime", { err });
+    const bindingUnavailable =
+      /service binding|not configured|pdf_worker/i.test(message);
+    if (bindingUnavailable) {
+      log.warn("PDF worker binding unavailable", { err });
       return new NextResponse(
         "PDF reports are temporarily unavailable in this environment. " +
-          "They'll be re-enabled once the dedicated PDF worker lands. " +
+          "They'll be re-enabled once the dedicated PDF worker is bound. " +
           "For now, use the HTML report view at /dashboard/reports.",
         { status: 503 },
       );
     }
-    log.error("renderReportPdf threw", { err });
+    log.error("renderReportPdf failed", { err });
     return new NextResponse("Failed to render report", { status: 500 });
   }
 

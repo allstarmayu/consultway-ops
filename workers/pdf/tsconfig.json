@@ -1,0 +1,25 @@
+{
+  // Scoped tsconfig for the consultway-ops-pdf worker. Its primary job is
+  // to give wrangler's esbuild bundler the right JSX transform for the
+  // renderer's `<Document>/<Page>` markup. Authoritative TYPE-CHECKING of
+  // this worker's source still happens via the repo-root `tsc --noEmit`
+  // (root tsconfig's `include` already covers `workers/**/*.ts` and the
+  // renderer), which has the full `dom` lib + Next plugin. esbuild does
+  // not type-check — it only reads jsx/target/module from here.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}
