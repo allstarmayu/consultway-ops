@@ -24,6 +24,7 @@
     "db:seed:large": "cross-env SEED_SCALE=large tsx scripts/seed.ts",
     "db:reset": "tsx scripts/reset-db.ts && pnpm db:migrate && pnpm db:seed",
     "seed:verify": "tsx scripts/seed-invariants.ts",
+    "dump:staging-fixtures": "tsx scripts/dump-staging-fixtures.ts",
     "r2:smoke": "cross-env NODE_OPTIONS=--use-system-ca tsx scripts/r2-smoke-test.ts",
     "cron:expiry-sweep": "tsx scripts/cron-expiry-sweep.ts",
     "cron:pending-cleanup": "tsx scripts/cron-pending-cleanup.ts",
