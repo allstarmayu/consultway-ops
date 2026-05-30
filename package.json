@@ -34,7 +34,6 @@
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
     "@opennextjs/cloudflare": "^1.19.11",
-    "@react-pdf/renderer": "^4.5.1",
     "aws4fetch": "^1.0.20",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.9.0",
