@@ -20,28 +20,31 @@
  * admin-only transactions card additionally gates itself at the helper
  * level, so a staff viewer doesn't render that card.
  *
- * PDF download (admin/staff) lives in the PageHeader action slot —
- * forwards the resolved `(start, end, companyId)` to
- * `/dashboard/reports/pdf` so the file matches what's on screen even
- * when defaults were filled in.
+ * PDF export (admin/staff): the "Download PDF" action in the PageHeader
+ * triggers the browser's print dialog (`PrintReportButton` →
+ * `window.print()`), and the `@media print` stylesheet in
+ * `app/globals.css` hides the app chrome + renders a branded, paginated
+ * report. A print-only cover header (below) carries the brand, the
+ * resolved period, the company scope, and the generation timestamp, so
+ * the saved PDF stands alone. (Server-side rendering via
+ * `@react-pdf/renderer` was abandoned — it can't run on Cloudflare
+ * Workers; see the Day-31 report.)
  *
  * @module app/dashboard/reports/page
  */
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { asc } from "drizzle-orm";
-import { Download } from "lucide-react";
 
 import { readSession } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { companies } from "@/lib/db/schema";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { CompanyPicker } from "./_components/company-picker";
 import { PeriodPicker } from "./_components/period-picker";
+import { PrintReportButton } from "./_components/print-report-button";
 import { ProjectsSummaryCard } from "./_components/projects-summary-card";
 import { ReportsKpiStrip } from "./_components/reports-kpi-strip";
 import { TendersSummaryCard } from "./_components/tenders-summary-card";
@@ -77,24 +80,47 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
   // a fresh fallback when the user changes the period or company.
   const suspenseKey = `${start}_${end}_${companyId ?? ""}`;
 
-  const pdfHref = buildPdfHref({ start, end, companyId });
+  const companyName = companyId
+    ? companyOptions.find((c) => c.id === companyId)?.name
+    : undefined;
+  // Server-render time, stamped onto the print cover. UTC to match the
+  // period bounds (which are UTC calendar dates).
+  const generatedAtUtc = new Date()
+    .toISOString()
+    .replace("T", " ")
+    .slice(0, 16);
 
   return (
-    <>
+    <div data-print-region>
+      {/* Print-only branded cover. Hidden on screen; the print stylesheet
+          (`app/globals.css`) shows it and hides the interactive header +
+          filters below, so the saved PDF reads as a standalone document. */}
+      <div className="mb-6 hidden border-b border-border pb-4 print:block">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">
+          Consultway Infotech
+        </p>
+        <h1 className="mt-1 text-2xl font-bold text-foreground">
+          Operations &amp; Financial Summary
+        </h1>
+        <p className="mt-2 text-xs text-muted-foreground">
+          <span>
+            Period: {start} &rarr; {end}
+          </span>
+          <span aria-hidden> &nbsp;&middot;&nbsp; </span>
+          <span>Scope: {companyName ?? "All companies"}</span>
+          <span aria-hidden> &nbsp;&middot;&nbsp; </span>
+          <span>Generated: {generatedAtUtc} UTC</span>
+        </p>
+      </div>
+
       <PageHeader
+        className="print:hidden"
         title="Reports"
         subtitle="Operations and financial summary, period-bounded"
-        actions={
-          <Button asChild variant="outline">
-            <Link href={pdfHref}>
-              <Download className="h-4 w-4" aria-hidden />
-              Download PDF
-            </Link>
-          </Button>
-        }
+        actions={<PrintReportButton from={start} to={end} />}
       />
 
-      <div className="mb-6 flex flex-col gap-3 sm:mb-8 lg:flex-row lg:items-start">
+      <div className="mb-6 flex flex-col gap-3 sm:mb-8 lg:flex-row lg:items-start print:hidden">
         <div className="lg:shrink-0">
           <CompanyPicker options={companyOptions} value={companyId} />
         </div>
@@ -162,7 +188,7 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
           </Suspense>
         </section>
       )}
-    </>
+    </div>
   );
 }
 
@@ -203,26 +229,6 @@ function resolvePeriod(
     end: defaults.end,
     companyId: stringOf(params.companyId) || undefined,
   };
-}
-
-/**
- * Build the PDF download URL by forwarding the resolved `(start, end,
- * companyId)` triple. The PDF route re-resolves its own period from the
- * URL (same fallback to current-month), so forwarding the resolved
- * values keeps the downloaded report aligned with what the user is
- * looking at on screen — including when the user didn't pass any
- * `?from` / `?to` and the page filled in defaults.
- */
-function buildPdfHref({
-  start,
-  end,
-  companyId,
-}: ResolvedPeriod): string {
-  const search = new URLSearchParams();
-  search.set("from", start);
-  search.set("to", end);
-  if (companyId) search.set("companyId", companyId);
-  return `/dashboard/reports/pdf?${search.toString()}`;
 }
 
 function stringOf(v: string | string[] | undefined): string {

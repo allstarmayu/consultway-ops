@@ -56,11 +56,16 @@ export default async function DashboardLayout({
       <main className="flex-1 overflow-x-hidden">
         {/* Mobile-only top bar — renders the hamburger trigger + a
             compact brand mark on `< lg`. The desktop sidebar covers
-            both roles at `>= lg` so this disappears there. */}
-        <MobileSidebar
-          userEmail={session.email}
-          userRole={session.role}
-        />
+            both roles at `>= lg` so this disappears there.
+            `data-print-hide`: print media isn't desktop-width, so the
+            `lg:hidden` bar would otherwise show on the printed page —
+            the global print stylesheet removes anything marked this. */}
+        <div data-print-hide>
+          <MobileSidebar
+            userEmail={session.email}
+            userRole={session.role}
+          />
+        </div>
 
         <div className="mx-auto w-full max-w-screen-2xl px-6 py-8 lg:px-10 lg:py-10">
           {children}

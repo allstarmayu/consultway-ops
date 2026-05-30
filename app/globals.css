@@ -784,3 +784,109 @@ html *::after {
   font-size: 0.8125rem;
   font-weight: 500;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+   Print styles (Day 31 — Reports "Download PDF")
+
+   The Reports page's Download-PDF button triggers `window.print()`
+   (PrintReportButton). These rules turn the on-screen report into a
+   clean, branded, ink-friendly PDF — no server renderer needed.
+   (Server-side @react-pdf/renderer was abandoned: it can't run on
+   Cloudflare Workers, see the Day-31 report.)
+
+   What it does:
+     1. Forces the warm-ambient (light) palette regardless of the active
+        theme, so a dark theme doesn't print a wall of espresso ink. The
+        values are copied verbatim from the default `:root` block above
+        (not new colours); `--background` uses the palette's white card
+        value. This block is last in the file, so it wins over any
+        `[data-theme=...]`.
+     2. Hides the app chrome — the desktop sidebar (the non-`main` child
+        of `[data-dashboard-root]`) and anything marked `data-print-hide`
+        or Tailwind `print:hidden` (the interactive header + filters +
+        mobile top bar).
+     3. Renders only the report region (`[data-print-region]`), with
+        cards kept whole across page breaks.
+   ────────────────────────────────────────────────────────────────────── */
+@page {
+  size: A4;
+  margin: 14mm;
+}
+
+@media print {
+  /* 1. Force the light palette for print (values from the default
+        warm-ambient `:root`). */
+  :root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.235 0.024 60);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.235 0.024 60);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.235 0.024 60);
+    --primary: oklch(0.235 0.024 60);
+    --primary-foreground: oklch(0.987 0.005 80);
+    --secondary: oklch(0.494 0.029 60);
+    --secondary-foreground: oklch(0.987 0.005 80);
+    --muted: oklch(0.952 0.015 80);
+    --muted-foreground: oklch(0.667 0.027 65);
+    --accent: oklch(0.578 0.131 38);
+    --accent-foreground: oklch(1 0 0);
+    --border: oklch(0.917 0.017 75);
+    --input: oklch(0.917 0.017 75);
+    --ring: oklch(0.578 0.131 38);
+    --chart-1: oklch(0.578 0.131 38);
+    --chart-2: oklch(0.494 0.029 60);
+    --chart-3: oklch(0.667 0.027 65);
+    --chart-4: oklch(0.235 0.024 60);
+    --chart-5: oklch(0.917 0.017 75);
+  }
+
+  /* No theme fades mid-print. */
+  html,
+  html *,
+  html *::before,
+  html *::after {
+    transition: none !important;
+  }
+
+  /* 2. Drop app chrome. Layout shape is
+        [data-dashboard-root] > (Sidebar, main) — hiding the non-main
+        child removes the sidebar without coupling to its internals. */
+  [data-dashboard-root] > :not(main) {
+    display: none !important;
+  }
+  [data-print-hide] {
+    display: none !important;
+  }
+  [data-dashboard-root] {
+    display: block !important;
+  }
+  main {
+    overflow: visible !important;
+  }
+  /* Drop the screen padding + max-width so the report uses the @page
+     margins instead. */
+  main > div {
+    max-width: none !important;
+    padding: 0 !important;
+  }
+
+  /* 3. Report region: solid ink, no on-screen shadows/rings, keep cards
+        whole across pages. */
+  [data-print-region] {
+    color: var(--foreground);
+    background: var(--background);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  [data-print-region] [data-slot="card"] {
+    break-inside: avoid;
+    box-shadow: none !important;
+  }
+  /* Don't strand a heading at the foot of a page. */
+  [data-print-region] h1,
+  [data-print-region] h2,
+  [data-print-region] h3 {
+    break-after: avoid;
+  }
+}
