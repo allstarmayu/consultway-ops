@@ -188,6 +188,7 @@ scripts/seed-staging-mayuresh-metadata.sql               (NEW — admin profile 
 package.json                                             (modified — dump:staging-fixtures script)
 docs/reports/day-31-report.md                            (NEW — committed this session, was untracked)
 docs/reports/day-32-report.md                            (NEW — this file)
+.github/workflows/deploy-staging.yml                     (modified — paths-ignore docs/** + scripts/**)
 ```
 
 Remote state changed (not in git):
@@ -310,8 +311,10 @@ download round-trip verified.
   (gitignored). Safe to delete; regenerating is a ~30s migrate+seed.
 
 - **Staging is at `3509ef1`**, health green. GitHub Actions on autopilot
-  for every push to `dev` (no path filter — scripts/docs pushes redeploy
-  too, harmlessly).
+  for every push to `dev`. The staging deploy now **skips docs/scripts-
+  only pushes** (`paths-ignore` added to `deploy-staging.yml` this
+  session); `ci.yml` still runs tsc + tests + build on every dev push, so
+  those changes are still validated — just not redundantly redeployed.
 
 - **CLAUDE.md hard rules still hold** on `next.config.ts` / `package.json`
   deps / `wrangler.jsonc`. The stale-config cleanup bundle (#4) needs an

@@ -32,6 +32,15 @@ name: Deploy Staging
 on:
   push:
     branches: [dev]
+    # Skip the deploy when a push touches ONLY docs or dev-only tooling —
+    # neither is bundled into the OpenNext worker, so the deployed bytes
+    # are identical and a redeploy would be a no-op. `paths-ignore` skips
+    # the run only when EVERY changed file matches; a mixed push (e.g.
+    # app/ + docs/) still deploys. Validation isn't lost: ci.yml runs
+    # tsc + tests + build on every push to dev regardless of paths.
+    paths-ignore:
+      - "docs/**"
+      - "scripts/**"
   # Allow manual re-deploys from the Actions tab without needing a
   # commit (useful if the deploy crashed mid-way and you just want
   # to re-run from the same code).
