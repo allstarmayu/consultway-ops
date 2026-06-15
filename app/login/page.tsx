@@ -174,6 +174,10 @@ function LoginForm() {
   // password change. Surfaced as a small inline success notice — much
   // cheaper UX cost than wiring a global toast for one event.
   const resetSuccess = searchParams.get("reset") === "success";
+  // /set-password redirects here with ?invite=accepted after an invited
+  // user activates their account. Mirrors the reset-success notice so the
+  // onboarding funnel ends with confirmation rather than a bare form.
+  const inviteAccepted = searchParams.get("invite") === "accepted";
 
   const {
     register,
@@ -245,6 +249,16 @@ function LoginForm() {
               <AlertTitle>Password updated</AlertTitle>
               <AlertDescription>
                 Your password has been changed. Sign in with the new one.
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* Post-invite-acceptance success notice. */}
+          {inviteAccepted && !serverError && (
+            <Alert>
+              <AlertTitle>Account activated</AlertTitle>
+              <AlertDescription>
+                Your password is set. Sign in to continue.
               </AlertDescription>
             </Alert>
           )}

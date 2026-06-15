@@ -775,6 +775,96 @@ export async function resetPasswordInternal(
   return { ok: true };
 }
 
+// -- Public: acceptInvite (Day 33) -----------------------------------------
+
+/**
+ * Accept an admin invite: set the initial password and activate the account.
+ *
+ * Mechanically this is a password reset (the invite token lives in
+ * `password_reset_tokens` — see lib/auth/tokens.ts::mintInviteToken), so it
+ * reuses `resetPasswordSchema` + `consumePasswordResetToken`. The one extra
+ * step over a plain reset: it stamps `emailVerifiedAt`. Clicking a link sent
+ * to the address proves ownership, so an invited user is verified the moment
+ * they accept — no separate verification round-trip.
+ *
+ * Pipeline:
+ *   1. Validate input (token shape + new-password policy).
+ *   2. Hash the password (pepper-aware).
+ *   3. Consume the token + write the hash atomically.
+ *   4. Stamp `emailVerifiedAt` (if not already set) + audit the acceptance.
+ *
+ * Failure modes collapse to a single "link no longer valid" surface, same
+ * as `resetPassword`. Never throws on expected failures.
+ */
+export async function acceptInvite(
+  rawInput: unknown,
+): Promise<{ ok: true } | { ok: false; error: string; field?: string }> {
+  const parsed = resetPasswordSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first?.message ?? "Invalid input",
+      field: first?.path.join(".") || undefined,
+    };
+  }
+  const { token, newPassword } = parsed.data;
+
+  const newPasswordHash = await hashPassword(newPassword);
+  const consumeResult = await consumePasswordResetToken(token, newPasswordHash);
+
+  if (!consumeResult.ok) {
+    const messageMap = {
+      not_found: "This invite link is no longer valid. Ask an admin to resend it.",
+      expired: "This invite link has expired. Ask an admin to resend it.",
+      already_used:
+        "This invite link has already been used. If you've set your password, just sign in.",
+    } as const;
+    return {
+      ok: false,
+      error: messageMap[consumeResult.reason],
+      field: "token",
+    };
+  }
+
+  // Look up the user to flip verification + record the acceptance.
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, consumeResult.userId))
+    .limit(1);
+
+  if (user && !user.emailVerifiedAt) {
+    try {
+      await db
+        .update(users)
+        .set({ emailVerifiedAt: new Date().toISOString() })
+        .where(eq(users.id, user.id));
+    } catch (err) {
+      // Non-fatal: the password is set and they can sign in; verification
+      // flip failing just means the login gate will ask them to verify.
+      log.warn("acceptInvite: emailVerifiedAt flip failed", {
+        userId: user.id,
+        err,
+      });
+    }
+  }
+
+  if (user) {
+    await recordAuditEvent({
+      actorId: user.id,
+      actorRole: user.role,
+      action: "updated",
+      targetType: "user",
+      targetId: user.id,
+      metadata: { action: "invite_accepted" },
+    });
+  }
+
+  log.info("invite accepted", { userId: consumeResult.userId });
+  return { ok: true };
+}
+
 // -- Private: translate SQLite UNIQUE conflicts to form-friendly errors ---
 
 /**

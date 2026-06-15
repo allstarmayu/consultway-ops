@@ -76,7 +76,7 @@ export interface EntityHistoryProps {
    * lockstep with the upstream `AuditTargetType` from `lib/audit/log.ts`
    * for the kinds of entities that have a detail page surface.
    */
-  targetType: "company" | "tender" | "project" | "transaction";
+  targetType: "company" | "tender" | "project" | "transaction" | "user";
 
   /** The specific entity id. */
   targetId: string;

@@ -48,6 +48,14 @@ const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
  *  stolen reset link is a higher-stakes outcome. */
 const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
 
+/** Admin-invite tokens last 72 hours — an internal user may not see the
+ *  invite mail until the next working day, so the window is generous.
+ *  Mechanically these are password-reset tokens (setting an initial
+ *  password IS a password reset), just minted with a longer TTL — they
+ *  share the `password_reset_tokens` table and the `consumePasswordResetToken`
+ *  consume path. See `mintInviteToken` below. */
+const INVITE_TTL_MS = 72 * 60 * 60 * 1000;
+
 /** Bytes of randomness per token. 32 -> 64 hex chars. */
 const TOKEN_BYTES = 32;
 
@@ -234,6 +242,42 @@ export async function consumePasswordResetToken(
 
   log.info("password reset consumed", { userId: row.userId });
   return { ok: true, userId: row.userId };
+}
+
+// ── Admin invite ───────────────────────────────────────────────────────────
+
+/**
+ * Mint an invite token for an admin-created user.
+ *
+ * An invite is a "set your initial password" link — functionally identical
+ * to a password reset, so it reuses the `password_reset_tokens` table and
+ * is redeemed by the same `consumePasswordResetToken`. The only difference
+ * is the longer 72-hour TTL: an invited internal user may not act on the
+ * mail until the next working day.
+ *
+ * Reusing the reset substrate (rather than adding an `invite_tokens` table)
+ * keeps this migration-free. The accept-invite action layer flips
+ * `emailVerifiedAt` on top of the password write — clicking the invite link
+ * proves email ownership — which the plain reset path does not do.
+ *
+ * Returns the raw token (caller embeds it in the invite URL) and the chosen
+ * expiry so the email copy can render "expires in N days".
+ */
+export async function mintInviteToken(
+  userId: string,
+): Promise<{ token: string; expiresAt: string }> {
+  const raw = randomTokenHex();
+  const tokenHash = hashToken(raw);
+  const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
+
+  await db.insert(passwordResetTokens).values({
+    id: newId(),
+    userId,
+    tokenHash,
+    expiresAt,
+  });
+
+  return { token: raw, expiresAt };
 }
 
 // ── Token cleanup ────────────────────────────────────────────────────────

@@ -40,6 +40,7 @@ import {
   ArrowLeftRight,
   BarChart3,
   Settings,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -50,11 +51,16 @@ import { UserPill } from "./user-pill";
 
 /**
  * One nav item. `href` doubles as the prefix-match key for active state.
+ * `adminOnly` items render only for admin-role users — unlike the rest of
+ * the sidebar (which shows everything and lets pages gate themselves), the
+ * admin section is hidden from non-admins so they aren't shown a link that
+ * would just redirect them away.
  */
 type NavItem = {
   href: string;
   label: string;
   icon: LucideIcon;
+  adminOnly?: boolean;
 };
 
 /**
@@ -74,6 +80,12 @@ const NAV_ITEMS: NavItem[] = [
     icon: ArrowLeftRight,
   },
   { href: "/dashboard/reports", label: "Reports", icon: BarChart3 },
+  {
+    href: "/dashboard/admin/users",
+    label: "Users",
+    icon: Users,
+    adminOnly: true,
+  },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
@@ -138,6 +150,12 @@ export function SidebarContent({
   const pillLayoutId =
     variant === "desktop" ? "sidebar-nav-pill" : "mobile-sidebar-nav-pill";
 
+  // Admin-only items (the Users section) are hidden from non-admins so
+  // they aren't offered a link that would just redirect them away.
+  const navItems = NAV_ITEMS.filter(
+    (item) => !item.adminOnly || userRole === "admin",
+  );
+
   return (
     <>
       {/* Brand header */}
@@ -162,7 +180,7 @@ export function SidebarContent({
           but defensive). */}
       <nav className="flex-1 overflow-y-auto px-3 py-2">
         <ul className="space-y-1">
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const isActive = isPathActive(pathname, item.href);
             const Icon = item.icon;
 
