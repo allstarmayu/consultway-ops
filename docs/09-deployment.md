@@ -151,8 +151,9 @@ prefer explicit allow-lists at Phase 1.
 
 ## 3.5 Resend Setup (transactional email)
 
-Transactional email (document expiry reminders today; verification / password
-reset later) is dispatched through Resend. `lib/email/client.ts` has a dual
+Transactional email — document expiry reminders, email verification,
+password reset, and **admin user invites** (Day 33) — is dispatched through
+Resend. `lib/email/client.ts` has a dual
 path: when `RESEND_API_KEY` is set it uses the Resend SDK; when unset it logs
 the rendered payload via the structured logger and returns `ok: true` so the
 calling cron / action treats the path uniformly. That fallback is what lets
@@ -210,6 +211,22 @@ After setting the secret + verifying the domain, manually trigger the cron
 (`wrangler cron trigger consultway-ops --env production --cron "0 2 * * *"`)
 and confirm an actual email lands at a contact address. The Resend dashboard
 shows delivery status with a per-message ID matching the one logged.
+
+A quicker interactive smoke test (Day 33): from `/dashboard/admin/users`,
+**Invite user** with a real address you control and confirm the
+"You've been invited to Consultway" email arrives — or hit **Send password
+reset** on an existing user. Both flow through the same `sendEmail` path.
+
+> **Heads-up — invite/reset links use `NEXT_PUBLIC_APP_URL`.** The
+> set-password and reset links are built from `env.NEXT_PUBLIC_APP_URL`
+> (per-env `vars` in `wrangler.jsonc`: `staging.ops.consultway.info` /
+> `ops.consultway.info`). That var is a build-time `NEXT_PUBLIC_*` value
+> inlined by the OpenNext build, so it must point at the **actually
+> reachable** origin for that environment. If the custom domain isn't live
+> yet (staging currently answers on `*.workers.dev`), emailed links will
+> 404 until the domain is configured or the var is repointed at the
+> working URL. Until `RESEND_API_KEY` is set, the link is still recoverable
+> from the `[email stub] would send` log line via `wrangler tail`.
 
 ---
 

@@ -46,6 +46,24 @@ documented answer. When in doubt: **deny**.
 | Delete user | ✅ | ❌ | ❌ | Soft-delete (status → `disabled`) |
 | Reset any user's password | ✅ | ❌ | ❌ | |
 
+> **Implementation note (Day 33).** The in-app user-management module
+> (`/dashboard/admin/users`, `lib/users/*`) implements the rows above with
+> two deliberate deviations — code is the source of truth (see
+> `docs/06-api-reference.md § Users`):
+>
+> - **Admin-only in v1.** Every operation gates on `requireAdmin()`
+>   (`lib/auth/guards.ts`); the staff allowances (List/Read users, the
+>   🟡 Create-company-user) are **not yet wired**. "When in doubt, deny."
+> - **Soft-delete is `is_active = false`** (a boolean column), not
+>   `status → disabled` — there is no `status` enum on `users` in
+>   `lib/db/schema.ts`.
+> - **Last-admin + self-lockout guards**: an admin can't demote/deactivate
+>   themselves or the final active admin (prevents a zero-admin lockout,
+>   since the admin role is grantable only through this module).
+> - Enforcement is **custom JWT + the role-gate helpers + per-page session
+>   checks**, not Payload access control — the Payload examples lower in
+>   this doc are illustrative of the original design, not the shipped code.
+
 ### Companies
 
 | Operation | Admin | Staff | Company User | Notes |

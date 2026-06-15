@@ -240,6 +240,130 @@ failure — never throws. Same shape and rationale as
 
 ---
 
+## Users (Day 33 — admin-only)
+
+In-app user management for the `/dashboard/admin/users` module. **Every
+action here is admin-only** — gated by `requireAdmin()` from
+`lib/auth/guards.ts` (the shared role-gate also used by the companies
+module). The route + actions both enforce it (defence in depth); staff /
+company callers get `{ ok: false }`. Source: `lib/users/actions.ts`,
+schemas in `lib/users/schemas.ts`.
+
+> Drift note: this is **stricter** than the Users rows in
+> `docs/08-rbac-matrix.md`, which permit staff to read users and to
+> create company-role users. That staff path is a deliberate v1 deferral.
+> Soft-delete is the `is_active` boolean (not a `status` enum — see
+> `lib/db/schema.ts`); code wins.
+
+Onboarding is **invite-based**: admins never set a password. `createUser`
+mints an invite token (a longer-lived `password_reset_tokens` row — see
+`lib/auth/tokens.ts::mintInviteToken`) and emails a set-password link; the
+invitee chooses their own credential via `acceptInvite`. All mutations
+audit on `target_type = 'user'` (`created` / `updated` + `metadata.action`).
+
+### Server Action: `listUsers(query)`
+
+Filter + search + sort + paginate. Left-joins the linked company name and
+**strips `password_hash`** from every row.
+
+Query (Zod, coerced from URL search params):
+```ts
+{
+  role?: "admin" | "staff" | "company";
+  status?: "active" | "inactive";   // maps to is_active (string enum, NOT a
+                                     // coerced boolean — z.coerce.boolean("false")
+                                     // is truthy)
+  companyId?: string;               // uuid
+  search?: string;                  // LIKE over name + email
+  page?: number;                    // default 1
+  perPage?: number;                 // default 20, max 100
+  sortBy?: "name" | "email" | "role" | "createdAt" | "lastLoginAt" | "updatedAt";
+  sortDir?: "asc" | "desc";         // default desc
+}
+```
+Response: `{ ok: true, rows: UserWithCompany[], total, page, perPage }`.
+
+### Server Action: `getUser(id)`
+
+Single user by id (password hash stripped, company name joined). Returns
+`{ ok: false }` for unknown ids so the detail page can `notFound()`.
+
+### Server Action: `createUser(input)` (invite)
+
+Creates the row with an **unusable random placeholder hash** (so the
+account can't be logged into until accepted), `is_active = true`,
+`email_verified_at = NULL`, then mints an invite + sends the set-password
+email (fail-soft).
+
+Input:
+```ts
+{
+  email: string;                    // lowercased, unique
+  name: string;                     // 2-200 chars
+  role: "admin" | "staff" | "company";
+  companyId?: string | null;        // REQUIRED for company role; forbidden for admin/staff
+  phone?: string | null;
+  jobTitle?: string | null;
+}
+```
+Response: `{ ok: true, id, inviteEmailSent }` — `inviteEmailSent` mirrors
+the registration flow so the UI can surface a "resend invite" affordance
+when the mail couldn't go out. (Tests call `createUserInternal(input, { sendEmail })`.)
+
+### Server Action: `updateUser(input)`
+
+Patch-style; every field optional except `id`. **`email` and `isActive`
+are intentionally NOT editable here** — email change needs re-verification
+(separate flow), and active-state is toggled by the dedicated
+deactivate/reactivate actions.
+
+Guards:
+- **Self-lockout**: an admin can't change their own role away from admin.
+- **Last-admin**: can't demote the final active admin.
+- **Role ↔ company invariant** re-checked against merged state — moving to
+  admin/staff clears `company_id`; moving to company requires one. The
+  company-existence check only fires when the patch actually moves
+  role/company (a pure profile edit of a user whose company was deleted
+  isn't blocked).
+
+### Server Action: `deactivateUser(id)` / `reactivateUser(id)`
+
+Soft-disable / re-enable via `is_active`. A disabled user is refused at
+login. Can't deactivate yourself; **can't deactivate the final active
+admin**. Idempotent (no-op + no audit when already in the target state).
+
+> Note: sessions are stateless 7-day JWTs, so deactivation/role-change
+> takes effect at next sign-in, not instantly — a live session persists
+> until its JWT expires. Full revocation (`sessionVersion` /
+> `passwordChangedAt`) is a queued hardening item.
+
+### Server Action: `resetUserPassword(id)`
+
+Admin-triggered: mints a 1-hour reset token and emails a `/reset-password`
+link. Refuses **not-yet-accepted** users (steers to Resend invite — a
+reset would void the invite token without verifying them) and
+**deactivated** users. Audits `metadata.action = "password_reset_requested",
+via: "admin"`. (`resetUserPasswordInternal(id, { sendEmail })` for tests.)
+
+### Server Action: `resendInvite(id)`
+
+Re-sends the set-password invite. Valid only while the account is
+unaccepted (`email_verified_at` NULL) and active; refuses already-activated
+or deactivated users. Audits `metadata.action = "invite_resent"`.
+
+### Server Action: `acceptInvite(input)`
+
+**Public** (the invitee isn't signed in). Backs the `/set-password` page.
+Consumes the invite token, writes the chosen password, and **flips
+`email_verified_at`** (clicking a link sent to the address proves
+ownership). Reuses `resetPasswordSchema` (`{ token, newPassword }`).
+Source: `lib/auth/actions.ts`.
+
+Response: `{ ok: true }`, or `{ ok: false, error, field }` with distinct
+copy for invalid / expired / already-used links.
+
+---
+
 ## Documents
 
 ### `POST /api/uploads/presign`

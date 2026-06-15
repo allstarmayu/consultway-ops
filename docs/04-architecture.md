@@ -156,6 +156,16 @@ Full matrix in [`08-rbac-matrix.md`](./08-rbac-matrix.md). Summary:
 Enforcement: **three layers** — middleware (route access), Payload `access`
 functions (DB access), UI (conditional rendering). Never trust only one.
 
+> **Shipped reality (Day 33).** In this codebase the three layers are:
+> (1) edge **middleware** (`middleware.ts`) gating `/dashboard/*` on the
+> JWT session cookie; (2) **Server Action role-gates** — `requireAdmin` /
+> `requireAdminOrStaff` from `lib/auth/guards.ts`, shared by the companies
+> and users modules (custom JWT + Drizzle, **not** Payload `access`
+> functions); (3) **per-page session checks** in Server Components. In-app
+> user management is the admin-only `/dashboard/admin/users` module
+> (`lib/users/*`) — see `docs/06-api-reference.md § Users` and the
+> implementation note in `docs/08-rbac-matrix.md`.
+
 ## Data Isolation
 
 Companies must **never** see another company's data.
