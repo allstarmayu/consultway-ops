@@ -39,6 +39,11 @@ import { db } from "@/lib/db";
 import { companies, type Company } from "@/lib/db/schema";
 import { newId } from "@/lib/db/ids";
 import { readSession } from "@/lib/auth/session";
+import {
+  requireAdmin,
+  requireAdminOrStaff,
+  type Session,
+} from "@/lib/auth/guards";
 import { logger } from "@/lib/logger";
 import { recordAuditEvent } from "@/lib/audit/log";
 import type { ActionResult } from "@/lib/types/action-result";
@@ -61,58 +66,11 @@ import { stripAdminOnlyFields } from "./field-strip";
 const log = logger.child({ module: "companies-actions" });
 
 // ── Authorization helpers ───────────────────────────────────────────────────
-
-/**
- * The session shape, unwrapped from `readSession()`'s nullable return.
- * Pulled out so the helpers below can refer to it without re-deriving.
- */
-type Session = NonNullable<Awaited<ReturnType<typeof readSession>>>;
-
-/**
- * Result type for the role-gate helpers. The two-shape return lets the
- * caller short-circuit on failure with a single line:
- *   const r = await requireAdminOrStaff();
- *   if (!r.ok) return r;
- */
-type AuthCheck =
-  | { ok: true; session: Session }
-  | { ok: false; error: string };
-
-/**
- * Resolve the current session and confirm the caller is admin or staff.
- * Returns the session on success, or an `ok: false` result that the
- * action returns immediately.
- */
-async function requireAdminOrStaff(): Promise<AuthCheck> {
-  const session = await readSession();
-  if (!session) {
-    return { ok: false, error: "You must be signed in" };
-  }
-  if (session.role !== "admin" && session.role !== "staff") {
-    log.warn("forbidden access attempt", {
-      userId: session.userId,
-      role: session.role,
-    });
-    return { ok: false, error: "You don't have permission to do that" };
-  }
-  return { ok: true, session };
-}
-
-/**
- * Admin-only gate. Used for delete.
- */
-async function requireAdmin(): Promise<AuthCheck> {
-  const session = await readSession();
-  if (!session) return { ok: false, error: "You must be signed in" };
-  if (session.role !== "admin") {
-    log.warn("non-admin attempted admin-only action", {
-      userId: session.userId,
-      role: session.role,
-    });
-    return { ok: false, error: "Only an administrator can do that" };
-  }
-  return { ok: true, session };
-}
+//
+// `requireAdmin` / `requireAdminOrStaff` (+ the `Session` type) now live in
+// `lib/auth/guards.ts`, shared with the users module — imported above. The
+// read-and-scope helper below stays local because its `scopeCompanyId`
+// shape is companies-specific (row-level scoping for company-role users).
 
 /**
  * Read-and-scope helper. Any signed-in user may call read actions, but
