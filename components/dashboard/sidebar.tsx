@@ -51,16 +51,17 @@ import { UserPill } from "./user-pill";
 
 /**
  * One nav item. `href` doubles as the prefix-match key for active state.
- * `adminOnly` items render only for admin-role users — unlike the rest of
- * the sidebar (which shows everything and lets pages gate themselves), the
- * admin section is hidden from non-admins so they aren't shown a link that
- * would just redirect them away.
+ * `roles`, when present, restricts the item to those roles — unlike the
+ * rest of the sidebar (which shows everything and lets pages gate
+ * themselves), a role-restricted section is hidden from everyone else so
+ * they aren't shown a link that would just redirect them away. Omit
+ * `roles` for an item everyone sees.
  */
 type NavItem = {
   href: string;
   label: string;
   icon: LucideIcon;
-  adminOnly?: boolean;
+  roles?: UserRole[];
 };
 
 /**
@@ -84,7 +85,9 @@ const NAV_ITEMS: NavItem[] = [
     href: "/dashboard/admin/users",
     label: "Users",
     icon: Users,
-    adminOnly: true,
+    // Admin manages everyone; staff manage company-user accounts. Hidden
+    // from company-role users, who have no access to the module.
+    roles: ["admin", "staff"],
   },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
@@ -150,10 +153,10 @@ export function SidebarContent({
   const pillLayoutId =
     variant === "desktop" ? "sidebar-nav-pill" : "mobile-sidebar-nav-pill";
 
-  // Admin-only items (the Users section) are hidden from non-admins so
-  // they aren't offered a link that would just redirect them away.
+  // Role-restricted items (the Users section) are hidden from roles that
+  // can't use them so nobody is offered a link that would just redirect.
   const navItems = NAV_ITEMS.filter(
-    (item) => !item.adminOnly || userRole === "admin",
+    (item) => !item.roles || item.roles.includes(userRole),
   );
 
   return (

@@ -55,6 +55,14 @@ const adminSession = {
   companyId: null,
 };
 
+const STAFF_ID = newId();
+const staffSession = {
+  userId: STAFF_ID,
+  email: "staff@consultway.local",
+  role: "staff" as const,
+  companyId: null,
+};
+
 const COMPANY_ID = newId();
 const ADA_ID = newId();
 const SAM_ID = newId();
@@ -104,7 +112,7 @@ beforeEach(async () => {
 
 // ── Admin gating ───────────────────────────────────────────────────────────
 
-describe("requireAdmin gating", () => {
+describe("createUser auth gating", () => {
   it("refuses an unauthenticated caller", async () => {
     mockedReadSession.mockResolvedValueOnce(null);
     const r = await createUserInternal(
@@ -115,14 +123,17 @@ describe("requireAdmin gating", () => {
     if (!r.ok) expect(r.error).toMatch(/signed in/i);
   });
 
-  it("refuses a non-admin (staff) caller", async () => {
+  it("refuses a staff caller creating a non-company user", async () => {
     mockedReadSession.mockResolvedValueOnce({ ...adminSession, role: "staff" });
     const r = await createUserInternal(
       { email: "x@test.local", name: "Ex", role: "staff" },
       { sendEmail: makeStubSendEmail() },
     );
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toMatch(/administrator/i);
+    if (!r.ok) {
+      expect(r.field).toBe("role");
+      expect(r.error).toMatch(/company users/i);
+    }
   });
 });
 
@@ -425,8 +436,9 @@ describe("listUsers / getUser", () => {
 
 // ── RBAC gate on every action (review must-fix #2) ─────────────────────────
 
-describe("requireAdmin gating across all actions", () => {
-  const cases: Array<[string, () => Promise<{ ok: boolean }>]> = [
+describe("auth gating across actions", () => {
+  // Unauthenticated callers are refused everywhere.
+  const allCases: Array<[string, () => Promise<{ ok: boolean }>]> = [
     ["listUsers", () => listUsers({})],
     ["getUser", () => getUser(newId())],
     ["updateUser", () => updateUser({ id: newId(), name: "New Name" })],
@@ -444,20 +456,39 @@ describe("requireAdmin gating across all actions", () => {
       "createUser",
       () =>
         createUserInternal(
-          { email: "x@test.local", name: "Ex", role: "staff" },
+          {
+            email: "x@test.local",
+            name: "Ex",
+            role: "company",
+            companyId: COMPANY_ID,
+          },
           { sendEmail: makeStubSendEmail() },
         ),
     ],
   ];
 
-  for (const [name, run] of cases) {
+  // The management-lifecycle actions are admin-only — staff are refused.
+  // (List/read/create/resend are open to staff and tested in the staff suite.)
+  const adminOnly: Array<[string, () => Promise<{ ok: boolean }>]> = [
+    ["updateUser", () => updateUser({ id: newId(), name: "New Name" })],
+    ["deactivateUser", () => deactivateUser(newId())],
+    ["reactivateUser", () => reactivateUser(newId())],
+    [
+      "resetUserPassword",
+      () => resetUserPasswordInternal(newId(), { sendEmail: makeStubSendEmail() }),
+    ],
+  ];
+
+  for (const [name, run] of allCases) {
     it(`${name} refuses an unauthenticated caller`, async () => {
       mockedReadSession.mockResolvedValueOnce(null);
       const r = await run();
       expect(r.ok).toBe(false);
     });
+  }
 
-    it(`${name} refuses a non-admin (staff) caller`, async () => {
+  for (const [name, run] of adminOnly) {
+    it(`${name} refuses a staff caller`, async () => {
       mockedReadSession.mockResolvedValueOnce({ ...adminSession, role: "staff" });
       const r = await run();
       expect(r.ok).toBe(false);
@@ -717,5 +748,120 @@ describe("credential action guards", () => {
       .from(auditLog)
       .where(eq(auditLog.targetId, u));
     expect(audit?.metadata).toMatchObject({ action: "invite_resent" });
+  });
+});
+
+// ── Staff path — company accounts only ─────────────────────────────────────
+//
+// Staff own the onboarding lifecycle of *company-user* accounts only: list +
+// read + create (invite) + resend. Internal admin/staff accounts are hidden
+// as not-found. The management lifecycle (update/deactivate/reset) is refused.
+
+describe("staff path — company accounts only", () => {
+  beforeEach(async () => {
+    await seedCompany();
+    await seedUser({ id: ADA_ID, email: "ada@test.local", name: "Ada Admin", role: "admin" });
+    await seedUser({ id: SAM_ID, email: "sam@test.local", name: "Sam Staff", role: "staff" });
+    await seedUser({
+      id: CARA_ID,
+      email: "cara@test.local",
+      name: "Cara Company",
+      role: "company",
+      companyId: COMPANY_ID,
+    });
+    mockedReadSession.mockResolvedValue(staffSession);
+  });
+
+  it("listUsers returns only company-role users for staff", async () => {
+    const r = await listUsers({});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.total).toBe(1);
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0]?.email).toBe("cara@test.local");
+  });
+
+  it("listUsers ignores a role=admin filter for staff (still only company)", async () => {
+    const r = await listUsers({ role: "admin" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0]?.role).toBe("company");
+  });
+
+  it("getUser lets staff read a company user", async () => {
+    const r = await getUser(CARA_ID);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.user.email).toBe("cara@test.local");
+  });
+
+  it("getUser hides internal (admin/staff) accounts from staff as not-found", async () => {
+    const admin = await getUser(ADA_ID);
+    expect(admin.ok).toBe(false);
+    const staff = await getUser(SAM_ID);
+    expect(staff.ok).toBe(false);
+  });
+
+  it("createUser lets staff invite a company user", async () => {
+    const r = await createUserInternal(
+      {
+        email: "newco@test.local",
+        name: "New Co",
+        role: "company",
+        companyId: COMPANY_ID,
+      },
+      { sendEmail: makeStubSendEmail() },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("createUser refuses staff inviting a staff/admin user", async () => {
+    const r = await createUserInternal(
+      { email: "newstaff@test.local", name: "New Staff", role: "staff" },
+      { sendEmail: makeStubSendEmail() },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.field).toBe("role");
+  });
+
+  it("resendInvite lets staff resend to a pending company user", async () => {
+    const pending = newId();
+    await seedUser({
+      id: pending,
+      email: "pendco@test.local",
+      role: "company",
+      companyId: COMPANY_ID,
+      emailVerifiedAt: null,
+    });
+    const r = await resendInviteInternal(pending, {
+      sendEmail: makeStubSendEmail(),
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("resendInvite hides internal accounts from staff as not-found", async () => {
+    const pendingStaff = newId();
+    await seedUser({
+      id: pendingStaff,
+      email: "pendstaff@test.local",
+      role: "staff",
+      emailVerifiedAt: null,
+    });
+    const r = await resendInviteInternal(pendingStaff, {
+      sendEmail: makeStubSendEmail(),
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it("refuses staff on the admin-only actions (update / deactivate / reset)", async () => {
+    const upd = await updateUser({ id: CARA_ID, name: "Renamed" });
+    expect(upd.ok).toBe(false);
+    const deact = await deactivateUser(CARA_ID);
+    expect(deact.ok).toBe(false);
+    const reset = await resetUserPasswordInternal(CARA_ID, {
+      sendEmail: makeStubSendEmail(),
+    });
+    expect(reset.ok).toBe(false);
   });
 });

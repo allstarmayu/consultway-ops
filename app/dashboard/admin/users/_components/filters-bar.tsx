@@ -37,7 +37,12 @@ const STATUS_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "inactive", label: "Disabled" },
 ];
 
-export function FiltersBar() {
+export interface FiltersBarProps {
+  /** Show the role filter. Hidden for staff, who only ever see company users. */
+  showRoleFilter?: boolean;
+}
+
+export function FiltersBar({ showRoleFilter = true }: FiltersBarProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -133,23 +138,27 @@ export function FiltersBar() {
         )}
       </div>
 
-      {/* Role */}
-      <Select
-        value={roleValue}
-        onValueChange={(v) => pushParam("role", v === ALL_VALUE ? undefined : v)}
-      >
-        <SelectTrigger className="w-[11rem]" aria-label="Filter by role">
-          <SelectValue placeholder="All roles" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={ALL_VALUE}>All roles</SelectItem>
-          {ROLE_OPTIONS.map((r) => (
-            <SelectItem key={r.value} value={r.value}>
-              {r.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      {/* Role — hidden for staff (every visible row is a company user) */}
+      {showRoleFilter && (
+        <Select
+          value={roleValue}
+          onValueChange={(v) =>
+            pushParam("role", v === ALL_VALUE ? undefined : v)
+          }
+        >
+          <SelectTrigger className="w-[11rem]" aria-label="Filter by role">
+            <SelectValue placeholder="All roles" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_VALUE}>All roles</SelectItem>
+            {ROLE_OPTIONS.map((r) => (
+              <SelectItem key={r.value} value={r.value}>
+                {r.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
 
       {/* Status */}
       <Select

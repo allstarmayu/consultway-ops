@@ -8,6 +8,7 @@
  *
  * @module app/dashboard/admin/users/_components/users-table-section
  */
+import type { UserRole } from "@/lib/db/schema";
 import { listUsers } from "@/lib/users/actions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { UsersTable } from "./users-table";
@@ -15,9 +16,14 @@ import { UsersTable } from "./users-table";
 export interface UsersTableSectionProps {
   /** Raw `searchParams` from the page — passed through unchanged. */
   query: Record<string, string | string[] | undefined>;
+  /** Viewer's role — controls whether the per-row Edit action shows. */
+  viewerRole: UserRole;
 }
 
-export async function UsersTableSection({ query }: UsersTableSectionProps) {
+export async function UsersTableSection({
+  query,
+  viewerRole,
+}: UsersTableSectionProps) {
   const result = await listUsers(query);
 
   if (!result.ok) {
@@ -31,5 +37,13 @@ export async function UsersTableSection({ query }: UsersTableSectionProps) {
 
   const { rows, total, page, perPage } = result;
 
-  return <UsersTable rows={rows} total={total} page={page} perPage={perPage} />;
+  return (
+    <UsersTable
+      rows={rows}
+      total={total}
+      page={page}
+      perPage={perPage}
+      viewerRole={viewerRole}
+    />
+  );
 }

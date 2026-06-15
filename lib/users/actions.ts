@@ -9,12 +9,17 @@
  *     { ok: true, ...data }
  *   | { ok: false, error: string, field?: string }
  *
- * Role rules (stricter than docs/08-rbac-matrix.md on purpose — see below):
- *   - Every action here is **admin-only**. The module lives under
- *     `/dashboard/admin/*`. The RBAC matrix permits staff to *read* users
- *     and to *create company-role users within companies they manage*;
- *     that staff path is a deliberate v1 follow-up, not wired here. "When
- *     in doubt, deny" (docs/08-rbac-matrix.md).
+ * Role rules (per docs/08-rbac-matrix.md § Users):
+ *   - **Staff** may LIST and READ *company-role* users only (internal
+ *     admin/staff accounts are hidden as not-found), CREATE (invite)
+ *     company-role users, and RESEND their invites. Staff manage every
+ *     client company (there is no per-staff company assignment), so their
+ *     scope is "all company users", not a subset. This is the onboarding
+ *     lifecycle.
+ *   - **Admin-only** (the management lifecycle): updateUser,
+ *     deactivate/reactivate, resetUserPassword. Staff are refused.
+ *   - Company-role users have no access here at all (gated at the page +
+ *     the guards). "When in doubt, deny."
  *
  * Onboarding model: admin-created users never get a password from the
  * admin. `createUser` mints an unusable random hash, then emails a
@@ -40,7 +45,7 @@ import { newId } from "@/lib/db/ids";
 import { logger } from "@/lib/logger";
 import { env } from "@/lib/env";
 import { recordAuditEvent } from "@/lib/audit/log";
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireAdmin, requireAdminOrStaff } from "@/lib/auth/guards";
 import { hashPassword } from "@/lib/auth/password";
 import { mintInviteToken, mintPasswordResetToken } from "@/lib/auth/tokens";
 import { sendEmail, type SendEmailFn } from "@/lib/email/client";
@@ -155,7 +160,7 @@ export async function listUsers(
     perPage: number;
   }>
 > {
-  const auth = await requireAdmin();
+  const auth = await requireAdminOrStaff();
   if (!auth.ok) return auth;
 
   const parsed = listUsersQuerySchema.safeParse(rawQuery ?? {});
@@ -169,7 +174,13 @@ export async function listUsers(
 
   // Build the WHERE additively — every filter is AND-composed.
   const filters: SQL[] = [];
-  if (query.role) filters.push(eq(users.role, query.role));
+  // Staff see only company-role accounts (their operational scope) — this
+  // overrides any role filter that arrives in the query. Admin honours it.
+  if (auth.session.role === "staff") {
+    filters.push(eq(users.role, "company"));
+  } else if (query.role) {
+    filters.push(eq(users.role, query.role));
+  }
   if (query.status) {
     filters.push(eq(users.isActive, query.status === "active"));
   }
@@ -220,7 +231,7 @@ export async function listUsers(
 export async function getUser(
   rawId: unknown,
 ): Promise<ActionResult<{ user: UserWithCompany }>> {
-  const auth = await requireAdmin();
+  const auth = await requireAdminOrStaff();
   if (!auth.ok) return auth;
 
   const parsed = userIdSchema.safeParse({ id: rawId });
@@ -236,6 +247,13 @@ export async function getUser(
     .limit(1);
 
   if (!user) return { ok: false, error: "User not found" };
+
+  // Staff may only read company-role accounts. Internal admin/staff users
+  // are hidden as "not found" so the page can `notFound()` and nothing
+  // leaks about the internal team.
+  if (auth.session.role === "staff" && user.role !== "company") {
+    return { ok: false, error: "User not found" };
+  }
 
   return { ok: true, user };
 }
@@ -263,7 +281,7 @@ export async function createUser(rawInput: unknown): Promise<CreateUserResult> {
 /**
  * Email-DI variant of `createUser`. Exported for tests — same DI shape as
  * `registerCompanyInternal`. Pipeline:
- *   1. Admin gate.
+ *   1. Admin-or-staff gate (staff may invite company-role users only).
  *   2. Validate (createUserSchema enforces the role ↔ company invariant).
  *   3. For company-role: verify the company exists (friendly error vs FK
  *      violation). Soft-check the email isn't already taken.
@@ -276,7 +294,7 @@ export async function createUserInternal(
   rawInput: unknown,
   deps: { sendEmail: SendEmailFn },
 ): Promise<CreateUserResult> {
-  const auth = await requireAdmin();
+  const auth = await requireAdminOrStaff();
   if (!auth.ok) return auth;
 
   const parsed = createUserSchema.safeParse(rawInput);
@@ -289,6 +307,17 @@ export async function createUserInternal(
     };
   }
   const input = parsed.data;
+
+  // Staff may only invite company-role users (RBAC matrix § Users). Admins
+  // may create any role. Re-checked server-side regardless of what the form
+  // sent — the form hides the role picker for staff, this enforces it.
+  if (auth.session.role === "staff" && input.role !== "company") {
+    return {
+      ok: false,
+      error: "Staff can only invite company users",
+      field: "role",
+    };
+  }
 
   // Company-role users must point at a real company.
   if (input.role === "company" && input.companyId) {
@@ -729,7 +758,7 @@ export async function resendInviteInternal(
   rawId: unknown,
   deps: { sendEmail: SendEmailFn },
 ): Promise<EmailActionResult> {
-  const auth = await requireAdmin();
+  const auth = await requireAdminOrStaff();
   if (!auth.ok) return auth;
 
   const parsed = userIdSchema.safeParse({ id: rawId });
@@ -741,6 +770,11 @@ export async function resendInviteInternal(
     .where(eq(users.id, parsed.data.id))
     .limit(1);
   if (!user) return { ok: false, error: "User not found" };
+
+  // Staff may only act on company-user accounts — hide internal users.
+  if (auth.session.role === "staff" && user.role !== "company") {
+    return { ok: false, error: "User not found" };
+  }
 
   if (!user.isActive) {
     return {

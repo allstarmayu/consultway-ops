@@ -60,6 +60,12 @@ export interface UserFormProps {
   companies: Array<{ id: string; name: string }>;
   /** Present → EDIT mode, pre-populated. Absent → CREATE (invite) mode. */
   initialValues?: UserFormInitialValues;
+  /**
+   * Role of the user rendering the form. Staff may only invite company-role
+   * users, so for them the role picker is locked to "Company". Defaults to
+   * "admin" (edit mode is admin-only, so this only matters in create mode).
+   */
+  viewerRole?: UserRole;
 }
 
 interface UserFormValues {
@@ -86,12 +92,23 @@ const ROLE_OPTIONS: Array<{ value: UserRole; label: string }> = [
   { value: "company", label: "Company" },
 ];
 
-export function UserForm({ companies, initialValues }: UserFormProps) {
+export function UserForm({
+  companies,
+  initialValues,
+  viewerRole = "admin",
+}: UserFormProps) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const isEditMode = initialValues !== undefined;
+  // Staff can only invite company-role users — lock the role picker to
+  // "Company" in create mode. (Edit is admin-only, so this never applies
+  // there.) The server re-checks regardless.
+  const lockToCompanyRole = viewerRole === "staff" && !isEditMode;
+  const roleOptions = lockToCompanyRole
+    ? ROLE_OPTIONS.filter((r) => r.value === "company")
+    : ROLE_OPTIONS;
 
   const {
     register,
@@ -132,7 +149,7 @@ export function UserForm({ companies, initialValues }: UserFormProps) {
           phone: initialValues.phone,
           jobTitle: initialValues.jobTitle,
         }
-      : CREATE_DEFAULTS,
+      : { ...CREATE_DEFAULTS, role: lockToCompanyRole ? "company" : "staff" },
     mode: "onBlur",
   });
 
@@ -255,7 +272,17 @@ export function UserForm({ companies, initialValues }: UserFormProps) {
         title="Access"
         description="Role determines what this user can see and do."
       >
-        <FormField name="role" label="Role" required error={errors.role?.message}>
+        <FormField
+          name="role"
+          label="Role"
+          required
+          description={
+            lockToCompanyRole
+              ? "Staff can only invite company users."
+              : undefined
+          }
+          error={errors.role?.message}
+        >
           <Controller
             name="role"
             control={control}
@@ -268,7 +295,7 @@ export function UserForm({ companies, initialValues }: UserFormProps) {
                   // the invariant holds and the picker hides.
                   if (v !== "company") setValue("companyId", null);
                 }}
-                disabled={isPending}
+                disabled={isPending || lockToCompanyRole}
               >
                 <SelectTrigger
                   id="role"
@@ -279,7 +306,7 @@ export function UserForm({ companies, initialValues }: UserFormProps) {
                   <SelectValue placeholder="Select a role" />
                 </SelectTrigger>
                 <SelectContent>
-                  {ROLE_OPTIONS.map((r) => (
+                  {roleOptions.map((r) => (
                     <SelectItem key={r.value} value={r.value}>
                       {r.label}
                     </SelectItem>

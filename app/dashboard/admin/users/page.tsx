@@ -5,11 +5,11 @@
  * `listUsers` fetch into a child behind Suspense so the header + filter bar
  * paint immediately. Mirrors the companies list page structure exactly.
  *
- * Access control: the WHOLE module is admin-only. The dashboard layout
- * guards signed-out users; here we redirect any non-admin to /dashboard
- * (the `listUsers` action also re-checks admin server-side — defence in
- * depth). This is stricter than the RBAC matrix (which permits staff to
- * read users); the staff path is a deliberate v1 follow-up.
+ * Access control: admin + staff. The dashboard layout guards signed-out
+ * users; here we redirect company-role users to /dashboard (the `listUsers`
+ * action also re-checks server-side — defence in depth). Staff see only
+ * company-user accounts (scoped in `listUsers`); the role filter is hidden
+ * for them since every row is a company user.
  *
  * @module app/dashboard/admin/users/page
  */
@@ -39,8 +39,10 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
   const [params, session] = await Promise.all([searchParams, readSession()]);
 
   if (!session) redirect("/login");
-  // Admin-only module. Non-admins are bounced to the dashboard home.
-  if (session.role !== "admin") redirect("/dashboard");
+  // Admin + staff only. Company-role users are bounced to the dashboard home.
+  if (session.role !== "admin" && session.role !== "staff") {
+    redirect("/dashboard");
+  }
 
   const suspenseKey = JSON.stringify(params);
 
@@ -60,9 +62,9 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
       />
 
       <Card className="overflow-hidden p-0">
-        <FiltersBar />
+        <FiltersBar showRoleFilter={session.role === "admin"} />
         <Suspense key={suspenseKey} fallback={<TableSectionLoading columns={6} />}>
-          <UsersTableSection query={params} />
+          <UsersTableSection query={params} viewerRole={session.role} />
         </Suspense>
       </Card>
     </>

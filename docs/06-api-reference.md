@@ -240,20 +240,25 @@ failure — never throws. Same shape and rationale as
 
 ---
 
-## Users (Day 33 — admin-only)
+## Users (Day 33–34)
 
-In-app user management for the `/dashboard/admin/users` module. **Every
-action here is admin-only** — gated by `requireAdmin()` from
-`lib/auth/guards.ts` (the shared role-gate also used by the companies
-module). The route + actions both enforce it (defence in depth); staff /
-company callers get `{ ok: false }`. Source: `lib/users/actions.ts`,
-schemas in `lib/users/schemas.ts`.
+In-app user management for the `/dashboard/admin/users` module. Two access
+tiers, gated by the shared role helpers in `lib/auth/guards.ts` (route +
+action enforce, defence in depth):
 
-> Drift note: this is **stricter** than the Users rows in
-> `docs/08-rbac-matrix.md`, which permit staff to read users and to
-> create company-role users. That staff path is a deliberate v1 deferral.
-> Soft-delete is the `is_active` boolean (not a `status` enum — see
-> `lib/db/schema.ts`); code wins.
+- **Admin** — full access to every action and every role.
+- **Staff** (`requireAdminOrStaff`) — the **company-account onboarding**
+  tier: `listUsers`, `getUser`, `createUser`, and `resendInvite`, scoped to
+  **company-role** users only (internal admin/staff accounts are hidden as
+  not-found, and `createUser` refuses any non-company role). The management
+  lifecycle — `updateUser`, `deactivateUser` / `reactivateUser`,
+  `resetUserPassword` — stays `requireAdmin()`. Company-role callers get
+  `{ ok: false }` everywhere.
+
+Source: `lib/users/actions.ts`, schemas in `lib/users/schemas.ts`.
+
+> Note: soft-delete is the `is_active` boolean (not a `status` enum — see
+> `lib/db/schema.ts`); code wins over any older schema/matrix prose.
 
 Onboarding is **invite-based**: admins never set a password. `createUser`
 mints an invite token (a longer-lived `password_reset_tokens` row — see
@@ -263,8 +268,10 @@ audit on `target_type = 'user'` (`created` / `updated` + `metadata.action`).
 
 ### Server Action: `listUsers(query)`
 
-Filter + search + sort + paginate. Left-joins the linked company name and
-**strips `password_hash`** from every row.
+`requireAdminOrStaff`. Filter + search + sort + paginate. Left-joins the
+linked company name and **strips `password_hash`** from every row. **For a
+staff caller the result is forced to company-role users** (any `role` filter
+in the query is ignored).
 
 Query (Zod, coerced from URL search params):
 ```ts
@@ -285,12 +292,16 @@ Response: `{ ok: true, rows: UserWithCompany[], total, page, perPage }`.
 
 ### Server Action: `getUser(id)`
 
-Single user by id (password hash stripped, company name joined). Returns
-`{ ok: false }` for unknown ids so the detail page can `notFound()`.
+`requireAdminOrStaff`. Single user by id (password hash stripped, company
+name joined). Returns `{ ok: false }` for unknown ids so the detail page can
+`notFound()` — and **for a staff caller, internal admin/staff rows return
+the same not-found** (company-role users only).
 
 ### Server Action: `createUser(input)` (invite)
 
-Creates the row with an **unusable random placeholder hash** (so the
+`requireAdminOrStaff` — **a staff caller may only invite `role: "company"`
+users** (a non-company role returns `{ ok: false, field: "role" }`). Creates
+the row with an **unusable random placeholder hash** (so the
 account can't be logged into until accepted), `is_active = true`,
 `email_verified_at = NULL`, then mints an invite + sends the set-password
 email (fail-soft).
@@ -312,7 +323,7 @@ when the mail couldn't go out. (Tests call `createUserInternal(input, { sendEmai
 
 ### Server Action: `updateUser(input)`
 
-Patch-style; every field optional except `id`. **`email` and `isActive`
+`requireAdmin`. Patch-style; every field optional except `id`. **`email` and `isActive`
 are intentionally NOT editable here** — email change needs re-verification
 (separate flow), and active-state is toggled by the dedicated
 deactivate/reactivate actions.
@@ -328,7 +339,7 @@ Guards:
 
 ### Server Action: `deactivateUser(id)` / `reactivateUser(id)`
 
-Soft-disable / re-enable via `is_active`. A disabled user is refused at
+`requireAdmin`. Soft-disable / re-enable via `is_active`. A disabled user is refused at
 login. Can't deactivate yourself; **can't deactivate the final active
 admin**. Idempotent (no-op + no audit when already in the target state).
 
@@ -339,7 +350,7 @@ admin**. Idempotent (no-op + no audit when already in the target state).
 
 ### Server Action: `resetUserPassword(id)`
 
-Admin-triggered: mints a 1-hour reset token and emails a `/reset-password`
+`requireAdmin`. Admin-triggered: mints a 1-hour reset token and emails a `/reset-password`
 link. Refuses **not-yet-accepted** users (steers to Resend invite — a
 reset would void the invite token without verifying them) and
 **deactivated** users. Audits `metadata.action = "password_reset_requested",
@@ -347,9 +358,10 @@ via: "admin"`. (`resetUserPasswordInternal(id, { sendEmail })` for tests.)
 
 ### Server Action: `resendInvite(id)`
 
-Re-sends the set-password invite. Valid only while the account is
-unaccepted (`email_verified_at` NULL) and active; refuses already-activated
-or deactivated users. Audits `metadata.action = "invite_resent"`.
+`requireAdminOrStaff` (staff: company-role targets only — others return
+not-found). Re-sends the set-password invite. Valid only while the account
+is unaccepted (`email_verified_at` NULL) and active; refuses already-
+activated or deactivated users. Audits `metadata.action = "invite_resent"`.
 
 ### Server Action: `acceptInvite(input)`
 

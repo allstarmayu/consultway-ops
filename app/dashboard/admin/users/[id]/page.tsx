@@ -2,8 +2,9 @@
  * User detail page (admin-only).
  *
  * Server Component shell:
- *   1. Auth: signed-in + admin (the layout guards signed-out; non-admins
- *      are redirected — `getUser` also re-checks admin server-side).
+ *   1. Auth: signed-in + admin/staff (the layout guards signed-out;
+ *      company-role users are redirected). `getUser` re-checks server-side
+ *      and, for staff, hides internal admin/staff accounts as not-found.
  *   2. Fetch the row via `getUser` (password hash stripped, company joined).
  *      notFound() on miss.
  *   3. Render header + overview fact-sheet + the account-actions panel +
@@ -44,7 +45,9 @@ export default async function UserDetailPage({ params }: UserDetailPageProps) {
 
   const session = await readSession();
   if (!session) redirect("/login");
-  if (session.role !== "admin") redirect("/dashboard");
+  if (session.role !== "admin" && session.role !== "staff") {
+    redirect("/dashboard");
+  }
 
   const result = await getUser(id);
   if (!result.ok) notFound();
@@ -52,7 +55,7 @@ export default async function UserDetailPage({ params }: UserDetailPageProps) {
 
   return (
     <>
-      <UserHeader user={user} />
+      <UserHeader user={user} canEdit={session.role === "admin"} />
 
       <Card className="overflow-hidden p-0">
         <UserOverview user={user} />
@@ -64,6 +67,7 @@ export default async function UserDetailPage({ params }: UserDetailPageProps) {
           isActive={user.isActive}
           isPendingInvite={!user.emailVerifiedAt}
           isSelf={session.userId === user.id}
+          viewerRole={session.role}
         />
       </div>
 

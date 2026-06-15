@@ -2,7 +2,8 @@
  * User detail page header.
  *
  * Title strip with the user's name + role/status chips + Back / Edit
- * actions. Server-Component-compatible (pure render).
+ * actions (Edit shows for admins only). Server-Component-compatible
+ * (pure render).
  *
  * @module app/dashboard/admin/users/[id]/_components/user-header
  */
@@ -14,9 +15,11 @@ import { RoleBadge, AccountStatusBadge, InvitePendingBadge } from "../../_compon
 
 export interface UserHeaderProps {
   user: UserWithCompany;
+  /** Whether to show the Edit action — admins only (edit is admin-only). */
+  canEdit: boolean;
 }
 
-export function UserHeader({ user }: UserHeaderProps) {
+export function UserHeader({ user, canEdit }: UserHeaderProps) {
   return (
     <header className="mb-6 flex flex-col gap-4 sm:mb-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -40,12 +43,14 @@ export function UserHeader({ user }: UserHeaderProps) {
               Back
             </Link>
           </Button>
-          <Button asChild variant="outline">
-            <Link href={`/dashboard/admin/users/${user.id}/edit`}>
-              <Pencil className="h-4 w-4" aria-hidden />
-              Edit
-            </Link>
-          </Button>
+          {canEdit && (
+            <Button asChild variant="outline">
+              <Link href={`/dashboard/admin/users/${user.id}/edit`}>
+                <Pencil className="h-4 w-4" aria-hidden />
+                Edit
+              </Link>
+            </Button>
+          )}
         </div>
       </div>
     </header>

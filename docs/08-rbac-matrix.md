@@ -36,33 +36,40 @@ documented answer. When in doubt: **deny**.
 
 | Operation | Admin | Staff | Company User | Notes |
 |---|---|---|---|---|
-| List all users | ✅ | ✅ | ❌ | |
+| List all users | ✅ | 🟡 | ❌ | Staff: company-role users only (internal admin/staff accounts hidden) |
 | List users in my company | ✅ | ✅ | ✅ | Company user: scoped |
-| Read any user | ✅ | ✅ | ❌ | |
+| Read any user | ✅ | 🟡 | ❌ | Staff: company-role users only |
 | Read self | ✅ | ✅ | ✅ | |
-| Create user | ✅ | 🟡 | ❌ | Staff: only company-users within companies they manage; cannot create admins |
+| Create user | ✅ | 🟡 | ❌ | Staff: company-role users only; cannot create admin/staff |
 | Update any user | ✅ | ❌ | ❌ | |
 | Update self | ✅ | ✅ | ✅ | Cannot change `role` or `company_id` on self |
 | Delete user | ✅ | ❌ | ❌ | Soft-delete (status → `disabled`) |
 | Reset any user's password | ✅ | ❌ | ❌ | |
 
-> **Implementation note (Day 33).** The in-app user-management module
-> (`/dashboard/admin/users`, `lib/users/*`) implements the rows above with
-> two deliberate deviations — code is the source of truth (see
-> `docs/06-api-reference.md § Users`):
+> **Implementation note (Day 33–34).** The in-app user-management module
+> (`/dashboard/admin/users`, `lib/users/*`) implements the rows above —
+> code is the source of truth (see `docs/06-api-reference.md § Users`):
 >
-> - **Admin-only in v1.** Every operation gates on `requireAdmin()`
->   (`lib/auth/guards.ts`); the staff allowances (List/Read users, the
->   🟡 Create-company-user) are **not yet wired**. "When in doubt, deny."
+> - **Staff path = "company accounts only" (Day 34).** Staff own the
+>   *onboarding* lifecycle of **company-role** users: list + read + create
+>   (invite) + resend-invite. Internal admin/staff accounts are hidden from
+>   staff as not-found (so List/Read are 🟡, scoped — narrower than an
+>   earlier draft of this matrix that granted staff *all* users). There is
+>   **no per-staff company assignment** — staff manage every client company,
+>   so "companies they manage" means all of them.
+> - **Admin-only: the management lifecycle.** `updateUser`,
+>   deactivate/reactivate, and `resetUserPassword` gate on `requireAdmin()`;
+>   staff are refused. Company-role users have no access to the module.
 > - **Soft-delete is `is_active = false`** (a boolean column), not
 >   `status → disabled` — there is no `status` enum on `users` in
 >   `lib/db/schema.ts`.
 > - **Last-admin + self-lockout guards**: an admin can't demote/deactivate
 >   themselves or the final active admin (prevents a zero-admin lockout,
 >   since the admin role is grantable only through this module).
-> - Enforcement is **custom JWT + the role-gate helpers + per-page session
->   checks**, not Payload access control — the Payload examples lower in
->   this doc are illustrative of the original design, not the shipped code.
+> - Enforcement is **custom JWT + the role-gate helpers (`requireAdmin` /
+>   `requireAdminOrStaff`) + per-page session checks**, not Payload access
+>   control — the Payload examples lower in this doc are illustrative of the
+>   original design, not the shipped code.
 
 ### Companies
 

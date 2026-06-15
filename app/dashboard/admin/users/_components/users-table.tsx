@@ -22,6 +22,7 @@ import { Pagination } from "@/components/dashboard/pagination";
 import { EmptyState } from "@/components/ui/empty-state";
 import { formatRelativeTime } from "@/lib/utils/format-relative-time";
 import type { UserWithCompany } from "@/lib/users/actions";
+import type { UserRole } from "@/lib/db/schema";
 import { RoleBadge, AccountStatusBadge, InvitePendingBadge } from "./badges";
 
 export interface UsersTableProps {
@@ -29,9 +30,20 @@ export interface UsersTableProps {
   total: number;
   page: number;
   perPage: number;
+  /** Viewer's role. Staff don't get the per-row Edit action (admin-only). */
+  viewerRole: UserRole;
 }
 
-export function UsersTable({ rows, total, page, perPage }: UsersTableProps) {
+export function UsersTable({
+  rows,
+  total,
+  page,
+  perPage,
+  viewerRole,
+}: UsersTableProps) {
+  // Edit routes to the admin-only edit page; only offer it to admins.
+  const canEdit = viewerRole === "admin";
+
   if (rows.length === 0) {
     return (
       <EmptyState
@@ -124,16 +136,18 @@ export function UsersTable({ rows, total, page, perPage }: UsersTableProps) {
                           <Eye className="h-4 w-4" />
                         </Link>
                       </Button>
-                      <Button
-                        asChild
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`Edit ${row.name}`}
-                      >
-                        <Link href={`/dashboard/admin/users/${row.id}/edit`}>
-                          <Pencil className="h-4 w-4" />
-                        </Link>
-                      </Button>
+                      {canEdit && (
+                        <Button
+                          asChild
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Edit ${row.name}`}
+                        >
+                          <Link href={`/dashboard/admin/users/${row.id}/edit`}>
+                            <Pencil className="h-4 w-4" />
+                          </Link>
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>

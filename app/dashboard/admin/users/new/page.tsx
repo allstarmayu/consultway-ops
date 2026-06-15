@@ -1,9 +1,11 @@
 /**
  * Invite-user page (admin-only).
  *
- * Server Component shell. Auth-gates to admin, fetches the company list for
- * the company-role picker, and renders the shared `<UserForm>` in create
- * mode. The form mints an invite + emails a set-password link on submit.
+ * Server Component shell. Auth-gates to admin + staff, fetches the company
+ * list for the company-role picker, and renders the shared `<UserForm>` in
+ * create mode. Staff may only invite company-role users — the form locks the
+ * role picker to "Company" for them (the action enforces it too). The form
+ * mints an invite + emails a set-password link on submit.
  *
  * @module app/dashboard/admin/users/new/page
  */
@@ -28,7 +30,9 @@ export const metadata: Metadata = {
 export default async function NewUserPage() {
   const session = await readSession();
   if (!session) redirect("/login");
-  if (session.role !== "admin") redirect("/dashboard");
+  if (session.role !== "admin" && session.role !== "staff") {
+    redirect("/dashboard");
+  }
 
   const companyOptions = await db
     .select({ id: companies.id, name: companies.name })
@@ -51,7 +55,7 @@ export default async function NewUserPage() {
       />
 
       <Card className="overflow-visible p-6 sm:p-8">
-        <UserForm companies={companyOptions} />
+        <UserForm companies={companyOptions} viewerRole={session.role} />
       </Card>
     </>
   );
