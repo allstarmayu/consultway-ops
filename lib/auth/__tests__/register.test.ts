@@ -24,7 +24,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { users, companies, auditLog } from "@/lib/db/schema";
+import { users, companies, auditLog, notifications } from "@/lib/db/schema";
+import { newId } from "@/lib/db/ids";
 import { registerCompany } from "../actions";
 import { SYSTEM_ACTOR_ID } from "@/lib/audit/log";
 
@@ -57,10 +58,28 @@ function makeInput(overrides: Record<string, unknown> = {}): unknown {
  * tests within a worker — `vitest.setup.ts` migrates once per worker.
  */
 beforeEach(async () => {
+  await db.delete(notifications);
   await db.delete(auditLog);
   await db.delete(users);
   await db.delete(companies);
 });
+
+/** Seed a user with a given role + active flag; returns its id. */
+async function seedUser(
+  role: "admin" | "staff" | "company",
+  isActive = true,
+): Promise<string> {
+  const id = newId();
+  await db.insert(users).values({
+    id,
+    email: `${role}-${id}@test.local`,
+    passwordHash: "$2a$10$test",
+    role,
+    name: `Test ${role}`,
+    isActive,
+  });
+  return id;
+}
 
 describe("registerCompany happy path", () => {
   it("creates a company + user and writes both audit rows", async () => {
@@ -266,5 +285,59 @@ describe("registerCompany schema refusals", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.field).toBe("contactEmail");
+  });
+});
+
+describe("registerCompany → admin notification", () => {
+  it("notifies active admins only (not staff, not inactive admins, not the registrant)", async () => {
+    const activeAdminId = await seedUser("admin", true);
+    const inactiveAdminId = await seedUser("admin", false);
+    const staffId = await seedUser("staff", true);
+
+    const result = await registerCompany(makeInput());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const adminNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, activeAdminId));
+    expect(adminNotifs).toHaveLength(1);
+    expect(adminNotifs[0]?.type).toBe("company_registered");
+    expect(adminNotifs[0]?.link).toBe(
+      `/dashboard/companies/${result.companyId}`,
+    );
+    expect(adminNotifs[0]?.body).toMatch(/Acme Construction/);
+    expect(adminNotifs[0]?.readAt).toBeNull();
+
+    // Inactive admin, staff, and the freshly-created company user get nothing.
+    const inactiveNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, inactiveAdminId));
+    expect(inactiveNotifs).toHaveLength(0);
+
+    const staffNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, staffId));
+    expect(staffNotifs).toHaveLength(0);
+
+    const registrantNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, result.userId));
+    expect(registrantNotifs).toHaveLength(0);
+  });
+
+  it("is a no-op (still ok:true) when there are no active admins", async () => {
+    await seedUser("admin", false); // inactive admin only
+    await seedUser("staff", true);
+
+    const result = await registerCompany(makeInput());
+    expect(result.ok).toBe(true);
+
+    const all = await db.select().from(notifications);
+    expect(all).toHaveLength(0);
   });
 });

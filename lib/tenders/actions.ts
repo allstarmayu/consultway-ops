@@ -79,6 +79,7 @@ import {
   companies,
   tenders,
   tenderApplications,
+  users,
   type Company,
   type Tender,
   type TenderApplication,
@@ -93,6 +94,8 @@ import { env } from "@/lib/env";
 import { sendEmail, type SendEmailFn } from "@/lib/email/client";
 import { renderApplicationShortlistedEmail } from "@/lib/email/templates/application-shortlisted";
 import { renderApplicationRejectedEmail } from "@/lib/email/templates/application-rejected";
+import { createNotificationsForUsers } from "@/lib/notifications/notify";
+import type { NotificationType } from "@/lib/notifications/types";
 import {
   createTenderSchema,
   updateTenderSchema,
@@ -772,6 +775,55 @@ async function transitionTenderStatus(
     ...(auditMetadata ? { metadata: auditMetadata } : {}),
   });
 
+  // In-app notification to eligible companies' users on a genuine
+  // draft -> published publish. Fail-soft (createNotificationsForUsers
+  // never throws; no-ops on an empty set). Gated on the audit verb + the
+  // exact status pair so the OTHER published-target transitions through
+  // this shared helper (reopen via closed -> published, unpublish, close,
+  // award) don't re-blast every eligible company. Eligibility mirrors
+  // `applyToTender`'s gates exactly (sector / geography / MSME / turnover),
+  // restricted to compliant companies and excluding the publisher's own.
+  if (
+    auditAction === "tender_published" &&
+    existing.status === "draft" &&
+    nextStatus === "published"
+  ) {
+    const companyFilters: SQL[] = [
+      eq(companies.complianceStatus, "compliant"),
+      ne(companies.id, existing.publisherCompanyId),
+    ];
+    if (existing.eligibleSector) {
+      companyFilters.push(eq(companies.sector, existing.eligibleSector));
+    }
+    if (existing.eligibleGeography) {
+      companyFilters.push(eq(companies.geography, existing.eligibleGeography));
+    }
+    if (existing.msmeOnly) {
+      companyFilters.push(eq(companies.isMsme, true));
+    }
+    if (existing.minAnnualTurnoverInr !== null) {
+      // gte drops NULL-turnover rows in SQLite — matching applyToTender,
+      // which refuses applicants who haven't stated a turnover.
+      companyFilters.push(
+        gte(companies.annualTurnover, existing.minAnnualTurnoverInr),
+      );
+    }
+    const recipients = await db
+      .select({ id: users.id })
+      .from(users)
+      .innerJoin(companies, eq(users.companyId, companies.id))
+      .where(and(...companyFilters));
+    await createNotificationsForUsers(
+      recipients.map((r) => r.id),
+      {
+        type: "tender_published",
+        title: "New tender you may be eligible for",
+        body: existing.title,
+        link: `/dashboard/tenders/${existing.id}`,
+      },
+    );
+  }
+
   log.info("tender status transitioned", {
     id: existing.id,
     from: existing.status,
@@ -911,7 +963,7 @@ export async function markAwarded(rawInput: unknown): Promise<ActionResult> {
     };
   }
 
-  return transitionTenderStatus(
+  const result = await transitionTenderStatus(
     input.tenderId,
     "awarded",
     auth.session,
@@ -922,6 +974,28 @@ export async function markAwarded(rawInput: unknown): Promise<ActionResult> {
     },
     { awardedCompanyId: input.awardedCompanyId },
   );
+  if (!result.ok) return result;
+
+  // In-app notification to the awarded company's users. Raised here rather
+  // than in transitionTenderStatus because only this site knows which
+  // company won (the shared helper is recipient-agnostic). Fail-soft, after
+  // the status flip + audit event have succeeded. Mirrors
+  // updateApplicationStatusInternal's fan-out.
+  const recipients = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.companyId, input.awardedCompanyId));
+  await createNotificationsForUsers(
+    recipients.map((r) => r.id),
+    {
+      type: "application_awarded",
+      title: "Tender awarded to your company",
+      body: "Congratulations — your application has been selected as the winning bid.",
+      link: `/dashboard/tenders/${input.tenderId}`,
+    },
+  );
+
+  return result;
 }
 
 // -- deleteTender ----------------------------------------------------------
@@ -1627,6 +1701,27 @@ export interface UpdateApplicationStatusDeps {
   sendEmail: SendEmailFn;
 }
 
+/**
+ * In-app notification copy per application decision. Award is raised by
+ * `markAwarded` (it alone knows the winning company); reinstate / other
+ * transitions raise nothing.
+ */
+const APPLICATION_STATUS_NOTIFICATIONS: Record<
+  string,
+  { type: NotificationType; title: string; body: string }
+> = {
+  shortlisted: {
+    type: "application_shortlisted",
+    title: "Application shortlisted",
+    body: "Your tender application has been shortlisted.",
+  },
+  rejected: {
+    type: "application_rejected",
+    title: "Application decision",
+    body: "A decision has been made on your tender application.",
+  },
+};
+
 export async function updateApplicationStatusInternal(
   rawInput: unknown,
   deps: UpdateApplicationStatusDeps,
@@ -1712,6 +1807,25 @@ export async function updateApplicationStatusInternal(
     to: input.status,
     actorId: auth.session.userId,
   });
+
+  // In-app notification to the applicant company's users, mirroring the
+  // email below. Fail-soft. Only the decision verbs raise one.
+  const appNotif = APPLICATION_STATUS_NOTIFICATIONS[input.status];
+  if (appNotif) {
+    const recipients = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.companyId, existing.companyId));
+    await createNotificationsForUsers(
+      recipients.map((r) => r.id),
+      {
+        type: appNotif.type,
+        title: appNotif.title,
+        body: appNotif.body,
+        link: `/dashboard/tenders/${existing.tenderId}`,
+      },
+    );
+  }
 
   // Day 14: notify the applicant. Fail-soft - the status flip already
   // succeeded and is the load-bearing fact; a missed email surfaces in

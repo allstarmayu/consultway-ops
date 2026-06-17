@@ -553,9 +553,56 @@ Admin/Staff only. Streams org-wide PDF.
 
 ## Notifications
 
-### `GET /api/notifications?unread=true&limit=10`
-### `POST /api/notifications/:id/read`
-### `POST /api/notifications/read-all`
+In-app notification feed. Source: `lib/notifications/`. Every read/write is
+scoped to the **calling user** — a notification has exactly one recipient, and
+the RBAC matrix (§ Notifications) grants each role "own notifications" only (no
+admin/staff override). The sidebar bell badge + the `/dashboard/notifications`
+page consume these.
+
+Created **programmatically**, never via a user-facing action: domain actions
+call `createNotification` / `createNotificationsForUsers` (`lib/notifications/
+notify.ts`) at the same site they send the email / record the audit event.
+Both are fail-soft (mirror `recordAuditEvent` — never throw; a missed
+notification must not break the triggering action).
+
+Event sources (every declared `NotificationType` is raised by exactly one
+event — the union has no unwired members):
+
+| Type | Raised by | Recipients |
+|---|---|---|
+| `company_verified` / `company_rejected` / `company_suspended` | `transitionComplianceStatus` | the company's users |
+| `company_registered` | `registerCompanyInternal` (public self-registration) | active admins |
+| `application_shortlisted` / `application_rejected` | `updateApplicationStatusInternal` | the applicant company's users |
+| `application_awarded` | `markAwarded` | the awarded company's users |
+| `tender_published` | `transitionTenderStatus` (draft → published only) | eligible compliant companies' users |
+| `document_expiring` | the expiry-sweep cron (`runExpirySweep`) | the company's users — shares the email's `reminders_sent` dedup |
+
+There is no `user_invited` notification: an invited user can't sign in to see
+an in-app entry until they accept, by which point it's stale; the invite email
+carries that touch instead.
+
+### Server Action: `listNotifications(query)`
+
+`readSession` (any signed-in user), scoped to the caller. Newest-first,
+paginated. Query (Zod, coerced from URL params):
+`{ page?, perPage? (≤100), filter?: "all" | "unread" }`. Response:
+`{ ok: true, rows, total, page, perPage }`.
+
+### Server Action: `unreadNotificationCount()`
+
+The caller's unread count — backs the sidebar bell badge.
+Response: `{ ok: true, count }`.
+
+### Server Action: `markNotificationRead(id)`
+
+Stamps `read_at` on one of the caller's notifications. Scoped by `user_id` in
+the WHERE (a caller can't flip another user's row) + a `read_at IS NULL` guard
+(idempotent). Response: `{ ok: true }`.
+
+### Server Action: `markAllNotificationsRead()`
+
+Stamps `read_at` on all the caller's unread notifications.
+Response: `{ ok: true }`.
 
 ---
 

@@ -613,7 +613,12 @@ wins.
 | `created_at` | TEXT | NOT NULL |
 
 Indexes:
-- `idx_notifications_user_unread` on `(user_id, read_at)` for the unread bell query
+- `notifications_user_read_idx` on `(user_id, read_at)` — unread-count badge query
+- `notifications_user_created_idx` on `(user_id, created_at)` — newest-first feed ordering
+
+> Built Day 35 (`lib/notifications/`). `read_at` NULL == unread; read rows are
+> kept (no delete-on-read). Created programmatically by domain actions, never a
+> user-facing mutation. Migration `0017` — purely additive.
 
 ### `audit_log`
 

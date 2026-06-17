@@ -37,7 +37,7 @@
  * @module lib/documents/crons/expiry-sweep
  */
 import { and, eq, gt, inArray, isNotNull, lte, type SQL } from "drizzle-orm";
-import { db, documents, companies, remindersSent } from "@/lib/db";
+import { db, documents, companies, remindersSent, users } from "@/lib/db";
 import type { Document, ReminderKind } from "@/lib/db/schema";
 import { newId } from "@/lib/db/ids";
 import {
@@ -46,6 +46,7 @@ import {
   type AuditEvent,
 } from "@/lib/audit/log";
 import type { Logger } from "@/lib/logger";
+import { createNotificationsForUsers } from "@/lib/notifications/notify";
 import { renderExpiryReminderEmail } from "@/lib/email/templates/document-expiry-reminder";
 import type { SendEmailArgs, SendEmailResult } from "@/lib/email/client";
 
@@ -435,6 +436,38 @@ export async function runExpirySweep(
             "reminders_sent insert failed (likely race)",
             { err, documentId: row.id, reminderKind: slot },
           );
+        }
+
+        // In-app notification to the owning company's users, mirroring the
+        // reminder email. Gated by the SAME (document, slot) dedup: it lives
+        // inside the `sendResult.ok` branch after the reminders_sent insert,
+        // and the loop-top `alreadySent` guard prevents any re-fire on later
+        // runs — so a given (document, slot) raises exactly one bell entry.
+        // Wrapped defensively: the reminder loop body isn't otherwise
+        // try/caught, and a missed bell entry must not abort the rest of the
+        // sweep (createNotificationsForUsers itself never throws, but the
+        // recipient query could).
+        try {
+          const recipients = await deps.db
+            .select({ id: users.id })
+            .from(users)
+            .where(eq(users.companyId, row.companyId));
+          await createNotificationsForUsers(
+            recipients.map((r) => r.id),
+            {
+              type: "document_expiring",
+              title: "Document expiring soon",
+              body: `${row.fileName} (${row.documentType}) expires in ${daysToExpiry} day(s).`,
+              link: `/dashboard/companies/${row.companyId}`,
+            },
+          );
+        } catch (err) {
+          deps.logger.warn("expiry in-app notification failed", {
+            err,
+            documentId: row.id,
+            companyId: row.companyId,
+            reminderKind: slot,
+          });
         }
       } else {
         remindersFailed += 1;

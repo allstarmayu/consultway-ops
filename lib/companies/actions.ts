@@ -36,7 +36,7 @@
 
 import { and, asc, count, desc, eq, like, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { companies, type Company } from "@/lib/db/schema";
+import { companies, users, type Company } from "@/lib/db/schema";
 import { newId } from "@/lib/db/ids";
 import { readSession } from "@/lib/auth/session";
 import {
@@ -46,6 +46,8 @@ import {
 } from "@/lib/auth/guards";
 import { logger } from "@/lib/logger";
 import { recordAuditEvent } from "@/lib/audit/log";
+import { createNotificationsForUsers } from "@/lib/notifications/notify";
+import type { NotificationType } from "@/lib/notifications/types";
 import type { ActionResult } from "@/lib/types/action-result";
 import {
   createCompanySchema,
@@ -573,6 +575,32 @@ export async function deleteCompany(rawId: unknown): Promise<ActionResult> {
  * @returns `{ ok: true }` on success, `{ ok: false, error, field? }`
  *          on RBAC failure / validation failure / illegal transition.
  */
+/**
+ * In-app notification copy per compliance target status. Only the three
+ * user-meaningful outcomes are mapped; a move back to `pending` is internal
+ * churn and raises nothing.
+ */
+const COMPANY_STATUS_NOTIFICATIONS: Record<
+  string,
+  { type: NotificationType; title: string; body: string }
+> = {
+  compliant: {
+    type: "company_verified",
+    title: "Your company has been verified",
+    body: "Your company profile is now compliant and active on Consultway.",
+  },
+  rejected: {
+    type: "company_rejected",
+    title: "Your company registration was rejected",
+    body: "Your company registration was not approved.",
+  },
+  suspended: {
+    type: "company_suspended",
+    title: "Your company has been suspended",
+    body: "Your company's access has been suspended. Contact Consultway for details.",
+  },
+};
+
 export async function transitionComplianceStatus(
   rawInput: unknown,
 ): Promise<ActionResult> {
@@ -699,6 +727,30 @@ export async function transitionComplianceStatus(
     actorId: auth.session.userId,
     ...(trimmedReason ? { reason: trimmedReason } : {}),
   });
+
+  // In-app notification to the company's own users. Fail-soft
+  // (createNotificationsForUsers never throws); a move back to `pending`
+  // maps to nothing. On a rejection, surface the reason as the body.
+  const statusNotif = COMPANY_STATUS_NOTIFICATIONS[input.toStatus];
+  if (statusNotif) {
+    const recipients = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.companyId, existing.id));
+    await createNotificationsForUsers(
+      recipients.map((r) => r.id),
+      {
+        type: statusNotif.type,
+        title: statusNotif.title,
+        body:
+          input.toStatus === "rejected" && trimmedReason
+            ? trimmedReason
+            : statusNotif.body,
+        link: `/dashboard/companies/${existing.id}`,
+      },
+    );
+  }
+
   return { ok: true };
 }
 

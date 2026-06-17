@@ -41,6 +41,7 @@ import {
   BarChart3,
   Settings,
   Users,
+  Bell,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -72,6 +73,7 @@ type NavItem = {
  */
 const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/dashboard/notifications", label: "Notifications", icon: Bell },
   { href: "/dashboard/companies", label: "Companies", icon: Building2 },
   { href: "/dashboard/tenders", label: "Tenders", icon: FileText },
   { href: "/dashboard/projects", label: "Projects", icon: Briefcase },
@@ -99,6 +101,8 @@ export interface SidebarProps {
   userEmail: string;
   /** Logged-in user's role. Used only by the user pill for display. */
   userRole: UserRole;
+  /** Unread in-app notifications — renders as a badge on the Notifications item. */
+  unreadCount: number;
 }
 
 interface SidebarContentProps extends SidebarProps {
@@ -117,7 +121,7 @@ interface SidebarContentProps extends SidebarProps {
  * Desktop sidebar. Hidden on `< lg` viewports — the mobile drawer
  * (`<MobileSidebar>`) takes over there.
  */
-export function Sidebar({ userEmail, userRole }: SidebarProps) {
+export function Sidebar({ userEmail, userRole, unreadCount }: SidebarProps) {
   return (
     <aside
       aria-label="Primary navigation"
@@ -130,6 +134,7 @@ export function Sidebar({ userEmail, userRole }: SidebarProps) {
       <SidebarContent
         userEmail={userEmail}
         userRole={userRole}
+        unreadCount={unreadCount}
         variant="desktop"
       />
     </aside>
@@ -147,6 +152,7 @@ export function Sidebar({ userEmail, userRole }: SidebarProps) {
 export function SidebarContent({
   userEmail,
   userRole,
+  unreadCount,
   variant,
 }: SidebarContentProps) {
   const pathname = usePathname();
@@ -233,6 +239,24 @@ export function SidebarContent({
                     aria-hidden
                   />
                   <span className="relative z-10">{item.label}</span>
+
+                  {/* Unread badge — only on the Notifications item, only when
+                      there's something unread. Inverts colours when the item
+                      is active so it stays legible on the terracotta pill. */}
+                  {item.href === "/dashboard/notifications" &&
+                    unreadCount > 0 && (
+                      <span
+                        aria-label={`${unreadCount} unread`}
+                        className={cn(
+                          "relative z-10 ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-xs font-semibold tabular-nums",
+                          isActive
+                            ? "bg-sidebar-primary-foreground text-sidebar-primary"
+                            : "bg-sidebar-primary text-sidebar-primary-foreground",
+                        )}
+                      >
+                        {unreadCount > 99 ? "99+" : unreadCount}
+                      </span>
+                    )}
                 </Link>
               </li>
             );

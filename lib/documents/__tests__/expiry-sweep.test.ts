@@ -38,6 +38,7 @@ import {
   users,
   auditLog,
   remindersSent,
+  notifications,
   type DocumentStatus,
   type DocumentType,
   type ReminderKind,
@@ -402,6 +403,28 @@ describe("runExpirySweep - upcoming-expiry reminders", () => {
     expect(args.text).toBeDefined();
   });
 
+  it("raises a document_expiring notification to the company's users", async () => {
+    const sendEmail = vi.fn<(args: SendEmailArgs) => Promise<SendEmailResult>>(
+      async () => ({ ok: true, id: "msg_test" }),
+    );
+    await runExpirySweep(buildDeps({ sendEmail }));
+
+    // The in-window doc belongs to companyA; the company user linked there
+    // (uploaderUserId) gets the bell entry, alongside the reminder email.
+    const notifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.uploaderUserId));
+    expect(notifs).toHaveLength(1);
+    expect(notifs[0]?.type).toBe("document_expiring");
+    expect(notifs[0]?.link).toBe(
+      `/dashboard/companies/${fixture.companyAId}`,
+    );
+    expect(notifs[0]?.body).toMatch(/gst\.pdf/);
+    expect(notifs[0]?.body).toMatch(/5 day/);
+    expect(notifs[0]?.readAt).toBeNull();
+  });
+
   it("skips rows >30 days out", async () => {
     const sendEmail = vi.fn<(args: SendEmailArgs) => Promise<SendEmailResult>>(
       async () => ({ ok: true, id: "msg_test" }),
@@ -489,6 +512,23 @@ describe("runExpirySweep - idempotency", () => {
       .where(eq(remindersSent.documentId, fixture.docInWindowId));
     expect(sentRows).toHaveLength(1);
     expect(sentRows[0]?.reminderKind).toBe<ReminderKind>("T-7");
+  });
+
+  it("does not raise a second document_expiring notification on a deduped re-run", async () => {
+    const sendEmail = vi.fn<(args: SendEmailArgs) => Promise<SendEmailResult>>(
+      async () => ({ ok: true, id: "msg_test" }),
+    );
+
+    await runExpirySweep(buildDeps({ sendEmail }));
+    await runExpirySweep(buildDeps({ sendEmail }));
+
+    // The notification shares the email's (document, slot) dedup — the
+    // second run skips the row before sending, so still exactly one bell.
+    const notifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.uploaderUserId));
+    expect(notifs).toHaveLength(1);
   });
 
   it("crossing a slot boundary triggers a fresh reminder under the new kind", async () => {

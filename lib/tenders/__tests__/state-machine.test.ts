@@ -44,6 +44,7 @@ import {
   tenderApplications,
   users,
   auditLog,
+  notifications,
   type UserRole,
   type TenderStatus,
 } from "@/lib/db/schema";
@@ -409,6 +410,91 @@ describe("publishTender", () => {
       .then((r) => r[0]);
     expect(row?.status).toBe("published");
   });
+
+  it("notifies eligible compliant companies' users (tender_published, sector-filtered)", async () => {
+    loginAs("admin", fixture);
+    // Both client companies compliant; the tender restricts to the
+    // Infrastructure sector, which only companyA matches.
+    await db
+      .update(companies)
+      .set({ complianceStatus: "compliant" })
+      .where(eq(companies.id, fixture.companyAId));
+    await db
+      .update(companies)
+      .set({ complianceStatus: "compliant" })
+      .where(eq(companies.id, fixture.companyBId));
+    const id = await insertTenderInStatus(fixture, "draft", {
+      eligibleSector: "Infrastructure",
+    });
+
+    const result = await publishTender(id);
+    expect(result.ok).toBe(true);
+
+    const aNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserAId));
+    expect(aNotifs).toHaveLength(1);
+    expect(aNotifs[0]?.type).toBe("tender_published");
+    expect(aNotifs[0]?.link).toBe(`/dashboard/tenders/${id}`);
+
+    // companyB is in "Civil Works" — wrong sector, not notified.
+    const bNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserBId));
+    expect(bNotifs).toHaveLength(0);
+  });
+
+  it("excludes non-compliant companies from tender_published fan-out", async () => {
+    loginAs("admin", fixture);
+    // companyA compliant; companyB left at the default "pending".
+    await db
+      .update(companies)
+      .set({ complianceStatus: "compliant" })
+      .where(eq(companies.id, fixture.companyAId));
+    // Unrestricted tender (no eligibility columns) — compliance is the
+    // only gate that should differentiate A from B here.
+    const id = await insertTenderInStatus(fixture, "draft");
+
+    const result = await publishTender(id);
+    expect(result.ok).toBe(true);
+
+    const aNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserAId));
+    expect(aNotifs).toHaveLength(1);
+    expect(aNotifs[0]?.type).toBe("tender_published");
+
+    const bNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserBId));
+    expect(bNotifs).toHaveLength(0);
+  });
+
+  it("does NOT notify on reopen (closed → published is not a fresh publish)", async () => {
+    loginAs("admin", fixture);
+    await db
+      .update(companies)
+      .set({ complianceStatus: "compliant" })
+      .where(eq(companies.id, fixture.companyAId));
+    const id = await insertTenderInStatus(fixture, "closed", {
+      publishedAt: new Date().toISOString(),
+    });
+
+    const result = await reopenTender({ tenderId: id });
+    expect(result.ok).toBe(true);
+
+    // The gate keys on the tender_published audit verb + draft→published,
+    // so a reopen (tender_reopened, closed→published) raises nothing.
+    const aNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserAId));
+    expect(aNotifs).toHaveLength(0);
+  });
 });
 
 // ── closeTender ───────────────────────────────────────────────────────────
@@ -487,6 +573,34 @@ describe("markAwarded", () => {
       .then((r) => r[0]);
     expect(row?.status).toBe("awarded");
     expect(row?.awardedCompanyId).toBe(fixture.companyAId);
+  });
+
+  it("notifies the awarded company's users (application_awarded)", async () => {
+    loginAs("admin", fixture);
+    const tenderId = await insertTenderInStatus(fixture, "closed");
+    await insertShortlistedApplication(tenderId, fixture.companyAId);
+
+    const result = await markAwarded({
+      tenderId,
+      awardedCompanyId: fixture.companyAId,
+    });
+    expect(result.ok).toBe(true);
+
+    const notifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserAId));
+    expect(notifs).toHaveLength(1);
+    expect(notifs[0]?.type).toBe("application_awarded");
+    expect(notifs[0]?.link).toBe(`/dashboard/tenders/${tenderId}`);
+    expect(notifs[0]?.readAt).toBeNull();
+
+    // The losing company (B) is not notified by the award path.
+    const bNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserBId));
+    expect(bNotifs).toHaveLength(0);
   });
 
   it("refuses awarding a draft tender (status gate fires before app lookup)", async () => {

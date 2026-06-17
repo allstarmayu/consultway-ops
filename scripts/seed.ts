@@ -39,6 +39,7 @@ import {
   projects,
   transactions,
   remindersSent,
+  notifications,
   type ComplianceStatus,
   type DocumentStatus,
   type DocumentType,
@@ -2614,6 +2615,93 @@ async function printDemoCheatSheet(scale: SeedScale): Promise<void> {
 
 // ── Main ──────────────────────────────────────────────────────────────────
 
+/**
+ * Seed a few in-app notifications so a fresh DB shows a populated bell + feed.
+ * Idempotent — skips any targeted user who already has a notification row.
+ * Targets baseline company users (present at every scale). Links are omitted
+ * (the rows are illustrative; the real wiring populates links from live ids).
+ */
+async function seedNotifications(): Promise<void> {
+  const specs: Array<{
+    email: string;
+    type: string;
+    title: string;
+    body: string;
+    read: boolean;
+  }> = [
+    {
+      email: "greentech@example.local",
+      type: "company_verified",
+      title: "Your company has been verified",
+      body: "Your company profile is now compliant and active on Consultway.",
+      read: false,
+    },
+    {
+      email: "greentech@example.local",
+      type: "document_expiring",
+      title: "A document is expiring soon",
+      body: "Your GST certificate expires in 14 days.",
+      read: false,
+    },
+    {
+      email: "acme@example.local",
+      type: "application_shortlisted",
+      title: "Application shortlisted",
+      body: "Your tender application has been shortlisted.",
+      read: true,
+    },
+    {
+      email: "acme@example.local",
+      type: "application_awarded",
+      title: "Tender awarded to your company",
+      body: "Congratulations — your application has been selected as the winning bid.",
+      read: false,
+    },
+    {
+      // Admins are a notification audience too (new-company review queue).
+      email: "admin@consultway.local",
+      type: "company_registered",
+      title: "New company registered",
+      body: "GreenTech Solar has registered and is awaiting review.",
+      read: false,
+    },
+  ];
+
+  const byEmail = new Map<string, typeof specs>();
+  for (const s of specs) {
+    const arr = byEmail.get(s.email) ?? [];
+    arr.push(s);
+    byEmail.set(s.email, arr);
+  }
+
+  let inserted = 0;
+  for (const [email, userSpecs] of byEmail) {
+    const userId = await lookupUserIdOptional(email);
+    if (!userId) continue; // not present in this scale profile — skip
+
+    const already = await db
+      .select({ id: notifications.id })
+      .from(notifications)
+      .where(eq(notifications.userId, userId))
+      .limit(1);
+    if (already.length > 0) continue; // idempotent
+
+    for (const s of userSpecs) {
+      await db.insert(notifications).values({
+        id: newId(),
+        userId,
+        type: s.type,
+        title: s.title,
+        body: s.body,
+        readAt: s.read ? new Date().toISOString() : null,
+      });
+      inserted += 1;
+    }
+  }
+
+  log.info("seeded notifications", { inserted });
+}
+
 export async function main(): Promise<void> {
   const scale = resolveSeedScale();
   log.info("starting seed", { scale });
@@ -2722,6 +2810,10 @@ export async function main(): Promise<void> {
       });
     }
   }
+
+  // 5c. In-app notifications — a few rows so a fresh DB shows a populated
+  //     bell + feed. Idempotent; needs only the company users above.
+  await seedNotifications();
 
   // 6. Document fixtures. Documents reference both a company
   //    (FK companyId) and users (FK uploadedBy, reviewedBy), so all

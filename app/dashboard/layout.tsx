@@ -26,6 +26,7 @@
  */
 import { redirect } from "next/navigation";
 import { readSession } from "@/lib/auth/session";
+import { unreadNotificationCount } from "@/lib/notifications/actions";
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { MobileSidebar } from "@/components/dashboard/mobile-sidebar";
 
@@ -34,6 +35,13 @@ export default async function DashboardLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   const session = await readSession();
   if (!session) redirect("/login");
+
+  // Unread badge for the sidebar Notifications item. Fetched once here so
+  // the desktop aside and the mobile drawer share a consistent count without
+  // each running its own query. Re-runs on every dashboard navigation and on
+  // router.refresh() after a mark-read, so the badge stays current.
+  const unread = await unreadNotificationCount();
+  const unreadCount = unread.ok ? unread.count : 0;
 
   return (
     <div
@@ -47,6 +55,7 @@ export default async function DashboardLayout({
       <Sidebar
         userEmail={session.email}
         userRole={session.role}
+        unreadCount={unreadCount}
       />
 
       {/* Main content area. Scrolls independently of the sidebar.
@@ -64,6 +73,7 @@ export default async function DashboardLayout({
           <MobileSidebar
             userEmail={session.email}
             userRole={session.role}
+            unreadCount={unreadCount}
           />
         </div>
 

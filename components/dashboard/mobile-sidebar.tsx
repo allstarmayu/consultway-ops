@@ -42,9 +42,15 @@ export interface MobileSidebarProps {
   userEmail: string;
   /** Logged-in user's role — forwarded to the shared content. */
   userRole: UserRole;
+  /** Unread in-app notifications — forwarded to the shared content's badge. */
+  unreadCount: number;
 }
 
-export function MobileSidebar({ userEmail, userRole }: MobileSidebarProps) {
+export function MobileSidebar({
+  userEmail,
+  userRole,
+  unreadCount,
+}: MobileSidebarProps) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
@@ -91,6 +97,7 @@ export function MobileSidebar({ userEmail, userRole }: MobileSidebarProps) {
             <SidebarContent
               userEmail={userEmail}
               userRole={userRole}
+              unreadCount={unreadCount}
               variant="mobile"
             />
           </SheetContent>

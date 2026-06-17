@@ -26,12 +26,13 @@
  */
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { users, companies } from "@/lib/db/schema";
 import { newId } from "@/lib/db/ids";
 import { recordAuditEvent, SYSTEM_ACTOR_ID } from "@/lib/audit/log";
+import { createNotificationsForUsers } from "@/lib/notifications/notify";
 import { sendEmail, type SendEmailFn } from "@/lib/email/client";
 import { renderEmailVerificationEmail } from "@/lib/email/templates/email-verification";
 import { renderPasswordResetRequestEmail } from "@/lib/email/templates/password-reset-request";
@@ -507,6 +508,27 @@ export async function registerCompanyInternal(
       userId,
     });
   }
+
+  // 7. In-app notification to Consultway admins that a new company has
+  //    self-registered and is awaiting compliance review. Fail-soft
+  //    (createNotificationsForUsers never throws; no-ops on an empty list)
+  //    — a missing bell entry must not fail a successful registration.
+  //    Only active admins are notified; the registrant (role "company") is
+  //    structurally excluded, and staff are intentionally left out. The
+  //    admin/staff `createCompany` path deliberately raises nothing.
+  const admins = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.role, "admin"), eq(users.isActive, true)));
+  await createNotificationsForUsers(
+    admins.map((a) => a.id),
+    {
+      type: "company_registered",
+      title: "New company registered",
+      body: `${input.companyName} has registered and is awaiting review.`,
+      link: `/dashboard/companies/${companyId}`,
+    },
+  );
 
   return { ok: true, userId, companyId, verificationEmailSent };
 }

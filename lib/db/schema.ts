@@ -1843,3 +1843,89 @@ export type NewUserPreferences = typeof userPreferences.$inferInsert;
 
 /** Inferred select type — what a row looks like when read from the DB. */
 export type UserPreferences = typeof userPreferences.$inferSelect;
+
+// -- Notifications ----------------------------------------------------------
+/**
+ * Per-user in-app notification feed. One row per notification delivered to
+ * one user — the user-facing bell feed ("things you should see").
+ *
+ * Distinct from its two siblings:
+ *   - `user_preferences` governs *email-channel* opt-ins, not this feed.
+ *   - `audit_log` is an admin-facing activity trail keyed by actor; this is
+ *     recipient-keyed and user-facing.
+ *
+ * Created programmatically by domain actions (never a user-facing mutation)
+ * via `lib/notifications/notify.ts::createNotification`, co-located with the
+ * email/audit side effects at each event site. Reads/writes are scoped to the
+ * owning user only (RBAC matrix § Notifications).
+ *
+ * `read_at` NULL == unread; stamping it marks the row read. Read rows are
+ * kept (no delete-on-read) so the feed + history survive — pruning old read
+ * rows is a future retention concern, not a v1 one.
+ */
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    /** UUID v7. Generated app-side via `newId()`. */
+    id: text("id").primaryKey().$defaultFn(newId),
+
+    /**
+     * The recipient. FK → users.id, cascade-deleted with the user (a
+     * notification is meaningless once its owner is gone). Mirrors the
+     * `user_preferences` FK idiom.
+     */
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, {
+        onDelete: "cascade",
+        onUpdate: "no action",
+      }),
+
+    /**
+     * The notification kind. Plain text; validated app-side against the
+     * `NotificationType` union in `lib/notifications/types.ts` (enum-less
+     * SQLite convention, same as `audit_log.action`). Drives the feed icon.
+     */
+    type: text("type").notNull(),
+
+    /** Short headline, e.g. "Company verified". Rendered prominent in the feed. */
+    title: text("title").notNull(),
+
+    /** Optional one-line detail under the title. */
+    body: text("body"),
+
+    /**
+     * Optional in-app deep link (relative path, e.g.
+     * "/dashboard/companies/<id>"). Clicking the notification routes here.
+     * NULL == no target.
+     */
+    link: text("link"),
+
+    /**
+     * ISO-8601 UTC when the user marked it read. NULL == unread. Indexed
+     * with `user_id` so the unread-count badge is a single index seek.
+     */
+    readAt: text("read_at"),
+
+    /** ISO-8601 UTC. Stamped by SQLite on insert. The feed orders by this desc. */
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    // Unread-count badge + "my unread" filter — (user_id, read_at).
+    index("notifications_user_read_idx").on(table.userId, table.readAt),
+    // Feed ordering — newest-first per user.
+    index("notifications_user_created_idx").on(table.userId, table.createdAt),
+  ],
+);
+
+/** Inferred insert type — used by `createNotification` when staging a row. */
+export type NewNotification = typeof notifications.$inferInsert;
+
+/**
+ * Inferred select type — what `listNotifications` returns. Named `*Row`
+ * (not `Notification`) to avoid shadowing the DOM `Notification` global in
+ * any module that imports it.
+ */
+export type NotificationRow = typeof notifications.$inferSelect;
