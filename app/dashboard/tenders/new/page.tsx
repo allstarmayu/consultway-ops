@@ -116,7 +116,10 @@ export default async function NewTenderPage() {
       />
 
       <Card className="overflow-visible p-6 sm:p-8">
-        <TenderForm publisherOptions={publisherOptions} />
+        <TenderForm
+          publisherOptions={publisherOptions}
+          selectableCompanies={rest}
+        />
       </Card>
     </>
   );

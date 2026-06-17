@@ -42,6 +42,7 @@ import {
   companies,
   tenders,
   tenderApplications,
+  tenderInvitedCompanies,
   users,
   auditLog,
   notifications,
@@ -985,5 +986,78 @@ describe("applyToTender vs tender status", () => {
     const id = await insertTenderInStatus(fixture, "awarded");
     const result = await applyToTender({ tenderId: id });
     expect(result.ok).toBe(false);
+  });
+});
+
+// ── Invited tenders (audience model) ──────────────────────────────────────
+
+describe("invited tenders", () => {
+  it("createTender links invitees and nulls the eligibility filters", async () => {
+    loginAs("admin", fixture);
+    const result = await createTender(
+      validCreateInput(fixture, {
+        visibility: "invited",
+        invitedCompanyIds: [fixture.companyAId],
+        // Supplied but should be discarded — the allowlist replaces these.
+        eligibleSector: "Infrastructure",
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const row = await db
+      .select()
+      .from(tenders)
+      .where(eq(tenders.id, result.id))
+      .then((r) => r[0]);
+    expect(row?.visibility).toBe("invited");
+    expect(row?.eligibleSector).toBeNull();
+
+    const invited = await db
+      .select()
+      .from(tenderInvitedCompanies)
+      .where(eq(tenderInvitedCompanies.tenderId, result.id));
+    expect(invited).toHaveLength(1);
+    expect(invited[0]?.companyId).toBe(fixture.companyAId);
+  });
+
+  it("refuses publishing an invited tender with no invitees", async () => {
+    loginAs("admin", fixture);
+    const id = await insertTenderInStatus(fixture, "draft", {
+      visibility: "invited",
+    });
+    const result = await publishTender(id);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/invite at least one/i);
+  });
+
+  it("publishes an invited tender and notifies only the invited companies", async () => {
+    loginAs("admin", fixture);
+    const id = await insertTenderInStatus(fixture, "draft", {
+      visibility: "invited",
+    });
+    // Invite companyA only.
+    await db
+      .insert(tenderInvitedCompanies)
+      .values({ id: newId(), tenderId: id, companyId: fixture.companyAId });
+
+    const result = await publishTender(id);
+    expect(result.ok).toBe(true);
+
+    const aNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserAId));
+    expect(aNotifs).toHaveLength(1);
+    expect(aNotifs[0]?.type).toBe("tender_published");
+    expect(aNotifs[0]?.link).toBe(`/dashboard/tenders/${id}`);
+
+    // companyB was not invited — no bell.
+    const bNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserBId));
+    expect(bNotifs).toHaveLength(0);
   });
 });

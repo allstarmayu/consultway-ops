@@ -68,6 +68,7 @@ import {
   desc,
   eq,
   gte,
+  inArray,
   like,
   lte,
   ne,
@@ -79,6 +80,7 @@ import {
   companies,
   tenders,
   tenderApplications,
+  tenderInvitedCompanies,
   users,
   type Company,
   type Tender,
@@ -362,6 +364,50 @@ function formatInrForError(rupees: number): string {
   }).format(rupees)}`;
 }
 
+// -- invited-companies sync -------------------------------------------------
+
+/**
+ * Replace a tender's invited-company allowlist with `companyIds`.
+ *
+ * Deduped + existence-checked (ids that don't resolve to a real company are
+ * dropped rather than thrown — a stale client id must not 500 a save) +
+ * publisher excluded (a tender inviting its own publisher is nonsense). Clears
+ * the existing links first, so passing `[]` empties the list.
+ *
+ * Used by `createTender` / `updateTender` for `invited`-visibility tenders.
+ * Not transactional (D1/SQLite constraints) — but invite-list edits are
+ * draft-only, so a partial failure is recoverable via another edit.
+ *
+ * @param tenderId   the tender whose allowlist to replace
+ * @param companyIds the desired invited company ids
+ * @param publisherCompanyId excluded from the list if present
+ */
+async function syncInvitedCompanies(
+  tenderId: string,
+  companyIds: string[],
+  publisherCompanyId: string,
+): Promise<void> {
+  await db
+    .delete(tenderInvitedCompanies)
+    .where(eq(tenderInvitedCompanies.tenderId, tenderId));
+
+  const wanted = Array.from(new Set(companyIds)).filter(
+    (id) => id !== publisherCompanyId,
+  );
+  if (wanted.length === 0) return;
+
+  // Existence filter — only link ids that map to a real company.
+  const existing = await db
+    .select({ id: companies.id })
+    .from(companies)
+    .where(inArray(companies.id, wanted));
+  if (existing.length === 0) return;
+
+  await db.insert(tenderInvitedCompanies).values(
+    existing.map((c) => ({ id: newId(), tenderId, companyId: c.id })),
+  );
+}
+
 // -- createTender ----------------------------------------------------------
 
 /**
@@ -392,6 +438,7 @@ export async function createTender(
     };
   }
   const input: CreateTenderInput = parsed.data;
+  const isInvited = input.visibility === "invited";
 
   // 3. Resolve publisher - explicit if provided, sentinel if not.
   let publisherCompanyId = input.publisherCompanyId;
@@ -420,10 +467,16 @@ export async function createTender(
       publisherCompanyId,
       sector: input.sector,
       geography: input.geography,
-      eligibleSector: input.eligibleSector ?? null,
-      eligibleGeography: input.eligibleGeography ?? null,
-      minAnnualTurnoverInr: input.minAnnualTurnoverInr ?? null,
-      msmeOnly: input.msmeOnly ?? false,
+      visibility: input.visibility,
+      // Invited tenders are gated by the allowlist, not eligibility — null
+      // the filters so an abandoned/stale filter can never leak into the
+      // gate (defence in depth alongside the read-time visibility check).
+      eligibleSector: isInvited ? null : input.eligibleSector ?? null,
+      eligibleGeography: isInvited ? null : input.eligibleGeography ?? null,
+      minAnnualTurnoverInr: isInvited
+        ? null
+        : input.minAnnualTurnoverInr ?? null,
+      msmeOnly: isInvited ? false : input.msmeOnly ?? false,
       openingDate: input.openingDate ?? null,
       closingDate: input.closingDate ?? null,
       internalNotes: input.internalNotes ?? null,
@@ -439,6 +492,16 @@ export async function createTender(
     }
     log.error("createTender failed", { err, actorId: auth.session.userId });
     throw err;
+  }
+
+  // 4b. Link invited companies (invited tenders only). The tender row now
+  //     exists, satisfying the FK. Open tenders skip this entirely.
+  if (isInvited) {
+    await syncInvitedCompanies(
+      id,
+      input.invitedCompanyIds ?? [],
+      publisherCompanyId,
+    );
   }
 
   // 5. Audit. Captures the identity-ish fields for later forensic
@@ -533,6 +596,7 @@ export async function updateTender(
   applyIfEditable("referenceNumber", input.referenceNumber);
   applyIfEditable("sector", input.sector);
   applyIfEditable("geography", input.geography);
+  applyIfEditable("visibility", input.visibility);
   applyIfEditable("eligibleSector", input.eligibleSector);
   applyIfEditable("eligibleGeography", input.eligibleGeography);
   applyIfEditable("minAnnualTurnoverInr", input.minAnnualTurnoverInr);
@@ -563,28 +627,69 @@ export async function updateTender(
     };
   }
 
-  // 6. No-op short-circuit. Treat as idempotent success.
-  if (Object.keys(patch).length === 0) {
+  // 5b. Audience reconciliation (draft-only — `visibility` is publish-locked,
+  //     so it only lands in `patch` for a draft). `inviteSync` non-null means
+  //     "replace the allowlist with this set", and must run even when no
+  //     column changed (an invite-only edit).
+  let inviteSync: string[] | null = null;
+  if (editable.has("visibility")) {
+    const finalVisibility = patch.visibility ?? existing.visibility;
+    if (finalVisibility === "invited") {
+      // Switching INTO invited: the allowlist replaces eligibility, so null
+      // the filters on the row. (Already-invited tenders carry null filters.)
+      if (patch.visibility === "invited") {
+        patch.eligibleSector = null;
+        patch.eligibleGeography = null;
+        patch.minAnnualTurnoverInr = null;
+        patch.msmeOnly = false;
+      }
+      // Reconcile the list only when the caller actually sent one.
+      if (input.invitedCompanyIds !== undefined) {
+        inviteSync = input.invitedCompanyIds;
+      }
+    } else if (existing.visibility === "invited") {
+      // Final visibility is open and the row WAS invited → it just switched
+      // to open; drop the now-irrelevant invite rows. (An already-open
+      // tender needs no clear.)
+      inviteSync = [];
+    }
+  }
+
+  // 6. No-op short-circuit. Nothing to change — no column patch AND no
+  //    invite-list reconciliation. Idempotent success.
+  if (Object.keys(patch).length === 0 && inviteSync === null) {
     return { ok: true };
   }
 
-  // 7. Apply
-  try {
-    await db.update(tenders).set(patch).where(eq(tenders.id, input.id));
-  } catch (err) {
-    const conflict = translateUniqueConflict(err);
-    if (conflict) {
-      log.info("updateTender unique conflict", {
-        field: conflict.field,
-        actorId: auth.session.userId,
-      });
-      return { ok: false, ...conflict };
+  // 7. Apply the column patch (if any).
+  if (Object.keys(patch).length > 0) {
+    try {
+      await db.update(tenders).set(patch).where(eq(tenders.id, input.id));
+    } catch (err) {
+      const conflict = translateUniqueConflict(err);
+      if (conflict) {
+        log.info("updateTender unique conflict", {
+          field: conflict.field,
+          actorId: auth.session.userId,
+        });
+        return { ok: false, ...conflict };
+      }
+      log.error("updateTender failed", { err, actorId: auth.session.userId });
+      throw err;
     }
-    log.error("updateTender failed", { err, actorId: auth.session.userId });
-    throw err;
   }
 
-  // 8. Audit. Before/after of only the fields the patch touched.
+  // 7b. Reconcile the invite list (invited⇄open transitions, draft-only).
+  if (inviteSync !== null) {
+    await syncInvitedCompanies(
+      input.id,
+      inviteSync,
+      existing.publisherCompanyId,
+    );
+  }
+
+  // 8. Audit. Before/after of the columns the patch touched, plus the
+  //    invite-list size when the allowlist was reconciled.
   const touchedKeys = Object.keys(patch);
   const beforeSnapshot = buildPatchSnapshot(existing, touchedKeys);
   const afterSnapshot = buildPatchSnapshot(
@@ -599,12 +704,16 @@ export async function updateTender(
     targetId: input.id,
     before: beforeSnapshot,
     after: afterSnapshot,
+    ...(inviteSync !== null
+      ? { metadata: { invitedCompanyCount: inviteSync.length } }
+      : {}),
   });
 
   log.info("tender updated", {
     id: input.id,
     actorId: auth.session.userId,
     fields: touchedKeys,
+    ...(inviteSync !== null ? { invitedCompanyCount: inviteSync.length } : {}),
   });
   return { ok: true };
 }
@@ -707,6 +816,28 @@ async function transitionTenderStatus(
     }
   }
 
+  // Guard: an invited tender must have at least one invitee before it can
+  // go live — publishing one visible to nobody is a footgun. Only on the
+  // genuine draft -> published publish (a reopen already has its audience).
+  if (
+    nextStatus === "published" &&
+    existing.status === "draft" &&
+    existing.visibility === "invited"
+  ) {
+    const inviteeCount = await db
+      .select({ value: count() })
+      .from(tenderInvitedCompanies)
+      .where(eq(tenderInvitedCompanies.tenderId, existing.id))
+      .then((r) => r[0]?.value ?? 0);
+    if (inviteeCount === 0) {
+      return {
+        ok: false,
+        error:
+          "Invite at least one company before publishing an invite-only tender",
+      };
+    }
+  }
+
   // Build patch
   const patch: Partial<typeof tenders.$inferInsert> = {
     status: nextStatus,
@@ -788,36 +919,55 @@ async function transitionTenderStatus(
     existing.status === "draft" &&
     nextStatus === "published"
   ) {
-    const companyFilters: SQL[] = [
-      eq(companies.complianceStatus, "compliant"),
-      ne(companies.id, existing.publisherCompanyId),
-    ];
-    if (existing.eligibleSector) {
-      companyFilters.push(eq(companies.sector, existing.eligibleSector));
+    let recipients: { id: string }[];
+    if (existing.visibility === "invited") {
+      // Invited tender: notify exactly the invited companies' users — the
+      // allowlist is the audience.
+      recipients = await db
+        .select({ id: users.id })
+        .from(users)
+        .innerJoin(
+          tenderInvitedCompanies,
+          eq(users.companyId, tenderInvitedCompanies.companyId),
+        )
+        .where(eq(tenderInvitedCompanies.tenderId, existing.id));
+    } else {
+      // Open tender: eligible, compliant companies (publisher excluded),
+      // mirroring applyToTender's gates.
+      const companyFilters: SQL[] = [
+        eq(companies.complianceStatus, "compliant"),
+        ne(companies.id, existing.publisherCompanyId),
+      ];
+      if (existing.eligibleSector) {
+        companyFilters.push(eq(companies.sector, existing.eligibleSector));
+      }
+      if (existing.eligibleGeography) {
+        companyFilters.push(eq(companies.geography, existing.eligibleGeography));
+      }
+      if (existing.msmeOnly) {
+        companyFilters.push(eq(companies.isMsme, true));
+      }
+      if (existing.minAnnualTurnoverInr !== null) {
+        // gte drops NULL-turnover rows in SQLite — matching applyToTender,
+        // which refuses applicants who haven't stated a turnover.
+        companyFilters.push(
+          gte(companies.annualTurnover, existing.minAnnualTurnoverInr),
+        );
+      }
+      recipients = await db
+        .select({ id: users.id })
+        .from(users)
+        .innerJoin(companies, eq(users.companyId, companies.id))
+        .where(and(...companyFilters));
     }
-    if (existing.eligibleGeography) {
-      companyFilters.push(eq(companies.geography, existing.eligibleGeography));
-    }
-    if (existing.msmeOnly) {
-      companyFilters.push(eq(companies.isMsme, true));
-    }
-    if (existing.minAnnualTurnoverInr !== null) {
-      // gte drops NULL-turnover rows in SQLite — matching applyToTender,
-      // which refuses applicants who haven't stated a turnover.
-      companyFilters.push(
-        gte(companies.annualTurnover, existing.minAnnualTurnoverInr),
-      );
-    }
-    const recipients = await db
-      .select({ id: users.id })
-      .from(users)
-      .innerJoin(companies, eq(users.companyId, companies.id))
-      .where(and(...companyFilters));
     await createNotificationsForUsers(
       recipients.map((r) => r.id),
       {
         type: "tender_published",
-        title: "New tender you may be eligible for",
+        title:
+          existing.visibility === "invited"
+            ? "You've been invited to a tender"
+            : "New tender you may be eligible for",
         body: existing.title,
         link: `/dashboard/tenders/${existing.id}`,
       },
@@ -1112,14 +1262,30 @@ export async function getTender(
 
   if (!row) return { ok: false, error: "Tender not found" };
 
-  // Row-level scope: company-role users cannot see drafts unless they
-  // are the publisher (subcontract case).
+  // Row-level scope for company-role callers. We return "not found" rather
+  // than "forbidden" throughout — never leak the existence of a tender a
+  // caller isn't entitled to see.
   if (scope.scopeCompanyId) {
-    const isPublisher = row.publisherCompanyId === scope.scopeCompanyId;
+    const me = scope.scopeCompanyId;
+    const isPublisher = row.publisherCompanyId === me;
+    // Drafts are publisher-only (subcontract case).
     if (row.status === "draft" && !isPublisher) {
-      // Return "not found" rather than "forbidden" - don't leak the
-      // existence of a draft tender to a non-privileged caller.
       return { ok: false, error: "Tender not found" };
+    }
+    // Invited, non-draft: visible only to the publisher + invited companies.
+    if (row.status !== "draft" && row.visibility === "invited" && !isPublisher) {
+      const invited = await db
+        .select({ id: tenderInvitedCompanies.id })
+        .from(tenderInvitedCompanies)
+        .where(
+          and(
+            eq(tenderInvitedCompanies.tenderId, row.id),
+            eq(tenderInvitedCompanies.companyId, me),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0]);
+      if (!invited) return { ok: false, error: "Tender not found" };
     }
   }
 
@@ -1128,6 +1294,33 @@ export async function getTender(
     scope.session.role === "company" ? { ...row, internalNotes: null } : row;
 
   return { ok: true, tender: sanitized };
+}
+
+// -- listTenderInvitedCompanies --------------------------------------------
+
+/**
+ * The companies on a tender's invite allowlist (id + name, sorted), for the
+ * management UI — the detail page's audience panel and the edit form's
+ * pre-selected set. Admin/staff only: the invite list is staff-facing
+ * metadata, not something company-role users browse.
+ */
+export async function listTenderInvitedCompanies(
+  rawId: unknown,
+): Promise<ActionResult<{ companies: { id: string; name: string }[] }>> {
+  const auth = await requireAdminOrStaff();
+  if (!auth.ok) return auth;
+
+  const parsed = tenderIdSchema.safeParse({ id: rawId });
+  if (!parsed.success) return { ok: false, error: "Invalid tender id" };
+
+  const rows = await db
+    .select({ id: companies.id, name: companies.name })
+    .from(tenderInvitedCompanies)
+    .innerJoin(companies, eq(tenderInvitedCompanies.companyId, companies.id))
+    .where(eq(tenderInvitedCompanies.tenderId, parsed.data.id))
+    .orderBy(asc(companies.name));
+
+  return { ok: true, companies: rows };
 }
 
 // -- listTenders -----------------------------------------------------------
@@ -1232,20 +1425,44 @@ async function runListTendersForCaller(
   // reach this branch (Zod schema permits all four, but draft is
   // handled above and the others don't expose anything restricted).
   if (scope.scopeCompanyId) {
+    const me = scope.scopeCompanyId;
+
+    // Tenders this company has been invited to — so invited-visibility rows
+    // surface for their allowlisted companies. One small indexed query; the
+    // id set feeds an `inArray` below.
+    const invitedRows = await db
+      .select({ tenderId: tenderInvitedCompanies.tenderId })
+      .from(tenderInvitedCompanies)
+      .where(eq(tenderInvitedCompanies.companyId, me));
+    const invitedTenderIds = invitedRows.map((r) => r.tenderId);
+
+    // Audience predicate for a NON-DRAFT tender: visible iff it's open, the
+    // caller is the publisher, or the caller is on its invite list. Drafts
+    // are handled separately (publisher-only, regardless of visibility).
+    const audienceVisible = or(
+      eq(tenders.visibility, "open"),
+      eq(tenders.publisherCompanyId, me),
+      ...(invitedTenderIds.length > 0
+        ? [inArray(tenders.id, invitedTenderIds)]
+        : []),
+    )!;
+
     if (query.status === "draft") {
+      // Drafts: publisher-only, irrespective of visibility mode.
       filters.push(eq(tenders.status, "draft"));
-      filters.push(eq(tenders.publisherCompanyId, scope.scopeCompanyId));
+      filters.push(eq(tenders.publisherCompanyId, me));
     } else if (query.status) {
+      // A specific non-draft status, gated by the audience predicate.
       filters.push(eq(tenders.status, query.status));
+      filters.push(audienceVisible);
     } else {
-      // No status filter: visibility = non-drafts ∪ own-publisher drafts.
-      // The `or(...)` result is typed as `SQL | undefined` because both
-      // inputs are `SQL`, but neither can be null at this point - the
-      // bang asserts the contract.
+      // No status filter: own (any status, incl. drafts) ∪ visible non-drafts.
+      // The `or(...)` is typed `SQL | undefined`; with ≥2 inputs it's never
+      // undefined — the bang asserts the contract.
       filters.push(
         or(
-          ne(tenders.status, "draft"),
-          eq(tenders.publisherCompanyId, scope.scopeCompanyId),
+          eq(tenders.publisherCompanyId, me),
+          and(ne(tenders.status, "draft"), audienceVisible),
         )!,
       );
     }
@@ -1418,14 +1635,44 @@ export async function applyToTender(
     }
   }
 
-  // 6. Eligibility filters
-  if (tender.eligibleSector && company.sector !== tender.eligibleSector) {
+  // 6. Audience gate. Invited tenders are gated SOLELY by the allowlist —
+  //    the eligibility filters are bypassed (and are nulled at write time
+  //    anyway). Open tenders fall through to the eligibility checks below,
+  //    each guarded with `visibility === "open"` for defence in depth.
+  if (tender.visibility === "invited") {
+    const invited = await db
+      .select({ id: tenderInvitedCompanies.id })
+      .from(tenderInvitedCompanies)
+      .where(
+        and(
+          eq(tenderInvitedCompanies.tenderId, tender.id),
+          eq(tenderInvitedCompanies.companyId, company.id),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (!invited) {
+      return {
+        ok: false,
+        error:
+          "This tender is invite-only and your company is not on the invite list",
+      };
+    }
+  }
+
+  // 6a. Eligibility filters — OPEN tenders only.
+  if (
+    tender.visibility === "open" &&
+    tender.eligibleSector &&
+    company.sector !== tender.eligibleSector
+  ) {
     return {
       ok: false,
       error: `This tender requires sector "${tender.eligibleSector}" - your company is in "${company.sector}"`,
     };
   }
   if (
+    tender.visibility === "open" &&
     tender.eligibleGeography &&
     company.geography !== tender.eligibleGeography
   ) {
@@ -1434,7 +1681,7 @@ export async function applyToTender(
       error: `This tender requires geography "${tender.eligibleGeography}" - your company is in "${company.geography}"`,
     };
   }
-  if (tender.msmeOnly && !company.isMsme) {
+  if (tender.visibility === "open" && tender.msmeOnly && !company.isMsme) {
     return {
       ok: false,
       error: "This tender is restricted to MSME-registered companies",
@@ -1468,7 +1715,7 @@ export async function applyToTender(
   //     state changes audit). If we ever want forensic visibility on
   //     repeat-rejection patterns, that's a separate `tender_application_
   //     rejected_eligibility` verb worth its own design pass.
-  if (tender.minAnnualTurnoverInr !== null) {
+  if (tender.visibility === "open" && tender.minAnnualTurnoverInr !== null) {
     if (company.annualTurnover === null) {
       return {
         ok: false,

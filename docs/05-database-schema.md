@@ -12,7 +12,7 @@ Tables grouped by domain:
 - **Identity:** `users`, `email_verification_tokens`, `password_reset_tokens`
 - **Companies:** `companies`, `company_contacts`, `company_sectors`
 - **Documents:** `documents`, `reminders_sent`
-- **Tenders:** `tenders`, `tender_applications`, `tender_eligibility_rules`
+- **Tenders:** `tenders`, `tender_applications`, `tender_invited_companies`, `tender_eligibility_rules`
 - **Projects (Phase 3):** `projects`, `milestones`, `project_activity`
 - **Finance (Phase 3):** `transactions`
 - **Platform:** `notifications`, `audit_log`
@@ -299,6 +299,7 @@ was updated in Day 12 to match.
 | `documents_required` | TEXT | NOT NULL DEFAULT '[]' | JSON array of document_types |
 | `checklist` | TEXT | NOT NULL DEFAULT '[]' | JSON array of `{ label, required }` |
 | `status` | TEXT | NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published','closed','archived')) |  |
+| `visibility` | TEXT | NOT NULL DEFAULT 'open' | `open` \| `invited` (validated app-side). Invite-only tenders are visible/applyable only to `tender_invited_companies` — the allowlist replaces the eligibility filters. Editable while `draft`, frozen at publish. Migration `0018` |
 | `published_at` | TEXT | NULLABLE |  |
 | `closes_at` | TEXT | NULLABLE |  |
 | `awarded_company_id` | TEXT | NULLABLE, FK → companies.id ON DELETE RESTRICT | Day 14 — populated by `markAwarded`, cleared by `retractAward` |
@@ -329,7 +330,7 @@ Note: this table's column list is partially out of sync with
 / `eligible_sector` etc., not `closes_at` / `created_by` / per-column
 `sector_tags`). Per the doc-vs-code rule in `CLAUDE.md`, the code wins —
 this section is a Phase-1 spec snapshot that hasn't been re-baselined.
-The new `awarded_company_id` row above matches the implemented column.
+The `awarded_company_id` and `visibility` rows above match the implemented columns.
 
 ### `tender_applications`
 
@@ -354,6 +355,28 @@ Indexes:
 - `idx_applications_tender` on `tender_id`
 - `idx_applications_company` on `company_id`
 - `idx_applications_status` on `status`
+
+### `tender_invited_companies`
+
+Allowlist backing `invited`-visibility tenders — one row per invited company.
+For a tender with `visibility = 'invited'`, only the listed companies (plus the
+publisher + admin/staff) can see or apply to it. Open tenders have no rows here.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `tender_id` | TEXT | NOT NULL, FK → tenders.id ON DELETE CASCADE |
+| `company_id` | TEXT | NOT NULL, FK → companies.id ON DELETE CASCADE |
+| `created_at` | TEXT | NOT NULL DEFAULT (datetime('now')) |
+| UNIQUE (`tender_id`, `company_id`) |  |  |
+
+Indexes:
+- `tender_invited_companies_tender_company_unique_idx` (UNIQUE) on (`tender_id`, `company_id`)
+- `tender_invited_companies_company_id_idx` on `company_id` — "which invited tenders can this company see?"
+- `tender_invited_companies_tender_id_idx` on `tender_id` — "who's invited to this tender?"
+
+Added by migration `0018_thick_lightspeed.sql` (additive) alongside
+`tenders.visibility`.
 
 ---
 

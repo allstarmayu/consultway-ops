@@ -107,9 +107,10 @@ documented answer. When in doubt: **deny**.
 | Operation | Admin | Staff | Company User | Notes |
 |---|---|---|---|---|
 | List all tenders (all statuses) | ✅ | ✅ | ❌ | |
-| List published tenders | ✅ | ✅ | ✅ | Company users only see `published` |
-| Read any tender | ✅ | ✅ | 🟡 | Company users only see `published` |
+| List published tenders | ✅ | ✅ | ✅ | Company users see published **open** tenders + **invited** tenders they're on the allowlist for (∪ own drafts as publisher) |
+| Read any tender | ✅ | ✅ | 🟡 | Company users: published open tenders, or invited tenders they're invited to — otherwise "not found" (no existence leak) |
 | Create tender (as `draft`) | ✅ | ✅ | ❌ | |
+| Set tender audience (open / invite-only + invite list) | ✅ | ✅ | ❌ | `visibility` + invite list editable only while `draft`; frozen at publish. Invite-only requires ≥1 invitee before publishing |
 | Update tender | ✅ | ✅ | ❌ | Cannot edit after `published` except `closes_at` |
 | Publish tender | ✅ | ✅ | ❌ | |
 | Close tender | ✅ | ✅ | ❌ | |
@@ -124,7 +125,7 @@ documented answer. When in doubt: **deny**.
 | List own applications | ✅ | ✅ | ✅ | Company user: scoped to own company |
 | Read any application | ✅ | ✅ | ❌ | |
 | Read own application | ✅ | ✅ | ✅ | |
-| Submit application | ❌ | ❌ | ✅ | Only company users. Must be eligible + tender must be `published` + not past `closes_at` |
+| Submit application | ❌ | ❌ | ✅ | Only company users. Tender must be `published` + not past `closes_at`. **Open** tender: must meet the eligibility filters. **Invite-only** tender: must be on the invite list (eligibility filters don't apply) |
 | Withdraw own application | ❌ | ❌ | 🟡 | Only while status is `submitted` |
 | Decide application (shortlist/reject/award) | ✅ | ✅ | ❌ | |
 | Delete application | ✅ | ❌ | ❌ | |

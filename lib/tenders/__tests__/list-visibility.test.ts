@@ -55,6 +55,7 @@ import { db } from "@/lib/db";
 import {
   companies,
   tenders,
+  tenderInvitedCompanies,
   users,
   auditLog,
   type UserRole,
@@ -567,5 +568,90 @@ describe("listTendersForExport — perPage cap", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.field).toBe("perPage");
+  });
+});
+
+// ── Invited-visibility tenders ────────────────────────────────────────────
+
+/**
+ * Insert a published `invited`-visibility tender and link its allowlist.
+ * Created in-test (not in the shared fixture) so the count-based tests above
+ * stay deterministic. Cleaned by `clearFixture` via the publisher delete.
+ */
+async function insertInvitedTender(
+  publisherCompanyId: string,
+  invitedCompanyIds: string[],
+): Promise<string> {
+  const id = newId();
+  await db.insert(tenders).values({
+    id,
+    title: `Invited tender ${id.slice(0, 8)}`,
+    description: "Invited-visibility tender",
+    status: "published",
+    visibility: "invited",
+    publisherCompanyId,
+    sector: "Infrastructure",
+    geography: "Maharashtra",
+    publishedAt: new Date().toISOString(),
+  });
+  for (const companyId of invitedCompanyIds) {
+    await db
+      .insert(tenderInvitedCompanies)
+      .values({ id: newId(), tenderId: id, companyId });
+  }
+  return id;
+}
+
+describe("listTenders visibility - invited tenders", () => {
+  it("shows an invited tender to a company on the list, hides it from one that isn't", async () => {
+    const tenderId = await insertInvitedTender(fixture.publisherCompanyId, [
+      fixture.companyAId,
+    ]);
+
+    loginAs("companyA", fixture);
+    const aResult = await listTenders({ perPage: 100 });
+    expect(aResult.ok).toBe(true);
+    if (!aResult.ok) return;
+    expect(new Set(aResult.rows.map((r) => r.id)).has(tenderId)).toBe(true);
+
+    loginAs("companyB", fixture);
+    const bResult = await listTenders({ perPage: 100 });
+    expect(bResult.ok).toBe(true);
+    if (!bResult.ok) return;
+    expect(new Set(bResult.rows.map((r) => r.id)).has(tenderId)).toBe(false);
+  });
+
+  it("shows the publisher its own invited tender even when not on the invite list", async () => {
+    // companyA publishes an invited tender inviting only companyB.
+    const tenderId = await insertInvitedTender(fixture.companyAId, [
+      fixture.companyBId,
+    ]);
+    loginAs("companyA", fixture);
+    const result = await listTenders({ perPage: 100 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(new Set(result.rows.map((r) => r.id)).has(tenderId)).toBe(true);
+  });
+
+  it("shows invited tenders to admin regardless of the allowlist", async () => {
+    const tenderId = await insertInvitedTender(fixture.publisherCompanyId, [
+      fixture.companyAId,
+    ]);
+    loginAs("admin", fixture);
+    const result = await listTenders({ perPage: 100 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(new Set(result.rows.map((r) => r.id)).has(tenderId)).toBe(true);
+  });
+
+  it("filters an invited tender out of the status=published list for a non-invited company", async () => {
+    const tenderId = await insertInvitedTender(fixture.publisherCompanyId, [
+      fixture.companyAId,
+    ]);
+    loginAs("companyB", fixture);
+    const result = await listTenders({ status: "published", perPage: 100 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(new Set(result.rows.map((r) => r.id)).has(tenderId)).toBe(false);
   });
 });

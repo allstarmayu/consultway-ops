@@ -42,6 +42,7 @@ import { and, eq } from "drizzle-orm";
 import {
   getTender,
   listApplicationsForTender,
+  listTenderInvitedCompanies,
 } from "@/lib/tenders/actions";
 import { projectExistsByTenderId } from "@/lib/projects/actions";
 import { readSession } from "@/lib/auth/session";
@@ -54,6 +55,7 @@ import { EntityHistory } from "@/components/audit/entity-history";
 import { EntityHistoryLoading } from "@/components/audit/entity-history-loading";
 import { TenderHeader } from "./_components/tender-header";
 import { TenderOverview } from "./_components/tender-overview";
+import { TenderAudienceCard } from "./_components/tender-audience-card";
 import { ApplicationsTable } from "./_components/applications-table";
 import { ApplyButton } from "./_components/apply-button";
 import { TenderToProjectBridge } from "./_components/tender-to-project-bridge";
@@ -136,6 +138,16 @@ export default async function TenderDetailPage({
   const canDelete = session.role === "admin";
   const isCompanyRole = session.role === "company";
   const hasApplications = applications.length > 0;
+
+  // Audience roster — for managers (admin/staff) on an invited tender, the
+  // invite list to display. Empty for open tenders or company viewers (the
+  // roster is staff-facing; `listTenderInvitedCompanies` refuses a company
+  // caller anyway).
+  let invitedCompanies: { id: string; name: string }[] = [];
+  if (tender.visibility === "invited" && canManage) {
+    const invitedResult = await listTenderInvitedCompanies(tender.id);
+    if (invitedResult.ok) invitedCompanies = invitedResult.companies;
+  }
   // Day 14: candidate pool for the awardee picker. Derived from the
   // applications already loaded above — no extra DB roundtrip.
   const shortlistedApplicants = applications
@@ -264,6 +276,18 @@ export default async function TenderDetailPage({
         publisher={publisherRow}
         showInternalNotes={canManage}
       />
+
+      {/* Audience — shown to managers always, and to company viewers only
+          when the tender is invite-only (so an invited company sees the
+          "you've been invited" note). Hidden from company viewers on open
+          tenders, where it adds nothing. */}
+      {(canManage || tender.visibility === "invited") && (
+        <TenderAudienceCard
+          visibility={tender.visibility}
+          invitedCompanies={invitedCompanies}
+          canManage={canManage}
+        />
+      )}
 
       {/* Applications section */}
       <Card className="mt-4 overflow-hidden p-0">

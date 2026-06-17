@@ -606,6 +606,8 @@ If volume grows, add an FTS5 virtual table in Phase 3.
 
 🎯 Companies see only tenders they're eligible for, or see all with "not eligible" badges.
 
+> **Implemented decision (open tenders):** the "see all + 'not eligible' badges" option — every company sees published **open** tenders; the eligibility filters gate who can *apply* (advisory badges + disabled Apply for ineligible companies). **Update (invite-only tenders):** a per-tender invite-only mode was later added — an invite-only tender is visible and applyable **only** to its hand-picked allowlist of companies, and bypasses the eligibility filters. See `lib/tenders/actions.ts` (`listTenders` / `getTender` / `applyToTender` visibility gates) and `tenders.visibility` + the `tender_invited_companies` table.
+
 📦 Deliverables:
 - Eligibility evaluator `src/lib/tenders/eligibility.ts` — pure function that
   takes a `Company` + `Tender.eligibilityRules` and returns

@@ -153,6 +153,7 @@ export type TenderEditableField =
   | "referenceNumber"
   | "sector"
   | "geography"
+  | "visibility"
   | "eligibleSector"
   | "eligibleGeography"
   | "minAnnualTurnoverInr"
@@ -171,6 +172,7 @@ const ALL_EDITABLE_FIELDS: readonly TenderEditableField[] = [
   "referenceNumber",
   "sector",
   "geography",
+  "visibility",
   "eligibleSector",
   "eligibleGeography",
   "minAnnualTurnoverInr",
@@ -192,6 +194,16 @@ const ELIGIBILITY_FIELDS: ReadonlySet<TenderEditableField> = new Set<TenderEdita
 ]);
 
 /**
+ * Fields frozen once a tender is published: the eligibility filters plus
+ * the audience (`visibility`, and by extension its invite list). Changing
+ * any of these after publish would move the goalposts on a live tender —
+ * companies that applied (or were invited) under one set of rules would
+ * suddenly face a different one. Force a fresh draft instead.
+ */
+const PUBLISH_LOCKED_FIELDS: ReadonlySet<TenderEditableField> =
+  new Set<TenderEditableField>([...ELIGIBILITY_FIELDS, "visibility"]);
+
+/**
  * Returns the set of fields that may be edited on a row in the given
  * status. Always returns a Set so the caller can do
  * `editable.has(fieldName)` in a tight loop without allocating.
@@ -204,9 +216,10 @@ export function getEditableFieldsForStatus(
       return new Set(ALL_EDITABLE_FIELDS);
 
     case "published":
-      // Everything except the four locked eligibility fields.
+      // Everything except the fields frozen at publish (eligibility +
+      // audience).
       return new Set(
-        ALL_EDITABLE_FIELDS.filter((f) => !ELIGIBILITY_FIELDS.has(f)),
+        ALL_EDITABLE_FIELDS.filter((f) => !PUBLISH_LOCKED_FIELDS.has(f)),
       );
 
     case "closed":

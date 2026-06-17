@@ -47,7 +47,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { useForm, Controller } from "react-hook-form";
+import { useForm, Controller, useWatch } from "react-hook-form";
 import {
   AlertCircle,
   ChevronDown,
@@ -80,6 +80,10 @@ import { FormSection } from "@/components/forms/form-section";
 import { FormField } from "@/components/forms/form-field";
 import { StickyActionBar } from "@/components/forms/sticky-action-bar";
 import { useUnsavedChangesGuard } from "@/components/forms/use-unsaved-changes-guard";
+import {
+  CompanyMultiSelect,
+  type CompanyMultiSelectOption,
+} from "@/components/tenders/company-multi-select";
 
 // ── Props ─────────────────────────────────────────────────────────────────
 
@@ -109,10 +113,23 @@ export interface TenderFormProps {
   publisherOptions: PublisherOption[];
 
   /**
+   * Companies that may be invited to an `invited`-visibility tender (id +
+   * name). Parent page fetches this — typically every company except the
+   * Consultway sentinel. Powers the audience multi-select.
+   */
+  selectableCompanies: CompanyMultiSelectOption[];
+
+  /**
    * When present, the form is in EDIT mode and pre-populated with these
    * values. When absent, the form is in CREATE mode.
    */
   initialValues?: Tender;
+
+  /**
+   * EDIT mode only — the tender's current invited-company ids, used to
+   * pre-select the audience multi-select. Empty / omitted for open tenders.
+   */
+  initialInvitedCompanyIds?: string[];
 }
 
 // ── Default values ────────────────────────────────────────────────────────
@@ -133,6 +150,8 @@ const CREATE_DEFAULTS: CreateTenderInput = {
   publisherCompanyId: undefined,
   sector: "",
   geography: "",
+  visibility: "open",
+  invitedCompanyIds: [],
   eligibleSector: null,
   eligibleGeography: null,
   minAnnualTurnoverInr: null,
@@ -152,7 +171,10 @@ const CREATE_DEFAULTS: CreateTenderInput = {
  * (publish / unpublish / close / award). Burying status in the edit
  * form would let staff trip the state machine accidentally.
  */
-function buildEditDefaults(tender: Tender): CreateTenderInput {
+function buildEditDefaults(
+  tender: Tender,
+  invitedCompanyIds: string[],
+): CreateTenderInput {
   return {
     title: tender.title,
     description: tender.description,
@@ -163,6 +185,8 @@ function buildEditDefaults(tender: Tender): CreateTenderInput {
     publisherCompanyId: tender.publisherCompanyId,
     sector: tender.sector,
     geography: tender.geography,
+    visibility: tender.visibility,
+    invitedCompanyIds,
     eligibleSector: tender.eligibleSector,
     eligibleGeography: tender.eligibleGeography,
     minAnnualTurnoverInr: tender.minAnnualTurnoverInr,
@@ -177,7 +201,9 @@ function buildEditDefaults(tender: Tender): CreateTenderInput {
 
 export function TenderForm({
   publisherOptions,
+  selectableCompanies,
   initialValues,
+  initialInvitedCompanyIds = [],
 }: TenderFormProps) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
@@ -239,13 +265,20 @@ export function TenderForm({
       return { values: {}, errors: errs };
     },
     defaultValues: isEditMode
-      ? buildEditDefaults(initialValues)
+      ? buildEditDefaults(initialValues, initialInvitedCompanyIds)
       : CREATE_DEFAULTS,
     mode: "onBlur",
   });
 
   // Block tab close / refresh when form is dirty.
   useUnsavedChangesGuard(isDirty && !isSubmitting && !isPending);
+
+  // Drives the audience UI: an invite-only tender shows the company
+  // multi-select and hides the eligibility filters (the allowlist replaces
+  // them). `useWatch` subscribes to the toggle so the form re-renders when
+  // it flips (compiler-friendly, unlike the bare `watch()`).
+  const isInvited = useWatch({ control, name: "visibility" }) === "invited";
+  const audienceLocked = !isFieldEditable("visibility");
 
   // ── Submit handler ───────────────────────────────────────────────────
   function onSubmit(data: CreateTenderInput) {
@@ -408,7 +441,67 @@ export function TenderForm({
         </FormField>
       </FormSection>
 
-      {/* Section 3: Eligibility filters ────────────────────────────── */}
+      {/* Section 3: Audience ───────────────────────────────────────── */}
+      <FormSection
+        title="Audience"
+        description="Who can see and apply to this tender."
+        layout="stack"
+      >
+        <FormField
+          name="visibility"
+          label="Invite-only tender"
+          description="When on, only the companies you select can see and apply — eligibility filters don't apply. When off, the tender is open to every company and the eligibility filters below gate who may apply."
+          error={errors.visibility?.message}
+        >
+          <Controller
+            name="visibility"
+            control={control}
+            render={({ field }) => (
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="visibility"
+                  checked={field.value === "invited"}
+                  onCheckedChange={(checked) =>
+                    field.onChange(checked ? "invited" : "open")
+                  }
+                  disabled={submitDisabled || audienceLocked}
+                />
+                <span className="text-sm text-muted-foreground">
+                  {field.value === "invited"
+                    ? "Invite-only — selected companies"
+                    : "Open to all eligible companies"}
+                </span>
+              </div>
+            )}
+          />
+        </FormField>
+
+        {isInvited && (
+          <FormField
+            name="invitedCompanyIds"
+            label="Invited companies"
+            description="Pick the companies allowed to see and apply. Add at least one before publishing."
+            error={errors.invitedCompanyIds?.message}
+          >
+            <Controller
+              name="invitedCompanyIds"
+              control={control}
+              render={({ field }) => (
+                <CompanyMultiSelect
+                  id="invitedCompanyIds"
+                  options={selectableCompanies}
+                  value={field.value ?? []}
+                  onChange={field.onChange}
+                  disabled={submitDisabled || audienceLocked}
+                />
+              )}
+            />
+          </FormField>
+        )}
+      </FormSection>
+
+      {/* Section 4: Eligibility filters — open tenders only ─────────── */}
+      {!isInvited && (
       <FormSection
         title="Eligibility filters"
         description="Constraints that applying companies must meet. Leave blank for no restriction. Locked once the tender is published."
@@ -529,8 +622,9 @@ export function TenderForm({
           />
         </FormField>
       </FormSection>
+      )}
 
-      {/* Section 4: Dates ──────────────────────────────────────────── */}
+      {/* Section 5: Dates ──────────────────────────────────────────── */}
       <FormSection
         title="Application window"
         description="Optional. Leave blank for open-ended tenders."

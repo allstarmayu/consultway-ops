@@ -94,6 +94,13 @@ export const tenderApplicationStatusSchema = z.enum([
   "rejected",
 ]);
 
+/**
+ * Mirrors the `TenderVisibility` union from the DB schema. `open` = visible to
+ * all companies (eligibility filters gate application); `invited` = visible +
+ * applyable only to the hand-picked allowlist. Same manual-sync rule as above.
+ */
+export const tenderVisibilitySchema = z.enum(["open", "invited"]);
+
 // ── Create tender ─────────────────────────────────────────────────────────
 
 /**
@@ -154,6 +161,21 @@ export const createTenderSchema = z
       .trim()
       .min(2, "Geography is required")
       .max(100, "Geography must be 100 characters or fewer"),
+
+    // ── Audience ───────────────────────────────────────────────────────
+    /**
+     * `open` (default) or `invited`. On an `invited` tender the action
+     * nulls the eligibility filters below (the allowlist replaces them).
+     */
+    visibility: tenderVisibilitySchema.default("open"),
+
+    /**
+     * Companies invited to an `invited`-visibility tender. Ignored when
+     * `visibility` is `open`. May be empty at create — a draft can gather
+     * invitees before publish, and `publishTender` refuses an invited
+     * tender with no invitees.
+     */
+    invitedCompanyIds: z.array(uuidSchema).max(1000).optional(),
 
     // ── Eligibility filters ────────────────────────────────────────────
     eligibleSector: z
@@ -265,6 +287,8 @@ export const updateTenderSchema = z
       .nullable(),
     sector: z.string().trim().min(2).max(100).optional(),
     geography: z.string().trim().min(2).max(100).optional(),
+    visibility: tenderVisibilitySchema.optional(),
+    invitedCompanyIds: z.array(uuidSchema).max(1000).optional(),
     eligibleSector: z
       .string()
       .trim()

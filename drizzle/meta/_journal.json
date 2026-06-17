@@ -127,6 +127,13 @@
       "when": 1781548212916,
       "tag": "0017_sleepy_felicia_hardy",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1781679615511,
+      "tag": "0018_thick_lightspeed",
+      "breakpoints": true
     }
   ]
 }

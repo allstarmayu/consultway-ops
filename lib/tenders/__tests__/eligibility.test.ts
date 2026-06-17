@@ -39,6 +39,7 @@ import {
   companies,
   tenders,
   tenderApplications,
+  tenderInvitedCompanies,
   users,
   auditLog,
   type UserRole,
@@ -483,5 +484,47 @@ describe("applyToTender — auth gates", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/company users/i);
+  });
+});
+
+// ── Invited tenders ───────────────────────────────────────────────────────
+
+async function inviteCompany(
+  tenderId: string,
+  companyId: string,
+): Promise<void> {
+  await db
+    .insert(tenderInvitedCompanies)
+    .values({ id: newId(), tenderId, companyId });
+}
+
+describe("applyToTender — invited tenders", () => {
+  it("refuses a company that is not on the invite list", async () => {
+    loginAsCompany(fixture.companyUserBId, fixture.companyBId);
+    const tenderId = await insertTender(fixture, "published", {
+      visibility: "invited",
+    });
+    await inviteCompany(tenderId, fixture.companyAId); // A invited, not B
+    const result = await applyToTender({ tenderId });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/invite list/i);
+  });
+
+  it("allows an invited company and bypasses the eligibility filters", async () => {
+    // companyB is Civil Works / Karnataka / non-MSME / ₹20cr — it would fail
+    // every one of these eligibility gates on an OPEN tender. On an invited
+    // tender the allowlist is the sole gate, so the application still lands.
+    loginAsCompany(fixture.companyUserBId, fixture.companyBId);
+    const tenderId = await insertTender(fixture, "published", {
+      visibility: "invited",
+      eligibleSector: "Infrastructure",
+      eligibleGeography: "Maharashtra",
+      msmeOnly: true,
+      minAnnualTurnoverInr: 1_000_000_000, // ₹100cr
+    });
+    await inviteCompany(tenderId, fixture.companyBId);
+    const result = await applyToTender({ tenderId });
+    expect(result.ok).toBe(true);
   });
 });

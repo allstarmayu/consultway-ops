@@ -457,7 +457,8 @@ Response 200:
 ### `GET /api/tenders?status=&sector=&eligibility=`
 
 - Admin/Staff: sees all (including drafts they created)
-- Company user: sees only `published` tenders; `eligibility=eligible` filters further
+- Company user: sees published **open** tenders + **invite-only** tenders they're on the allowlist for (∪ own drafts as publisher). Invite-only tenders they aren't invited to are not returned (treated as not-found, no existence leak).
+- Note: there is no `eligibility=eligible` server-side list filter — eligibility is surfaced as advisory badges + a disabled Apply button in the UI, not a query param.
 
 ### `GET /api/tenders/:id`
 
@@ -480,10 +481,20 @@ Admin/Staff only. Creates a `draft` tender.
 
 ### Server Action: `publishTenderAction(tenderId)`
 
-Admin/Staff only. Sets `status = 'published'`, `published_at = now()`.
+Admin/Staff only. Sets `status = 'published'`, `published_at = now()`. An
+invite-only tender is refused if it has no invitees.
 
 Side effects:
-- For each eligible company, creates notification + emails POC
+- **Open** tender: notifies eligible, compliant companies' users (+ emails POC).
+- **Invite-only** tender: notifies exactly the invited companies' users.
+
+> **Audience model.** Each tender carries `visibility` (`open` | `invited`).
+> `open` tenders are visible to all companies and gated on apply by the
+> eligibility filters; `invited` tenders are visible/applyable only to the
+> companies in `tender_invited_companies` (the allowlist replaces the
+> eligibility filters). The invite list is set via `createTender` /
+> `updateTender` (`visibility` + `invitedCompanyIds`, draft-only) and read for
+> the management UI via `listTenderInvitedCompanies(tenderId)` (admin/staff).
 
 ### Server Action: `closeTenderAction(tenderId)`
 
@@ -574,7 +585,7 @@ event — the union has no unwired members):
 | `company_registered` | `registerCompanyInternal` (public self-registration) | active admins |
 | `application_shortlisted` / `application_rejected` | `updateApplicationStatusInternal` | the applicant company's users |
 | `application_awarded` | `markAwarded` | the awarded company's users |
-| `tender_published` | `transitionTenderStatus` (draft → published only) | eligible compliant companies' users |
+| `tender_published` | `transitionTenderStatus` (draft → published only) | **open** tender: eligible compliant companies' users · **invite-only** tender: the invited companies' users |
 | `document_expiring` | the expiry-sweep cron (`runExpirySweep`) | the company's users — shares the email's `reminders_sent` dedup |
 
 There is no `user_invited` notification: an invited user can't sign in to see

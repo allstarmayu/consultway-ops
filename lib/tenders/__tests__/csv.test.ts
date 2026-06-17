@@ -32,6 +32,7 @@ function makeTender(overrides: Partial<Tender> = {}): Tender {
     publisherCompanyId: "publisher-1",
     sector: "Infrastructure",
     geography: "Maharashtra",
+    visibility: "open",
     eligibleSector: null,
     eligibleGeography: null,
     minAnnualTurnoverInr: null,

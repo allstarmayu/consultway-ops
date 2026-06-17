@@ -354,6 +354,24 @@ export type Company = typeof companies.$inferSelect;
 export type TenderStatus = "draft" | "published" | "closed" | "awarded";
 
 /**
+ * Tender audience model. Governs who can SEE and APPLY to a published tender.
+ *
+ *   - `open`    - visible to every company once published. The eligibility
+ *                 filters (`eligibleSector` / `eligibleGeography` / `msmeOnly`
+ *                 / `minAnnualTurnoverInr`) gate who may *apply*.
+ *   - `invited` - a private tender: visible and applyable ONLY to the
+ *                 companies explicitly listed in `tender_invited_companies`
+ *                 (plus the publisher + admin/staff). The invite list — NOT
+ *                 the eligibility filters — is the sole gate, on both
+ *                 visibility and application.
+ *
+ * Default `open`, so pre-existing tenders and the default create flow are
+ * unchanged. Validated app-side via Zod + TypeScript union (SQLite has no
+ * native enums).
+ */
+export type TenderVisibility = "open" | "invited";
+
+/**
  * Per-application lifecycle. One row per (tenderId, companyId) pair -
  * a company applies once. Status transitions are managed by staff on
  * the tender detail page.
@@ -460,6 +478,18 @@ export const tenders = sqliteTable(
      * filter and metadata.
      */
     geography: text("geography").notNull(),
+
+    /**
+     * Audience model. See `TenderVisibility`. `open` (default) = visible to
+     * all companies on publish, eligibility filters gate application.
+     * `invited` = visible + applyable ONLY to companies in
+     * `tender_invited_companies`. Defaulting to `open` keeps existing rows
+     * and the default create flow unchanged.
+     */
+    visibility: text("visibility")
+      .notNull()
+      .$type<TenderVisibility>()
+      .default("open"),
 
     // -- Eligibility filters ---------------------------------------------
     /**
@@ -695,6 +725,72 @@ export type NewTenderApplication = typeof tenderApplications.$inferInsert;
 
 /** Inferred select type - what a row looks like when read from the DB. */
 export type TenderApplication = typeof tenderApplications.$inferSelect;
+
+// -- tender_invited_companies -----------------------------------------------
+/**
+ * Allowlist backing `invited`-visibility tenders. One row per company invited
+ * to a given tender. For a tender with `visibility = 'invited'`, ONLY the
+ * companies listed here (plus the publisher + admin/staff) may see or apply to
+ * it — the eligibility filters are bypassed. `open` tenders have no rows here.
+ *
+ * Modelled as a junction table (not a JSON column on `tenders`) for the same
+ * reasons as `tender_applications`: indexed reverse lookups ("which invited
+ * tenders can Acme see?") and a composite-unique that prevents duplicate
+ * invites at the DB level.
+ *
+ * Cascade semantics mirror `tender_applications`:
+ *   - Tender deleted  -> invite rows deleted (ON DELETE CASCADE). Only drafts
+ *     are deletable, so this only ever drops not-yet-public invites.
+ *   - Company deleted -> invite rows deleted (ON DELETE CASCADE). An invite
+ *     pointing at a non-existent company is dead data.
+ */
+export const tenderInvitedCompanies = sqliteTable(
+  "tender_invited_companies",
+  {
+    /** UUID v7. Generated app-side via `newId()`. */
+    id: text("id").primaryKey().$defaultFn(newId),
+
+    /** FK to the tender. Cascades on tender delete. */
+    tenderId: text("tender_id")
+      .notNull()
+      .references(() => tenders.id, {
+        onDelete: "cascade",
+        onUpdate: "no action",
+      }),
+
+    /** FK to the invited company. Cascades on company delete. */
+    companyId: text("company_id")
+      .notNull()
+      .references(() => companies.id, {
+        onDelete: "cascade",
+        onUpdate: "no action",
+      }),
+
+    /** ISO-8601 UTC. Set by SQLite default on insert (i.e. invite time). */
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    // One invite per (tender, company) pair — DB-level dedup, no race window.
+    uniqueIndex("tender_invited_companies_tender_company_unique_idx").on(
+      table.tenderId,
+      table.companyId,
+    ),
+    // "Which tenders is this company invited to?" — company-side visibility.
+    index("tender_invited_companies_company_id_idx").on(table.companyId),
+    // "Who is invited to this tender?" — detail page + edit prefill.
+    index("tender_invited_companies_tender_id_idx").on(table.tenderId),
+  ],
+);
+
+/** Inferred insert type. */
+export type NewTenderInvitedCompany =
+  typeof tenderInvitedCompanies.$inferInsert;
+
+/** Inferred select type. */
+export type TenderInvitedCompany =
+  typeof tenderInvitedCompanies.$inferSelect;
 
 // -- audit_log --------------------------------------------------------------
 /**

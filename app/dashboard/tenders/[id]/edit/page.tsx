@@ -29,7 +29,10 @@ import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { asc } from "drizzle-orm";
-import { getTender } from "@/lib/tenders/actions";
+import {
+  getTender,
+  listTenderInvitedCompanies,
+} from "@/lib/tenders/actions";
 import { readSession } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { companies } from "@/lib/db/schema";
@@ -74,6 +77,13 @@ export default async function EditTenderPage({
   }
   const tender = result.tender;
 
+  // Pre-select the current invite list for invited tenders (admin/staff
+  // scope; empty for open tenders). Degrades to no pre-selection on error.
+  const invitedResult = await listTenderInvitedCompanies(id);
+  const initialInvitedCompanyIds = invitedResult.ok
+    ? invitedResult.companies.map((c) => c.id)
+    : [];
+
   // 3. Publisher options list — same shape as the create page. In edit
   //    mode the form doesn't display this section, but the prop is
   //    required by the form's interface. We could pass `[]` and skip
@@ -113,7 +123,9 @@ export default async function EditTenderPage({
       <Card className="overflow-visible p-6 sm:p-8">
         <TenderForm
           publisherOptions={publisherOptions}
+          selectableCompanies={rest}
           initialValues={tender}
+          initialInvitedCompanyIds={initialInvitedCompanyIds}
         />
       </Card>
     </>
