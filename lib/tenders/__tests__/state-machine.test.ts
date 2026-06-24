@@ -604,6 +604,113 @@ describe("markAwarded", () => {
     expect(bNotifs).toHaveLength(0);
   });
 
+  it("notifies the other shortlisted applicants they were not selected (application_not_selected)", async () => {
+    loginAs("admin", fixture);
+    const tenderId = await insertTenderInStatus(fixture, "closed");
+    // Two finalists: A wins, B is the shortlisted runner-up.
+    await insertShortlistedApplication(tenderId, fixture.companyAId);
+    await insertShortlistedApplication(tenderId, fixture.companyBId);
+
+    const result = await markAwarded({
+      tenderId,
+      awardedCompanyId: fixture.companyAId,
+    });
+    expect(result.ok).toBe(true);
+
+    // The winner gets exactly the award notification — never a "not selected".
+    const aNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserAId));
+    expect(aNotifs).toHaveLength(1);
+    expect(aNotifs[0]?.type).toBe("application_awarded");
+
+    // The runner-up gets exactly the "not selected" notification.
+    const bNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserBId));
+    expect(bNotifs).toHaveLength(1);
+    expect(bNotifs[0]?.type).toBe("application_not_selected");
+    expect(bNotifs[0]?.link).toBe(`/dashboard/tenders/${tenderId}`);
+    expect(bNotifs[0]?.readAt).toBeNull();
+  });
+
+  it("notifies a still-submitted (never-shortlisted) applicant on award", async () => {
+    loginAs("admin", fixture);
+    const tenderId = await insertTenderInStatus(fixture, "closed");
+    await insertShortlistedApplication(tenderId, fixture.companyAId);
+    // B's bid is live but was never shortlisted — still counts as a loser.
+    await db.insert(tenderApplications).values({
+      id: newId(),
+      tenderId,
+      companyId: fixture.companyBId,
+      status: "submitted",
+    });
+
+    const result = await markAwarded({
+      tenderId,
+      awardedCompanyId: fixture.companyAId,
+    });
+    expect(result.ok).toBe(true);
+
+    const bNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserBId));
+    expect(bNotifs).toHaveLength(1);
+    expect(bNotifs[0]?.type).toBe("application_not_selected");
+  });
+
+  it("does NOT notify a withdrawn applicant on award (they opted out)", async () => {
+    loginAs("admin", fixture);
+    const tenderId = await insertTenderInStatus(fixture, "closed");
+    await insertShortlistedApplication(tenderId, fixture.companyAId);
+    await db.insert(tenderApplications).values({
+      id: newId(),
+      tenderId,
+      companyId: fixture.companyBId,
+      status: "withdrawn",
+    });
+
+    const result = await markAwarded({
+      tenderId,
+      awardedCompanyId: fixture.companyAId,
+    });
+    expect(result.ok).toBe(true);
+
+    const bNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserBId));
+    expect(bNotifs).toHaveLength(0);
+  });
+
+  it("does NOT notify an already-rejected applicant on award (told at rejection)", async () => {
+    loginAs("admin", fixture);
+    const tenderId = await insertTenderInStatus(fixture, "closed");
+    await insertShortlistedApplication(tenderId, fixture.companyAId);
+    await db.insert(tenderApplications).values({
+      id: newId(),
+      tenderId,
+      companyId: fixture.companyBId,
+      status: "rejected",
+      decidedAt: new Date().toISOString(),
+    });
+
+    const result = await markAwarded({
+      tenderId,
+      awardedCompanyId: fixture.companyAId,
+    });
+    expect(result.ok).toBe(true);
+
+    const bNotifs = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, fixture.companyUserBId));
+    expect(bNotifs).toHaveLength(0);
+  });
+
   it("refuses awarding a draft tender (status gate fires before app lookup)", async () => {
     loginAs("admin", fixture);
     const tenderId = await insertTenderInStatus(fixture, "draft");

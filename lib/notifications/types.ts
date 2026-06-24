@@ -11,6 +11,8 @@
  *   company's compliance status changed (→ that company's users).
  * - `application_shortlisted` / `application_rejected` / `application_awarded`
  *   — a tender application decision (→ the applicant company's users).
+ * - `application_not_selected` — a tender was awarded to another bidder; the
+ *   other live applicants (→ each non-winning applicant company's users).
  * - `document_expiring` — a document is approaching expiry (→ the company).
  * - `tender_published` — a new tender the recipient is eligible for.
  * - `company_registered` — a new company self-registered (→ admins).
@@ -26,6 +28,7 @@ export type NotificationType =
   | "application_shortlisted"
   | "application_rejected"
   | "application_awarded"
+  | "application_not_selected"
   | "document_expiring"
   | "tender_published"
   | "company_registered";

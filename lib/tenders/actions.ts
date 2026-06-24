@@ -1145,6 +1145,45 @@ export async function markAwarded(rawInput: unknown): Promise<ActionResult> {
     },
   );
 
+  // Day 36: the other live applicants lost. Notify each ACTIVE non-winning
+  // applicant's users that the tender went elsewhere, so they stop waiting
+  // on a decision. "Active" = `submitted` or `shortlisted`; withdrawn
+  // applicants opted out and already-rejected ones were told at rejection
+  // time, so both are excluded. We only notify — the application status is
+  // deliberately left untouched (auto-rejecting here would fight
+  // `retractAward`, which moves the tender back to `closed`). Fail-soft,
+  // same contract as the winner notification above.
+  const losingCompanies = await db
+    .select({ companyId: tenderApplications.companyId })
+    .from(tenderApplications)
+    .where(
+      and(
+        eq(tenderApplications.tenderId, input.tenderId),
+        ne(tenderApplications.companyId, input.awardedCompanyId),
+        inArray(tenderApplications.status, ["submitted", "shortlisted"]),
+      ),
+    );
+  if (losingCompanies.length > 0) {
+    const losingRecipients = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(
+        inArray(
+          users.companyId,
+          losingCompanies.map((c) => c.companyId),
+        ),
+      );
+    await createNotificationsForUsers(
+      losingRecipients.map((r) => r.id),
+      {
+        type: "application_not_selected",
+        title: "Tender awarded to another bidder",
+        body: "This tender has been awarded to another company. Thank you for your application.",
+        link: `/dashboard/tenders/${input.tenderId}`,
+      },
+    );
+  }
+
   return result;
 }
 

@@ -584,7 +584,8 @@ event — the union has no unwired members):
 | `company_verified` / `company_rejected` / `company_suspended` | `transitionComplianceStatus` | the company's users |
 | `company_registered` | `registerCompanyInternal` (public self-registration) | active admins |
 | `application_shortlisted` / `application_rejected` | `updateApplicationStatusInternal` | the applicant company's users |
-| `application_awarded` | `markAwarded` | the awarded company's users |
+| `application_awarded` | `markAwarded` | the awarded (winning) company's users |
+| `application_not_selected` | `markAwarded` | the other live applicants' users (`submitted`/`shortlisted` only — excludes the winner, withdrawn, and already-rejected) |
 | `tender_published` | `transitionTenderStatus` (draft → published only) | **open** tender: eligible compliant companies' users · **invite-only** tender: the invited companies' users |
 | `document_expiring` | the expiry-sweep cron (`runExpirySweep`) | the company's users — shares the email's `reminders_sent` dedup |
 
