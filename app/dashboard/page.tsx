@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 
 import { readSession } from "@/lib/auth/session";
+import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/dashboard/page-header";
 import {
   getCompanyCount,
@@ -375,7 +376,9 @@ export default async function DashboardPage({
           aria-label="Transactions trend"
           className="mb-6 sm:mb-8"
         >
-          <TransactionsTrendCard months={trendMonths} type={trendType} />
+          <Suspense fallback={<TrendCardSkeleton />}>
+            <TransactionsTrendCard months={trendMonths} type={trendType} />
+          </Suspense>
         </section>
       )}
 
@@ -385,7 +388,9 @@ export default async function DashboardPage({
           aria-label="Transactions this month"
           className="mb-6 sm:mb-8"
         >
-          <MonthTransactionsSummaryCard />
+          <Suspense fallback={<MonthSummarySkeleton />}>
+            <MonthTransactionsSummaryCard />
+          </Suspense>
         </section>
       )}
 
@@ -476,4 +481,31 @@ function buildTenderItems(
     color: TENDER_STATUS_COLORS[status],
     donutLabel: status.charAt(0).toUpperCase() + status.slice(1),
   }));
+}
+
+// Suspense fallbacks for the two admin-only transaction cards. Wrapping
+// each in its own boundary lets the KPI strip + status charts paint
+// immediately while the heavier 12-month trend / month-summary
+// aggregations stream in behind these placeholders, instead of the
+// whole page blocking on them.
+function TrendCardSkeleton() {
+  return (
+    <Card className="space-y-4 p-6">
+      <div className="skeleton h-5 w-48" />
+      <div className="skeleton h-48 w-full" />
+    </Card>
+  );
+}
+
+function MonthSummarySkeleton() {
+  return (
+    <Card className="space-y-4 p-6">
+      <div className="skeleton h-5 w-48" />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="skeleton h-20 w-full" />
+        ))}
+      </div>
+    </Card>
+  );
 }
