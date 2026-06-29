@@ -92,7 +92,9 @@ export function TendersTable({
 
   return (
     <>
-      <div className="overflow-x-auto">
+      {/* Desktop: full data table. Hidden below `lg`, where 6 columns
+          would overflow a phone viewport — the card list takes over. */}
+      <div className="hidden overflow-x-auto lg:block">
         <Table>
           <TableHeader>
             <TableRow className="bg-muted/50 hover:bg-muted/50">
@@ -211,6 +213,85 @@ export function TendersTable({
           </TableBody>
         </Table>
       </div>
+
+      {/* Mobile: stacked card list (below `lg`). Same data + actions as
+          the table, laid out vertically so nothing overflows the
+          viewport. Mirrors the companies-list card pattern. */}
+      <ul className="divide-y divide-border lg:hidden">
+        {rows.map((row) => (
+          <li key={row.id} className="px-4 py-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-start gap-2">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                  <FileText
+                    className="h-4 w-4 text-muted-foreground"
+                    aria-hidden
+                  />
+                </div>
+                <div className="min-w-0">
+                  <Link
+                    href={`/dashboard/tenders/${row.id}`}
+                    className="font-medium text-foreground hover:underline"
+                  >
+                    {row.title}
+                  </Link>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {row.sector} · {row.geography}
+                    {row.referenceNumber && ` · ${row.referenceNumber}`}
+                  </p>
+                </div>
+              </div>
+
+              {/* Actions — view always; edit + delete role-gated */}
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  asChild
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`View ${row.title}`}
+                >
+                  <Link href={`/dashboard/tenders/${row.id}`}>
+                    <Eye className="h-4 w-4" />
+                  </Link>
+                </Button>
+                {canEdit && (
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Edit ${row.title}`}
+                  >
+                    <Link href={`/dashboard/tenders/${row.id}/edit`}>
+                      <Pencil className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                )}
+                {canDelete && (
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Delete ${row.title}`}
+                    className="text-muted-foreground hover:text-destructive"
+                  >
+                    <Link href={`/dashboard/tenders/${row.id}/delete`}>
+                      <Trash2 className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {/* Status + eligibility badges */}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <TenderStatusBadge status={row.status} />
+              {row.msmeOnly && (
+                <EligibilityChip label="MSME only" emphasis="strong" />
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
 
       {/* Footer with row count + pagination controls */}
       {total > 0 && (

@@ -55,17 +55,39 @@ export default function TenderDetailLoading() {
         <div className="border-b border-border bg-card p-4">
           <div className="skeleton h-5 w-40" />
         </div>
-        {Array.from({ length: 3 }).map((_, i) => (
-          <div
-            key={i}
-            className="grid grid-cols-[1fr_8rem_8rem_8rem] items-center gap-4 border-b border-border px-4 py-3 last:border-b-0"
-          >
-            <div className="skeleton h-4 w-48" />
-            <div className="skeleton h-6 w-24 rounded-full" />
-            <div className="skeleton h-4 w-24 opacity-60" />
-            <div className="skeleton h-4 w-24 opacity-60" />
-          </div>
-        ))}
+        {/* Desktop table skeleton */}
+        <div className="hidden lg:block">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div
+              key={i}
+              className="grid grid-cols-[1fr_8rem_8rem_8rem] items-center gap-4 border-b border-border px-4 py-3 last:border-b-0"
+            >
+              <div className="skeleton h-4 w-48" />
+              <div className="skeleton h-6 w-24 rounded-full" />
+              <div className="skeleton h-4 w-24 opacity-60" />
+              <div className="skeleton h-4 w-24 opacity-60" />
+            </div>
+          ))}
+        </div>
+
+        {/* Mobile card skeleton */}
+        <ul className="divide-y divide-border lg:hidden">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <li key={i} className="space-y-3 px-4 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <div className="skeleton h-8 w-8 shrink-0" />
+                  <div className="space-y-1.5">
+                    <div className="skeleton h-4 w-40" />
+                    <div className="skeleton h-3 w-28" />
+                  </div>
+                </div>
+                <div className="skeleton h-8 w-8 shrink-0" />
+              </div>
+              <div className="skeleton h-6 w-24 rounded-full" />
+            </li>
+          ))}
+        </ul>
       </Card>
     </>
   );

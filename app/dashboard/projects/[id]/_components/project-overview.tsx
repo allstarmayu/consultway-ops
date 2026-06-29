@@ -99,7 +99,7 @@ export function ProjectOverview({
       <Card className="space-y-4 p-6">
         <SectionHeading icon={Calendar} title="Schedule" />
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Start date">
             {project.startDate ? (
               <p className="select-text text-foreground">{project.startDate}</p>

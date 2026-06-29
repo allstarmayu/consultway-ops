@@ -162,7 +162,9 @@ export function ApplicationsTable({
         </div>
       )}
 
-      <div className="overflow-x-auto">
+      {/* Desktop: full data table. Hidden below `lg`, where the columns
+          would overflow a phone viewport — the card list takes over. */}
+      <div className="hidden overflow-x-auto lg:block">
         <Table>
           <TableHeader>
             <TableRow className="bg-muted/50 hover:bg-muted/50">
@@ -333,6 +335,138 @@ export function ApplicationsTable({
           </TableBody>
         </Table>
       </div>
+
+      {/* Mobile: stacked card list (below `lg`). Same data + actions as
+          the table, laid out vertically so nothing overflows the
+          viewport. Mirrors the companies-table card pattern. */}
+      <ul className="divide-y divide-border lg:hidden">
+        {rows.map((row) => {
+          const rowPending = isPending && pendingApplicationId === row.id;
+          // ── Per-row capability flags ─────────────────────────
+          // Identical gating to the desktop row:
+          // canActOnRow → Shortlist/Reject (submitted only)
+          // canReinstateRow → Reinstate (shortlisted/rejected)
+          // Withdrawn rows show no staff actions.
+          const canActOnRow =
+            canManage && row.status === "submitted" && !rowPending;
+          const canReinstateRow =
+            canManage &&
+            (row.status === "shortlisted" || row.status === "rejected") &&
+            !rowPending;
+
+          return (
+            <li key={row.id} className="px-4 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-start gap-2">
+                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                    <Building
+                      className="h-4 w-4 text-muted-foreground"
+                      aria-hidden
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <Link
+                      href={`/dashboard/companies/${row.company.id}`}
+                      className="font-medium text-foreground hover:underline"
+                    >
+                      {row.company.name}
+                    </Link>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {row.company.sector} · {row.company.geography}
+                      {row.company.isMsme && " · MSME"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Actions — identical components + gating to the table
+                    row: Shortlist/Reject on submitted, Reinstate on
+                    shortlisted/rejected, "Updating…" while pending. */}
+                {canManage && (
+                  <div className="flex shrink-0 items-center gap-1">
+                    {canActOnRow ? (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => changeStatus(row.id, "shortlisted")}
+                          aria-label={`Shortlist ${row.company.name}`}
+                          className="text-muted-foreground hover:text-primary"
+                        >
+                          <UserCheck className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => changeStatus(row.id, "rejected")}
+                          aria-label={`Reject ${row.company.name}`}
+                          className="text-muted-foreground hover:text-destructive"
+                        >
+                          <UserX className="h-4 w-4" />
+                        </Button>
+                      </>
+                    ) : canReinstateRow ? (
+                      <ConfirmDialog
+                        trigger={
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={`Reinstate ${row.company.name}'s application`}
+                            className="text-muted-foreground hover:text-primary"
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </Button>
+                        }
+                        title={`Reinstate ${row.company.name}'s application?`}
+                        description={`This moves the application from ${row.status} back to submitted. The original decision time is preserved in the audit log.`}
+                        confirmLabel="Reinstate"
+                        confirmVariant="default"
+                        reasonField="optional"
+                        reasonLabel="Reason (optional)"
+                        reasonPlaceholder="e.g. Re-reviewed eligibility documents and the application qualifies"
+                        onConfirm={(reason) => handleReinstate(row.id, reason)}
+                        pending={rowPending}
+                      />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {rowPending ? "Updating…" : ""}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Status badge prominent, plus decided timestamp */}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <ApplicationStatusBadge status={row.status} />
+                <span className="text-xs text-muted-foreground">
+                  {formatTimestamp(row.submittedAt)}
+                </span>
+                {row.decidedAt && row.status !== "submitted" && (
+                  <span className="text-xs text-muted-foreground">
+                    · Decided {formatTimestamp(row.decidedAt)}
+                  </span>
+                )}
+              </div>
+
+              {/* Cover note — selectable for copy-paste, same as desktop */}
+              {row.coverNote && (
+                <p className="mt-2 select-text text-sm text-foreground">
+                  {row.coverNote}
+                </p>
+              )}
+
+              {/* Staff-only internal notes preview — stripped to null on
+                  company-role reads by the action, so this naturally only
+                  renders for admin/staff. */}
+              {row.internalNotes && (
+                <p className="mt-1 select-text text-xs italic text-muted-foreground">
+                  Note: {row.internalNotes}
+                </p>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </>
   );
 }

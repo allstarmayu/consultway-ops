@@ -84,7 +84,9 @@ export function ProjectsTable({
 
   return (
     <>
-      <div className="overflow-x-auto">
+      {/* Desktop: full data table. Hidden below `lg`, where 7 columns
+          would overflow a phone viewport — the card list takes over. */}
+      <div className="hidden overflow-x-auto lg:block">
         <Table>
           <TableHeader>
             <TableRow className="bg-muted/50 hover:bg-muted/50">
@@ -168,6 +170,59 @@ export function ProjectsTable({
           </TableBody>
         </Table>
       </div>
+
+      {/* Mobile: stacked card list (below `lg`). Same data + actions as
+          the table, laid out vertically so nothing overflows the
+          viewport. Mirrors the companies-table card pattern. */}
+      <ul className="divide-y divide-border lg:hidden">
+        {rows.map((row) => (
+          <li key={row.id} className="px-4 py-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-start gap-2">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                  <Briefcase
+                    className="h-4 w-4 text-muted-foreground"
+                    aria-hidden
+                  />
+                </div>
+                <div className="min-w-0">
+                  <Link
+                    href={`/dashboard/projects/${row.id}`}
+                    className="font-medium text-foreground hover:underline"
+                  >
+                    {row.name}
+                  </Link>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {companyNames.get(row.companyId) ?? "—"}
+                    {(row.startDate || row.endDate) &&
+                      ` · ${row.startDate ?? "—"} → ${row.endDate ?? "—"}`}
+                    {row.tenderId && " · Linked to tender"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Actions — view only (edit is reached via the detail page) */}
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  asChild
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`View ${row.name}`}
+                >
+                  <Link href={`/dashboard/projects/${row.id}`}>
+                    <Eye className="h-4 w-4" />
+                  </Link>
+                </Button>
+              </div>
+            </div>
+
+            {/* Status badge */}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <ProjectStatusBadge status={row.status} />
+            </div>
+          </li>
+        ))}
+      </ul>
 
       {total > 0 && (
         <div className="flex flex-col items-center justify-between gap-3 border-t border-border bg-card px-4 py-3 text-sm sm:flex-row">

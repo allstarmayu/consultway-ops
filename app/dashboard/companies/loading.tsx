@@ -37,13 +37,11 @@ export default function CompaniesLoading() {
           <div className="skeleton h-9 w-44" />
         </div>
 
-        {/* Table skeleton — 6 placeholder rows */}
-        <div className="divide-y divide-border">
+        {/* Desktop table skeleton — 6 placeholder rows. Hidden below
+            `lg`, where the table is replaced by the mobile card list. */}
+        <div className="hidden divide-y divide-border lg:block">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div
-              key={i}
-              className="flex items-center gap-4 px-4 py-4"
-            >
+            <div key={i} className="flex items-center gap-4 px-4 py-4">
               <div className="skeleton h-4 w-1/4" />
               <div className="skeleton h-4 w-1/6" />
               <div className="skeleton h-4 w-1/6" />
@@ -52,6 +50,36 @@ export default function CompaniesLoading() {
             </div>
           ))}
         </div>
+
+        {/* Mobile card skeleton (below `lg`) — mirrors the companies card:
+            icon + name/meta, actions, a badge row, and the GST/PAN line. */}
+        <ul className="divide-y divide-border lg:hidden">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <li key={i} className="px-4 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <div className="skeleton h-8 w-8 shrink-0" />
+                  <div className="space-y-1.5">
+                    <div className="skeleton h-4 w-40" />
+                    <div className="skeleton h-3 w-32" />
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  <div className="skeleton h-8 w-8" />
+                  <div className="skeleton h-8 w-8" />
+                </div>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <div className="skeleton h-6 w-24 rounded-full" />
+                <div className="skeleton h-6 w-20 rounded-full" />
+              </div>
+              <div className="mt-2 flex gap-3">
+                <div className="skeleton h-3 w-28" />
+                <div className="skeleton h-3 w-24" />
+              </div>
+            </li>
+          ))}
+        </ul>
       </Card>
     </>
   );

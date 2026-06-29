@@ -39,32 +39,54 @@ export default function TransactionsLoading() {
           <div className="skeleton h-10 w-48" />
         </div>
 
-        {/* Table header — 7 columns matching transactions-table.tsx */}
-        <div className="grid grid-cols-[7rem_7rem_8rem_1fr_1fr_10rem_6rem] gap-4 border-b border-border bg-muted/50 px-4 py-3 text-xs">
-          {Array.from({ length: 7 }).map((_, i) => (
-            <div key={i} className="skeleton h-3 w-20" />
-          ))}
+        {/* Desktop table skeleton */}
+        <div className="hidden lg:block">
+          {/* Table header — 7 columns matching transactions-table.tsx */}
+          <div className="grid grid-cols-[7rem_7rem_8rem_1fr_1fr_10rem_6rem] gap-4 border-b border-border bg-muted/50 px-4 py-3 text-xs">
+            {Array.from({ length: 7 }).map((_, i) => (
+              <div key={i} className="skeleton h-3 w-20" />
+            ))}
+          </div>
+
+          {/* Six placeholder rows */}
+          <div className="divide-y divide-border">
+            {Array.from({ length: 6 }).map((_, rowIdx) => (
+              <div
+                key={rowIdx}
+                className="grid grid-cols-[7rem_7rem_8rem_1fr_1fr_10rem_6rem] items-center gap-4 px-4 py-4"
+              >
+                <div className="skeleton h-4 w-20" />
+                <div className="skeleton h-6 w-20 rounded-full" />
+                <div className="skeleton ml-auto h-4 w-24" />
+                <div className="skeleton h-4 w-3/4" />
+                <div className="skeleton h-4 w-3/4" />
+                <div className="skeleton h-4 w-28" />
+                <div className="ml-auto flex gap-1">
+                  <div className="skeleton h-8 w-8" />
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* Six placeholder rows */}
-        <div className="divide-y divide-border">
+        {/* Mobile card skeleton */}
+        <ul className="divide-y divide-border lg:hidden">
           {Array.from({ length: 6 }).map((_, rowIdx) => (
-            <div
-              key={rowIdx}
-              className="grid grid-cols-[7rem_7rem_8rem_1fr_1fr_10rem_6rem] items-center gap-4 px-4 py-4"
-            >
-              <div className="skeleton h-4 w-20" />
-              <div className="skeleton h-6 w-20 rounded-full" />
-              <div className="skeleton ml-auto h-4 w-24" />
-              <div className="skeleton h-4 w-3/4" />
-              <div className="skeleton h-4 w-3/4" />
-              <div className="skeleton h-4 w-28" />
-              <div className="ml-auto flex gap-1">
-                <div className="skeleton h-8 w-8" />
+            <li key={rowIdx} className="space-y-3 px-4 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <div className="skeleton h-8 w-8 shrink-0" />
+                  <div className="space-y-1.5">
+                    <div className="skeleton h-4 w-40" />
+                    <div className="skeleton h-3 w-28" />
+                  </div>
+                </div>
+                <div className="skeleton h-8 w-8 shrink-0" />
               </div>
-            </div>
+              <div className="skeleton h-6 w-24 rounded-full" />
+            </li>
           ))}
-        </div>
+        </ul>
       </Card>
     </>
   );

@@ -22,7 +22,7 @@
  */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { usePathname } from "next/navigation";
 import { Building2, Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -54,12 +54,16 @@ export function MobileSidebar({
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
-  // Auto-close on navigation. The first render fires this with the
-  // initial pathname, but `open` starts as false so the effect is a
-  // no-op until the user opens the sheet and then navigates.
-  useEffect(() => {
+  // Auto-close on navigation. Track the pathname the sheet was last
+  // rendered against and reset `open` during render when it changes —
+  // React's "adjusting state on a prop/route change" pattern. Covers
+  // programmatic navigations too (e.g. a redirecting form submit), and
+  // avoids a setState-in-effect cascade (react-hooks/set-state-in-effect).
+  const [lastPathname, setLastPathname] = useState(pathname);
+  if (pathname !== lastPathname) {
+    setLastPathname(pathname);
     setOpen(false);
-  }, [pathname]);
+  }
 
   return (
     <>
@@ -84,7 +88,7 @@ export function MobileSidebar({
 
           <SheetContent
             side="left"
-            className="flex w-72 flex-col bg-sidebar p-0 text-sidebar-foreground"
+            className="flex w-[min(18rem,82vw)] flex-col bg-sidebar p-0 text-sidebar-foreground"
           >
             {/* Visually-hidden title for screen readers — the brand
                 header inside `<SidebarContent>` is decorative + not

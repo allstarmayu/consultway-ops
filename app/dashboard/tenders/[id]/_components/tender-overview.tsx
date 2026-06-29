@@ -108,7 +108,7 @@ export function TenderOverview({
       <Card className="space-y-4 p-6">
         <SectionHeading icon={Tag} title="Categorisation & eligibility" />
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Sector">
             <p className="select-text text-foreground">{tender.sector}</p>
           </Field>
@@ -126,7 +126,7 @@ export function TenderOverview({
       <Card className="space-y-4 p-6">
         <SectionHeading icon={Calendar} title="Application window" />
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Opening date">
             {tender.openingDate ? (
               <p className="select-text text-foreground">{tender.openingDate}</p>

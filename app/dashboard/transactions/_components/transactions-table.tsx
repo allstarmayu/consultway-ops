@@ -71,7 +71,9 @@ export function TransactionsTable({
 
   return (
     <>
-      <div className="overflow-x-auto">
+      {/* Desktop: full data table. Hidden below `lg`, where 7 columns
+          would overflow a phone viewport — the card list takes over. */}
+      <div className="hidden overflow-x-auto lg:block">
         <Table>
           <TableHeader>
             <TableRow className="bg-muted/50 hover:bg-muted/50">
@@ -152,6 +154,64 @@ export function TransactionsTable({
           </TableBody>
         </Table>
       </div>
+
+      {/* Mobile: stacked card list (below `lg`). Same data + actions as
+          the table, laid out vertically so nothing overflows the
+          viewport. Mirrors the companies-list card pattern. */}
+      <ul className="divide-y divide-border lg:hidden">
+        {rows.map((row) => {
+          const projectName = row.projectId
+            ? projectNames.get(row.projectId) ?? null
+            : null;
+
+          return (
+            <li key={row.id} className="px-4 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  {/* Amount as the prominent figure + type badge */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-base font-semibold tabular-nums text-foreground">
+                      {formatRupeesFromPaise(row.amountPaise)}
+                    </span>
+                    <TransactionTypeBadge type={row.type} />
+                  </div>
+                  {/* Meta: company · project · date · reference */}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {companyNames.get(row.companyId) ?? "—"}
+                    {projectName && ` · ${projectName}`}
+                    {` · ${row.occurredOn}`}
+                    {row.referenceNumber && ` · ${row.referenceNumber}`}
+                  </p>
+                </div>
+
+                {/* Actions — view + edit (matches the table row) */}
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="View transaction"
+                  >
+                    <Link href={`/dashboard/transactions/${row.id}`}>
+                      <Eye className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Edit transaction"
+                  >
+                    <Link href={`/dashboard/transactions/${row.id}/edit`}>
+                      <Pencil className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
 
       {total > 0 && (
         <div className="flex flex-col items-center justify-between gap-3 border-t border-border bg-card px-4 py-3 text-sm sm:flex-row">
