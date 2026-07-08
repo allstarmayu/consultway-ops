@@ -130,7 +130,7 @@ export function ProjectsFiltersBar({ companyOptions }: ProjectsFiltersBarProps) 
       aria-busy={isPending || undefined}
     >
       {/* Search */}
-      <div className="relative min-w-[16rem] flex-1 sm:flex-none">
+      <div className="relative w-full flex-none sm:w-auto sm:min-w-[16rem]">
         <Search
           className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
           aria-hidden
@@ -160,7 +160,7 @@ export function ProjectsFiltersBar({ companyOptions }: ProjectsFiltersBarProps) 
         value={statusValue}
         onValueChange={(v) => pushParam("status", v === ALL_VALUE ? undefined : v)}
       >
-        <SelectTrigger className="w-[12rem]" aria-label="Filter by status">
+        <SelectTrigger className="w-full sm:w-[12rem]" aria-label="Filter by status">
           <SelectValue placeholder="All Statuses" />
         </SelectTrigger>
         <SelectContent>
@@ -181,7 +181,7 @@ export function ProjectsFiltersBar({ companyOptions }: ProjectsFiltersBarProps) 
             pushParam("companyId", v === ALL_VALUE ? undefined : v)
           }
         >
-          <SelectTrigger className="w-[14rem]" aria-label="Filter by company">
+          <SelectTrigger className="w-full sm:w-[14rem]" aria-label="Filter by company">
             <SelectValue placeholder="All Companies" />
           </SelectTrigger>
           <SelectContent>

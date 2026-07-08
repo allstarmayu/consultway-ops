@@ -131,7 +131,7 @@ export function DocumentsFiltersBar() {
         }
       >
         <SelectTrigger
-          className="w-[12rem]"
+          className="w-full sm:w-[12rem]"
           aria-label="Filter documents by status"
         >
           <SelectValue placeholder="All statuses" />
@@ -154,7 +154,7 @@ export function DocumentsFiltersBar() {
         }
       >
         <SelectTrigger
-          className="w-[14rem]"
+          className="w-full sm:w-[14rem]"
           aria-label="Filter documents by type"
         >
           <SelectValue placeholder="All types" />

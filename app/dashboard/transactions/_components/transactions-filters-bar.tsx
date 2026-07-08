@@ -163,7 +163,7 @@ export function TransactionsFiltersBar({
           pushParam("type", v === ALL_VALUE ? undefined : v)
         }
       >
-        <SelectTrigger className="w-[10rem]" aria-label="Filter by type">
+        <SelectTrigger className="w-full sm:w-[10rem]" aria-label="Filter by type">
           <SelectValue placeholder="All Types" />
         </SelectTrigger>
         <SelectContent>
@@ -178,7 +178,7 @@ export function TransactionsFiltersBar({
 
       {/* Company */}
       <Select value={companyValue} onValueChange={onCompanyChange}>
-        <SelectTrigger className="w-[14rem]" aria-label="Filter by company">
+        <SelectTrigger className="w-full sm:w-[14rem]" aria-label="Filter by company">
           <SelectValue placeholder="All Companies" />
         </SelectTrigger>
         <SelectContent>
@@ -198,7 +198,7 @@ export function TransactionsFiltersBar({
           pushParam("projectId", v === ALL_VALUE ? undefined : v)
         }
       >
-        <SelectTrigger className="w-[14rem]" aria-label="Filter by project">
+        <SelectTrigger className="w-full sm:w-[14rem]" aria-label="Filter by project">
           <SelectValue placeholder="All Projects" />
         </SelectTrigger>
         <SelectContent>
@@ -212,11 +212,11 @@ export function TransactionsFiltersBar({
       </Select>
 
       {/* Date range */}
-      <div className="flex items-center gap-2">
+      <div className="flex w-full items-center gap-2 sm:w-auto">
         <Input
           type="date"
           aria-label="From date"
-          className="w-[10rem]"
+          className="min-w-0 flex-1 sm:w-[10rem] sm:flex-none"
           value={fromValue}
           onChange={(e) =>
             pushParam("occurredOnFrom", e.target.value || undefined)
@@ -228,7 +228,7 @@ export function TransactionsFiltersBar({
         <Input
           type="date"
           aria-label="To date"
-          className="w-[10rem]"
+          className="min-w-0 flex-1 sm:w-[10rem] sm:flex-none"
           value={toValue}
           onChange={(e) =>
             pushParam("occurredOnTo", e.target.value || undefined)

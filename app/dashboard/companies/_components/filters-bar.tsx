@@ -193,7 +193,7 @@ export function FiltersBar() {
       aria-busy={isPending || undefined}
     >
       {/* Search */}
-      <div className="relative min-w-[16rem] flex-1 sm:flex-none">
+      <div className="relative w-full flex-none sm:w-auto sm:min-w-[16rem]">
         <Search
           className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
           aria-hidden
@@ -223,7 +223,7 @@ export function FiltersBar() {
         value={sectorValue}
         onValueChange={(v) => pushParam("sector", v === ALL_VALUE ? undefined : v)}
       >
-        <SelectTrigger className="w-[12rem]" aria-label="Filter by sector">
+        <SelectTrigger className="w-full sm:w-[12rem]" aria-label="Filter by sector">
           <SelectValue placeholder="All Sectors" />
         </SelectTrigger>
         <SelectContent>
@@ -244,7 +244,7 @@ export function FiltersBar() {
         }
       >
         <SelectTrigger
-          className="w-[12rem]"
+          className="w-full sm:w-[12rem]"
           aria-label="Filter by geography"
         >
           <SelectValue placeholder="All Geographies" />
@@ -267,7 +267,7 @@ export function FiltersBar() {
         }
       >
         <SelectTrigger
-          className="w-[12rem]"
+          className="w-full sm:w-[12rem]"
           aria-label="Filter by compliance status"
         >
           <SelectValue placeholder="All Compliance" />

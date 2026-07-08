@@ -305,7 +305,7 @@ export function TenderHeader({
                   disabled={isPending}
                 >
                   <SelectTrigger
-                    className="w-[220px]"
+                    className="w-full sm:w-[220px]"
                     aria-label="Choose the winning applicant"
                   >
                     <SelectValue placeholder="Pick a shortlisted applicant" />

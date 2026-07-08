@@ -117,7 +117,7 @@ export function FiltersBar({ showRoleFilter = true }: FiltersBarProps) {
       aria-busy={isPending || undefined}
     >
       {/* Search */}
-      <div className="relative min-w-[16rem] flex-1 sm:flex-none">
+      <div className="relative w-full flex-none sm:w-auto sm:min-w-[16rem]">
         <Search
           className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
           aria-hidden
@@ -150,7 +150,7 @@ export function FiltersBar({ showRoleFilter = true }: FiltersBarProps) {
             pushParam("role", v === ALL_VALUE ? undefined : v)
           }
         >
-          <SelectTrigger className="w-[11rem]" aria-label="Filter by role">
+          <SelectTrigger className="w-full sm:w-[11rem]" aria-label="Filter by role">
             <SelectValue placeholder="All roles" />
           </SelectTrigger>
           <SelectContent>
@@ -171,7 +171,7 @@ export function FiltersBar({ showRoleFilter = true }: FiltersBarProps) {
           pushParam("status", v === ALL_VALUE ? undefined : v)
         }
       >
-        <SelectTrigger className="w-[11rem]" aria-label="Filter by status">
+        <SelectTrigger className="w-full sm:w-[11rem]" aria-label="Filter by status">
           <SelectValue placeholder="All statuses" />
         </SelectTrigger>
         <SelectContent>
