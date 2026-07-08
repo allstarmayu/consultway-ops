@@ -34,6 +34,25 @@ import { TRANSACTION_TYPE_OPTIONS } from "./badges";
 
 const ALL_VALUE = "__all__";
 
+/**
+ * Styling for the two native date inputs.
+ *
+ * `<Input>` is `text-base md:text-sm` — 16px below `md` to stop iOS Safari
+ * auto-zooming when a text field takes focus. A `type="date"` field opens a
+ * native picker instead of a keyboard, so that guard buys nothing here and
+ * only leaves the dates rendering a size larger than the `text-sm` selects
+ * beside them. Pin them to `text-sm` so the bar reads as one type scale
+ * (matching the raw date inputs in reports/_components/period-picker.tsx),
+ * use tabular figures so the digits don't jitter as the value changes, and
+ * soften the native calendar icon to sit with the muted chevrons.
+ */
+const DATE_INPUT_CLASS =
+  "min-w-0 flex-1 text-sm tabular-nums sm:w-[10rem] sm:flex-none " +
+  "[&::-webkit-calendar-picker-indicator]:cursor-pointer " +
+  "[&::-webkit-calendar-picker-indicator]:opacity-60 " +
+  "[&::-webkit-calendar-picker-indicator]:transition-opacity " +
+  "[&::-webkit-calendar-picker-indicator]:hover:opacity-100";
+
 // ── Props ─────────────────────────────────────────────────────────────────
 
 export interface CompanyOption {
@@ -216,7 +235,7 @@ export function TransactionsFiltersBar({
         <Input
           type="date"
           aria-label="From date"
-          className="min-w-0 flex-1 sm:w-[10rem] sm:flex-none"
+          className={DATE_INPUT_CLASS}
           value={fromValue}
           onChange={(e) =>
             pushParam("occurredOnFrom", e.target.value || undefined)
@@ -228,7 +247,7 @@ export function TransactionsFiltersBar({
         <Input
           type="date"
           aria-label="To date"
-          className="min-w-0 flex-1 sm:w-[10rem] sm:flex-none"
+          className={DATE_INPUT_CLASS}
           value={toValue}
           onChange={(e) =>
             pushParam("occurredOnTo", e.target.value || undefined)
