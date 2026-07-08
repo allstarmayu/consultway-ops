@@ -102,20 +102,20 @@ export function FiltersBar() {
 
   // Local search state — debounced before pushing to URL so we don't
   // hammer the server on every keystroke.
-  const initialSearch = searchParams.get("search") ?? "";
-  const [search, setSearch] = useState(initialSearch);
+  const urlSearch = searchParams.get("search") ?? "";
+  const [search, setSearch] = useState(urlSearch);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // If the URL search changes externally (back/forward, link nav),
-  // sync the local input. The string comparison is necessary because
-  // every render produces a new `searchParams` object.
-  useEffect(() => {
-    const fromUrl = searchParams.get("search") ?? "";
-    setSearch((prev) => (prev === fromUrl ? prev : fromUrl));
-    // We intentionally don't list `search` as a dep — we want the URL
-    // to win, not the local state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  // If the URL search changes externally (back/forward, link nav), sync the
+  // local input — the URL wins, not the local state. Track the last URL value
+  // and adjust `search` during render — React's "adjusting state on a prop
+  // change" pattern. Avoids a setState-in-effect cascade
+  // (react-hooks/set-state-in-effect).
+  const [lastUrlSearch, setLastUrlSearch] = useState(urlSearch);
+  if (urlSearch !== lastUrlSearch) {
+    setLastUrlSearch(urlSearch);
+    setSearch(urlSearch);
+  }
 
   /**
    * Write a single key into the URL search params. Passing an empty

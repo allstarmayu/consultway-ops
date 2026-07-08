@@ -48,15 +48,19 @@ export function FiltersBar({ showRoleFilter = true }: FiltersBarProps) {
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
 
-  const initialSearch = searchParams.get("search") ?? "";
-  const [search, setSearch] = useState(initialSearch);
+  const urlSearch = searchParams.get("search") ?? "";
+  const [search, setSearch] = useState(urlSearch);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    const fromUrl = searchParams.get("search") ?? "";
-    setSearch((prev) => (prev === fromUrl ? prev : fromUrl));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  // Sync the input when `?search=` changes externally (back/forward, link
+  // nav). Track the last URL value and adjust `search` during render —
+  // React's "adjusting state on a prop change" pattern. Avoids a
+  // setState-in-effect cascade (react-hooks/set-state-in-effect).
+  const [lastUrlSearch, setLastUrlSearch] = useState(urlSearch);
+  if (urlSearch !== lastUrlSearch) {
+    setLastUrlSearch(urlSearch);
+    setSearch(urlSearch);
+  }
 
   function pushParam(key: string, value: string | undefined) {
     const params = new URLSearchParams(searchParams.toString());
